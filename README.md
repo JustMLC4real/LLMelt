@@ -58,19 +58,7 @@ The onboarding flow checks what is already installed, lets you choose what you a
   <img src="./docs/assets/readme/tour.gif" width="100%" alt="Animated walkthrough of the LLMelt onboarding flow">
 </p>
 
-<details>
-  <summary>View the full-resolution screenshots</summary>
-  <br>
-  <p align="center">
-    <img src="./docs/assets/readme/provider-check.png" width="100%" alt="LLMelt detects installed providers during onboarding">
-  </p>
-  <p align="center">
-    <img src="./docs/assets/readme/welcome.png" width="49%" alt="LLMelt welcome screen">
-    <img src="./docs/assets/readme/providers.png" width="49%" alt="LLMelt provider onboarding screen">
-  </p>
-</details>
 
-<sub>Screenshots are generated from a clean, isolated app profile with <code>npm run capture:readme</code>; no personal chats, credentials or settings are included.</sub>
 
 ## Supported providers
 
