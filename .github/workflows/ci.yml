@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Audit alle dependencies
+        run: npm audit --audit-level=low
+      - run: npm run lint
+      - name: Fresh-start- en runtimecontracten
+        run: npx vitest run src/database-fresh-start.test.ts src/components/onboarding-utils.test.ts src/python-runtime.test.ts src/chat-title-ollama.test.ts
+      - run: npm test
+      - run: npm run build

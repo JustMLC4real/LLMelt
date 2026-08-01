@@ -1,0 +1,19 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="LLMelt-gradient" x1="24" y1="20" x2="488" y2="492" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1dc4e9"/>
+      <stop offset="0.52" stop-color="#5399ee"/>
+      <stop offset="1" stop-color="#9382f5"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="95" fill="url(#LLMelt-gradient)"/>
+  <path
+    fill="#fff"
+    fill-rule="evenodd"
+    d="M256 102 381 178c10 6 16 17 16 29v123c0 17-12 31-29 34-26 5-37 17-43 39-4 15-12 24-21 24-6 0-11-4-16-11-8-12-18-13-24-4-4 5-5 13-6 22-2 21-12 32-27 32-14 0-23-10-25-28-1-13 1-25-4-35-7-18-23-29-51-34-17-3-29-17-29-34V207c0-12 6-23 16-29l102-62c10-6 22-6 32 0Zm0 46-92 56v119l92 55 92-55V204Z"
+  />
+  <path fill="#fff" d="M278 448c0-12 9-27 15-36 6 9 15 24 15 36 0 10-6 17-15 17s-15-7-15-17Z"/>
+  <path fill="#fff" d="m256 186 55 34-55 34-55-34 55-34Z"/>
+  <path fill="#fff" d="m200 237 49 30v68l-49-30v-68Z"/>
+  <path fill="#fff" d="m263 267 49-30v68l-49 30v-68Z"/>
+</svg>

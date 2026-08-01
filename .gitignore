@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-electron/
+release/
+out/
+build/
+coverage/
+
+# Logs (kunnen ook na redactie gebruikersinhoud bevatten — nooit committen)
+*.log
+chatgpt-debug.log
+codex-dev-server.log
+
+# Local databases / secrets
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*
+*.local
+
+# Kladbestanden uit agent-sessies — horen niet in de repo
+hello.*
+tmp/
+.tmp-readme-profile/
+.tmp-readme-recording/
+.tmp-readme-review/
+
+# Electron / OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+agent-debug.log
