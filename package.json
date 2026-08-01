@@ -2,6 +2,7 @@
   "name": "LLMelt",
   "version": "0.1.0",
   "author": "Justin Laponder",
+  "license": "MIT",
   "description": "LLMelt - ChatGPT, Claude, Gemini, Codex, Antigravity en lokale LLM's in één app",
   "repository": {
     "type": "git",
