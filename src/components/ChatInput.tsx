@@ -11,6 +11,7 @@ import { IconButton, ProviderBadge, QuotaBadge, SelectField } from './ui';
 import {
   applyCommandPreset,
   clearCommandConfig,
+  commandMessageText,
   composerCommandPreset,
   commandLabel,
   commandLanguage,
@@ -406,9 +407,9 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
     }
     setPendingCommandForCurrentChat(null);
     applyPreset(preset);
-    // Sluit het palet na een keuze. Review blijft als uitvoerbare slash in het
-    // tekstveld staan; de spatie voorkomt dat het palet meteen opnieuw opent.
-    setInputValue(preset.nativeCommand?.kind === 'review' ? `${preset.slash} ` : '');
+    // De slash kiest de actie en hoort daarna niet meer in het berichtveld.
+    // De chip maakt zichtbaar wat voor de volgende beurt actief is.
+    setInputValue('');
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, [activeModel, activeRunConfig, applyPreset, setActiveRunConfig, setInputValue, setPendingCommandForCurrentChat]);
 
@@ -510,9 +511,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
       }
 
       requestRunConfig = applied;
-      promptText = command.preset.nativeCommand?.kind === 'review'
-        ? (command.rest.trim() || command.preset.slash)
-        : command.rest.trim();
+      promptText = commandMessageText(command);
       if (!promptText) {
         setInputValue('');
         return;

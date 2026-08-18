@@ -239,6 +239,14 @@ export function parseCommandInput(value: string, presets: CommandPreset[]): Pars
   return { preset, args: rest, rest };
 }
 
+/**
+ * De slash kiest alleen een actie; hij is nooit onderdeel van het bericht aan
+ * het model. Daardoor gedragen native acties en LLMelt-workflows zich gelijk.
+ */
+export function commandMessageText(command: ParsedCommand): string {
+  return command.rest.trim();
+}
+
 /** De commandopener zoekt zowel de zichtbare slashnaam als vertaalde aliases. */
 export function commandPresetMatchesQuery(preset: CommandPreset, query: string): boolean {
   const normalized = query.trim().replace(/^\//, '').toLowerCase();

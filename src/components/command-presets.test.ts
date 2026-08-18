@@ -3,6 +3,7 @@ import type { AIModel, ModelRunConfig, ProviderType } from '../providers/types';
 import {
   applyCommandPreset,
   clearCommandConfig,
+  commandMessageText,
   composerCommandPreset,
   commandPresetMatchesQuery,
   commandPresetsForModel,
@@ -107,6 +108,23 @@ describe('providerneutrale slashcommands', () => {
     }]);
     expect(presets.filter((preset) => commandPresetMatchesQuery(preset, 'goal')).map((preset) => preset.id)).toContain('codex:goal');
     expect(presets.filter((preset) => commandPresetMatchesQuery(preset, '/doel'))).toEqual([]);
+  });
+
+  it('verwijdert de slash altijd uit het modelbericht, ook bij native acties', () => {
+    const presets = nativeCommandPresets([
+      {
+        id: 'codex:review', provider: 'codex', slash: '/review', aliases: [],
+        label: 'Review', description: 'Native review', source: 'app-server', kind: 'review',
+      },
+      {
+        id: 'codex:plan', provider: 'codex', slash: '/plan', aliases: [],
+        label: 'Plan', description: 'Native plan', source: 'app-server', kind: 'collaboration-mode', mode: 'plan',
+      },
+    ]);
+
+    expect(commandMessageText(parseCommandInput('/review', presets)!)).toBe('');
+    expect(commandMessageText(parseCommandInput('/review inspect src', presets)!)).toBe('inspect src');
+    expect(commandMessageText(parseCommandInput('/plan make a rollout', presets)!)).toBe('make a rollout');
   });
 
   it('past /fast uitsluitend toe via live modelcontrols en voegt geen nep-instructie toe', () => {
