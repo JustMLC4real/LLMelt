@@ -1,3 +1,6 @@
+import type { UiLanguage } from '../providers/types';
+import { localizedText } from '../i18n/language';
+
 export interface ChangedLine {
   type: 'add' | 'remove' | 'context';
   text: string;
@@ -12,7 +15,7 @@ function lines(value: string) {
  * Regeldiff zonder ongewijzigde context. Voor normale bronbestanden gebruikt dit
  * LCS; bij zeer grote bestanden blijft het begrensd tot het gewijzigde middenstuk.
  */
-export function changedLineDiff(before: string, after: string, maxLines = 240): ChangedLine[] {
+export function changedLineDiff(before: string, after: string, maxLines = 240, language: UiLanguage = 'nl'): ChangedLine[] {
   const oldLines = lines(before);
   const newLines = lines(after);
   let result: ChangedLine[];
@@ -37,7 +40,14 @@ export function changedLineDiff(before: string, after: string, maxLines = 240): 
   if (result.length <= maxLines) return result;
   return [
     ...result.slice(0, maxLines),
-    { type: 'context', text: `… ${result.length - maxLines} gewijzigde regels afgekapt` },
+    {
+      type: 'context',
+      text: localizedText(
+        language,
+        `… ${result.length - maxLines} gewijzigde regels afgekapt`,
+        `… ${result.length - maxLines} changed lines truncated`,
+      ),
+    },
   ];
 }
 

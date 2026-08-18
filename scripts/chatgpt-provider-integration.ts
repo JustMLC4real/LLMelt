@@ -58,29 +58,63 @@ async function main() {
   if (!models.length) throw new Error('De actieve ChatGPT-websessie leverde geen live modellen op.');
   const newestVersion = versions[0];
   const availablePresets = newestVersion?.presets.filter((preset) => preset.available) || [];
-  const selectedPreset = availablePresets[Math.max(0, availablePresets.length - 2)];
+  const requestedTransport = String(process.env.CHATGPT_TEST_TRANSPORT || '').trim().toLowerCase();
+  const selectedPreset = requestedTransport === 'direct'
+    ? availablePresets.find((preset) => !preset.thinkingEffort)
+    : requestedTransport === 'thinking'
+      ? availablePresets.find((preset) => !!preset.thinkingEffort)
+      : availablePresets[Math.max(0, availablePresets.length - 2)];
+  if (requestedTransport && !selectedPreset) {
+    throw new Error(`De live ChatGPT-catalogus bevat geen beschikbare ${requestedTransport}-preset.`);
+  }
   const fallbackModel = models.find((candidate) => candidate.chatgptWorkMode) || models[0];
   const modelSlug = selectedPreset?.modelSlug || fallbackModel.id.replace(/^chatgpt:/, '');
   const thinkingEffort = selectedPreset?.thinkingEffort;
   console.info('[chatgpt live]', {
-    model: selectedPreset ? `${newestVersion.title} · ${selectedPreset.title}` : fallbackModel.name,
+    model: selectedPreset ? `${newestVersion.title} - ${selectedPreset.title}` : fallbackModel.name,
     modelSlug,
+    thinkingEffort,
+    requestedTransport: requestedTransport || 'catalogusstandaard',
     catalogSize: models.length,
   });
 
-  const smokeToken = `CHATGPT_WEB_OK_${Date.now().toString(36).toUpperCase()}`;
+  // Alleen letters/cijfers: Markdown kan underscores als opmaaktekens behandelen,
+  // waardoor een inhoudelijk correct live-antwoord in de DOM anders terugkomt.
+  const smokeToken = `LLMELTCHATGPT${Date.now().toString(36).toUpperCase()}EINDE`;
   const smoke = await chatgptScraper.sendChatViaSession({
     modelSlug,
     thinkingEffort,
-    messages: [{ role: 'user', content: `Antwoord exact met: ${smokeToken}` }],
+    messages: [{ role: 'user', content: `Antwoord uitsluitend met deze tekenreeks, zonder opmaak: ${smokeToken}` }],
     attachments: [],
     signal: AbortSignal.timeout(180_000),
     onDelta: () => {},
     onStatus: (status) => console.info('[chatgpt status]', status),
   });
-  if (!smoke.text.includes(smokeToken)) {
+  console.info('[chatgpt smoke]', { expected: smokeToken, actual: smoke.text.trim() });
+  if (smoke.text.trim() !== smokeToken) {
     throw new Error(`ChatGPT-websessie gaf niet het gevraagde smoketesttoken terug (${smoke.text.slice(0, 240)}).`);
   }
+  if (process.env.CHATGPT_SESSION_ISOLATION === '1') {
+    const markers = [
+      `LLMELTISOLATIEA${Date.now().toString(36).toUpperCase()}EINDE`,
+      `LLMELTISOLATIEB${(Date.now() + 1).toString(36).toUpperCase()}EINDE`,
+    ];
+    const replies = await Promise.all(markers.map((marker) => chatgptScraper.sendChatViaSession({
+      modelSlug,
+      thinkingEffort,
+      messages: [{ role: 'user', content: `Antwoord uitsluitend met deze tekenreeks, zonder opmaak: ${marker}` }],
+      attachments: [],
+      signal: AbortSignal.timeout(180_000),
+      onDelta: () => {},
+      onStatus: (status) => console.info('[chatgpt isolatie status]', status),
+    })));
+    if (!replies[0].text.includes(markers[0]) || replies[0].text.includes(markers[1])
+      || !replies[1].text.includes(markers[1]) || replies[1].text.includes(markers[0])) {
+      throw new Error('De twee gelijktijdige ChatGPT-webbeurten bleven niet sessie-geisoleerd.');
+    }
+    console.info('[chatgpt isolatie]', { parallelRequests: 2, isolated: true });
+  }
+  if (process.env.CHATGPT_SMOKE_ONLY === '1') return;
 
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ai-superapp-chatgpt-live-'));
   try {

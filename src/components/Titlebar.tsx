@@ -39,10 +39,10 @@ const Titlebar: React.FC = () => {
       </div>
 
       <div className="titlebar-controls">
-        <button className="titlebar-btn" onClick={minimize} aria-label="Minimize" title="Minimize">
+        <button className="titlebar-btn" onClick={minimize} aria-label={t('window.minimize')} title={t('window.minimize')}>
           <svg width="11" height="11" viewBox="0 0 11 11"><line x1="1.5" y1="5.5" x2="9.5" y2="5.5" stroke="currentColor" strokeWidth="1.1" /></svg>
         </button>
-        <button className="titlebar-btn" onClick={maximizeToggle} aria-label="Maximize" title={maximized ? 'Restore' : 'Maximize'}>
+        <button className="titlebar-btn" onClick={maximizeToggle} aria-label={maximized ? t('window.restore') : t('window.maximize')} title={maximized ? t('window.restore') : t('window.maximize')}>
           {maximized ? (
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.1">
               <rect x="2" y="3.4" width="5.6" height="5.6" rx="0.6" />
@@ -52,7 +52,7 @@ const Titlebar: React.FC = () => {
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.1"><rect x="1.8" y="1.8" width="7.4" height="7.4" rx="0.8" /></svg>
           )}
         </button>
-        <button className="titlebar-btn titlebar-btn-close" onClick={close} aria-label="Close" title="Close">
+        <button className="titlebar-btn titlebar-btn-close" onClick={close} aria-label={t('window.close')} title={t('window.close')}>
           <svg width="11" height="11" viewBox="0 0 11 11" stroke="currentColor" strokeWidth="1.1"><line x1="2" y1="2" x2="9" y2="9" /><line x1="9" y1="2" x2="2" y2="9" /></svg>
         </button>
       </div>

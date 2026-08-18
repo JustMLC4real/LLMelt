@@ -1,5 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   Check,
   ChevronDown,
@@ -11,6 +13,7 @@ import {
 } from 'lucide-react';
 import { PROVIDER_INFO, type AIModel, type LimitDisplayState, type LimitScope, type ProviderQuotaSnapshot, type ProviderType, type RateLimitSnapshot } from '../providers/types';
 import { useProviderStore } from '../stores/provider-store';
+import { resolveQuotaForModel } from '../providers/quota-display';
 
 export type SelectOption = {
   value: string;
@@ -267,6 +270,7 @@ export function ProviderBadge({ provider, label }: { provider: ProviderType; lab
 }
 
 export function QuotaBadge({ snapshot, quota, model }: { snapshot?: RateLimitSnapshot; quota?: ProviderQuotaSnapshot; model?: AIModel }) {
+  const { t } = useTranslation();
   const storedQuotas = useProviderStore((state) => state.quotaSnapshots);
   const resolvedQuota = quota || quotaForModel(model, storedQuotas);
   // Account-brede CLI-providers (Codex, ChatGPT, Claude CLI, Antigravity) hebben
@@ -277,7 +281,7 @@ export function QuotaBadge({ snapshot, quota, model }: { snapshot?: RateLimitSna
   const state = resolvedQuota
     ? resolvedQuota.state === 'unlimited' ? 'unlimited' : ['cooldown', 'exhausted'].includes(resolvedQuota.state) ? 'cooldown' : resolvedQuota.state === 'unavailable' ? 'not_exposed' : resolvedQuota.state === 'unknown' ? 'unknown' : 'known'
     : snapshot?.displayState || displayStateFor(scope, snapshot?.known);
-  const text = resolvedQuota ? providerQuotaText(resolvedQuota) : quotaText(snapshot, scope, state);
+  const text = resolvedQuota ? providerQuotaText(resolvedQuota, t) : quotaText(snapshot, scope, state, t);
   const Icon = state === 'known' ? CircleCheck : state === 'unlimited' ? InfinityIcon : state === 'cooldown' ? CircleAlert : CircleDashed;
 
   return (
@@ -291,19 +295,18 @@ export function QuotaBadge({ snapshot, quota, model }: { snapshot?: RateLimitSna
 function quotaForModel(model: AIModel | undefined, snapshots: ProviderQuotaSnapshot[]) {
   if (!model) return undefined;
   const group = limitGroupForModel(model);
-  return snapshots.find((item) => (
-    item.limitGroupKey === group
-    || (item.provider === model.provider && (!item.modelId || item.modelId === model.id))
-  ));
+  return resolveQuotaForModel(model, snapshots, group);
 }
 
-function providerQuotaText(quota: ProviderQuotaSnapshot) {
-  if (quota.state === 'unlimited') return 'lokaal';
-  if (quota.state === 'unavailable') return 'niet beschikbaar';
+function providerQuotaText(quota: ProviderQuotaSnapshot, t: TFunction) {
+  if (quota.state === 'unlimited') return t('tokens.localLimit');
+  if (quota.state === 'unavailable' || quota.state === 'unknown') {
+    return quota.accuracy === 'unavailable' ? t('tokens.limitNotPublished') : t('tokens.limitUnknown');
+  }
   const percentages = quota.buckets.map((bucket) => bucket.remainingFraction).filter((value): value is number => value != null);
-  if (percentages.length) return `${Math.round(Math.min(...percentages) * 100)}% over`;
-  if (quota.state === 'cooldown' || quota.state === 'exhausted') return 'cooldown';
-  return quota.accuracy === 'delayed' ? 'quota vertraagd' : quota.state;
+  if (percentages.length) return t('tokens.percentRemaining', { percent: Math.round(Math.min(...percentages) * 100) });
+  if (quota.state === 'cooldown' || quota.state === 'exhausted') return t('tokens.cooldown');
+  return quota.accuracy === 'delayed' ? t('tokens.quotaDelayed') : t('tokens.limitKnown');
 }
 
 export function MotionPanel({ children, className = '' }: { children: React.ReactNode; className?: string }) {
@@ -311,35 +314,9 @@ export function MotionPanel({ children, className = '' }: { children: React.Reac
 }
 
 export function FlipText({ text, className = '' }: { text: string; className?: string }) {
-  // Only animate when the text actually changes after the first mount (i.e. a
-  // language switch) \u2014 not every time a component mounts (e.g. opening Settings).
-  const prevRef = useRef<string | null>(null);
-  const [animating, setAnimating] = useState(false);
-
-  useEffect(() => {
-    if (prevRef.current !== null && prevRef.current !== text) {
-      setAnimating(true);
-      prevRef.current = text;
-      const timer = window.setTimeout(() => setAnimating(false), 600);
-      return () => window.clearTimeout(timer);
-    }
-    prevRef.current = text;
-  }, [text]);
-
-  return (
-    <span key={animating ? `flip-${text}` : text} className={`flip-text ${className}`} aria-label={text}>
-      {Array.from(text).map((char, index) => (
-        <span
-          key={index}
-          className={animating ? 'flip-char' : ''}
-          style={animating ? { ['--flip-index' as string]: index } : undefined}
-          aria-hidden="true"
-        >
-          {char === ' ' ? '\u00A0' : char}
-        </span>
-      ))}
-    </span>
-  );
+  // Naam behouden voor bestaande callsites; taalwissels worden centraal als één
+  // appbrede fade afgehandeld en hebben nergens meer een losse letteranimatie.
+  return <span className={`flip-text ${className}`}>{text}</span>;
 }
 
 export function limitGroupForModel(model?: AIModel) {
@@ -351,22 +328,22 @@ export function limitGroupForModel(model?: AIModel) {
   return `${model.provider}:${model.id}`;
 }
 
-function quotaText(snapshot: RateLimitSnapshot | undefined, scope: LimitScope, state: LimitDisplayState) {
+function quotaText(snapshot: RateLimitSnapshot | undefined, scope: LimitScope, state: LimitDisplayState, t: TFunction) {
   if (state === 'known' && snapshot) {
     if (typeof snapshot.tokensRemaining === 'number' && typeof snapshot.tokensLimit === 'number' && snapshot.tokensLimit > 0) {
       const pct = Math.max(0, Math.round((snapshot.tokensRemaining / snapshot.tokensLimit) * 100));
-      return `${pct}% over`;
+      return t('tokens.percentRemaining', { percent: pct });
     }
-    if (typeof snapshot.requestsRemaining === 'number') return `${snapshot.requestsRemaining} req over`;
-    return 'limiet bekend';
+    if (typeof snapshot.requestsRemaining === 'number') return t('tokens.requestsRemaining', { count: snapshot.requestsRemaining });
+    return t('tokens.limitKnown');
   }
-  if (state === 'unlimited') return 'lokaal';
-  if (state === 'not_exposed') return scope === 'account' ? 'account-breed' : 'niet exposed';
-  if (state === 'cooldown') return 'cooldown';
-  if (scope === 'account') return 'account-breed';
-  if (scope === 'project') return 'project-limiet';
-  if (scope === 'model') return 'bekend na API-call';
-  return 'limiet onbekend';
+  if (state === 'unlimited') return t('tokens.localLimit');
+  if (state === 'not_exposed') return t('tokens.limitNotPublished');
+  if (state === 'cooldown') return t('tokens.cooldown');
+  if (scope === 'account') return t('tokens.accountLimitUnknown');
+  if (scope === 'project') return t('tokens.projectLimit');
+  if (scope === 'model') return t('tokens.knownAfterRequest');
+  return t('tokens.limitUnknown');
 }
 
 function displayStateFor(scope: LimitScope, known?: boolean): LimitDisplayState {

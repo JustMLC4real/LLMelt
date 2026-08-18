@@ -34,6 +34,7 @@ interface MessageBubbleProps {
 // Kopieer-knop met icoon dat kort een vinkje wordt na het kopiëren. Gedeeld door
 // het bericht zelf en elk codeblok, zodat de feedback overal hetzelfde is.
 function CopyButton({ text, title, size = 15 }: { text: string; title: string; size?: number }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     if (!await copyTextToClipboard(text)) return;
@@ -47,8 +48,8 @@ function CopyButton({ text, title, size = 15 }: { text: string; title: string; s
       className={`btn-icon message-copy-btn ${copied ? 'copied' : ''}`}
       onMouseDown={(event) => event.preventDefault()}
       onClick={copy}
-      title={copied ? 'Gekopieerd' : title}
-      aria-label={copied ? 'Gekopieerd' : title}
+      title={copied ? t('chat.copied') : title}
+      aria-label={copied ? t('chat.copied') : title}
     >
       {copied ? <Check size={size} /> : <Copy size={size} />}
     </button>
@@ -63,7 +64,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
   continuation,
   liveStatus,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const userAvatarDataUrl = useProfileStore((state) => state.userAvatarDataUrl);
 
   const provider = (message.provider || 'openai') as ProviderType;
@@ -77,13 +78,16 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
   // tekst + tools als één samenhangende beurt lezen (voor álle providers).
   const isContinuation = !!continuation && !isUser && !isToolOutput;
   const isChatGptRecovery = message.provider === 'openai'
-    && /ChatGPT (web-sessie|composer|verificatie|model|web-engine)|ChatGPT startte geen antwoord/i.test(message.content);
+    && /ChatGPT (web-sessie|web session|composer|verificatie|verification|model|web-engine|web engine)|ChatGPT (startte geen antwoord|did not start a response)/i.test(message.content);
   const isToolIntent = isToolIntentMessage(message);
   const hasBrokenToolMarkup = !isUser && hasUnparsedToolMarkup(message.content);
   const displayContent = hasBrokenToolMarkup ? stripAgentToolMarkup(message.content) : message.content;
   const chatgptVersions = useProviderStore((state) => state.chatgptVersions);
   const modelBadge = formatModelBadge(message, chatgptVersions);
-  const messageAttachments = parseMessageAttachments(message.attachments);
+  const messageAttachments = parseMessageAttachments(
+    message.attachments,
+    (index) => t('message.attachmentNumber', { count: index }),
+  );
 
   const handleChatGptRecover = async () => {
     await window.electronAPI?.auth.chatgptEngineReset();
@@ -102,8 +106,8 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         <div className={`message-avatar ${isUser ? `user ${userAvatarDataUrl ? 'has-image' : ''}` : `assistant ${provider}`}`}>
           {isUser
             ? userAvatarDataUrl
-              ? <img className="message-avatar-user-image" src={userAvatarDataUrl} alt="Jij" draggable={false} />
-              : 'YOU'
+              ? <img className="message-avatar-user-image" src={userAvatarDataUrl} alt={t('message.userAlt')} draggable={false} />
+              : t('message.userInitials')
             : <ProviderAvatarIcon provider={provider} />}
         </div>
       )}
@@ -112,7 +116,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         {!isToolOutput && !isContinuation && (
           <div className="message-header">
             {!isUser && modelBadge && <span className="message-model-badge">{modelBadge}</span>}
-            {isAutoModePrompt && <span className="status-badge limited">Auto Mode prompt</span>}
+            {isAutoModePrompt && <span className="status-badge limited">{t('message.autoModePrompt')}</span>}
             {message.fallbackFrom && (
               <span className="status-badge limited" style={{ fontSize: '0.65rem' }}>
                 {t('chat.switchedTo', { model: message.modelId })}
@@ -120,8 +124,8 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
             )}
             {liveStatus
               ? <span className="streaming-status shimmer" data-text={liveStatus} style={{ fontSize: 'var(--font-size-xs)' }}>{liveStatus}</span>
-              : <span className="message-time">{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
-            {isStreaming && <span className="message-spinner" aria-label="Streaming" />}
+              : <span className="message-time">{new Date(message.createdAt).toLocaleTimeString(i18n.resolvedLanguage || i18n.language, { hour: '2-digit', minute: '2-digit' })}</span>}
+            {isStreaming && <span className="message-spinner" aria-label={t('message.streaming')} />}
           </div>
         )}
 
@@ -183,7 +187,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
             <div className="mt-3">
               <button className="btn btn-secondary" onClick={handleChatGptRecover} style={{ fontSize: 'var(--font-size-xs)' }}>
                 <RefreshCw size={15} />
-                ChatGPT herstellen
+                {t('message.recoverChatgpt')}
               </button>
             </div>
           )}
@@ -208,7 +212,7 @@ function parseRunConfig(raw?: string | null) {
   }
 }
 
-function parseMessageAttachments(raw?: string | null): AttachmentRef[] {
+function parseMessageAttachments(raw?: string | null, attachmentName: (index: number) => string = (index) => `Bijlage ${index}`): AttachmentRef[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -218,7 +222,7 @@ function parseMessageAttachments(raw?: string | null): AttachmentRef[] {
         if (typeof item === 'string') {
           return {
             id: item,
-            name: `Bijlage ${index + 1}`,
+            name: attachmentName(index + 1),
             mimeType: 'application/octet-stream',
             kind: 'binary',
             size: 0,

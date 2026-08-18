@@ -4,15 +4,21 @@ import {
   codexEffortForModel,
   codexEffortsForModel,
   codexModels,
+  codexRunConfig,
   modelDisplayName,
   modelChoiceLabel,
   compactModelChoiceLabel,
   parseCodexModel,
   reasoningEffortLabel,
+  reasoningEffortForModel,
+  reasoningEffortsForModel,
+  runConfigWithAdvertisedEffort,
   serviceTierLabel,
+  serviceTiersForModel,
   chatgptEffortsForModel,
   isChatgptPickerModel,
   parseClaudeCliModel,
+  claudeCliModels,
   claudeCliFamilies,
   claudeCliVersionsFor,
   claudeCliModelFor,
@@ -28,6 +34,7 @@ import {
   connectedModels,
   parseGoogleModelChoice,
   replacementForUnavailableModel,
+  surfaceLabel,
 } from './model-utils';
 
 // Minimal ChatGPT model factory (only the fields the helpers read).
@@ -197,6 +204,92 @@ describe('Claude CLI picker helpers', () => {
     expect(claudeCliFamilies(models)).toEqual(['Fable', 'Opus', 'Sonnet', 'Haiku']);
     expect(claudeCliVersionsFor(models, 'Sonnet')).toEqual(['5', '4.6']);
     expect(claudeCliModelFor(models, 'Sonnet', '4.6')?.id).toBe('claude-cli:claude-sonnet-4-6');
+  });
+
+  it('verzint bij ontbrekende Codex-catalogusdata geen effort of snelheid', () => {
+    const model = codex('Future Codex', 'future-codex');
+    expect(codexEffortsForModel(model)).toEqual([]);
+    expect(codexEffortForModel(model, 'high')).toBeUndefined();
+    expect(serviceTiersForModel(model)).toEqual([]);
+    expect(codexRunConfig(model, { reasoningEffort: 'high', serviceTier: 'fast' }))
+      .toEqual({ baseModelId: 'future-codex' });
+  });
+
+  it('behoudt onbekende toekomstige waarden wanneer de live catalogus ze publiceert', () => {
+    const model = codex('Future Codex', 'future-codex', {
+      supportedReasoningEfforts: ['eco-v2', 'warp'],
+      defaultReasoningEffort: 'eco-v2',
+      supportedServiceTiers: ['standard', 'burst-v3'],
+    });
+    expect(codexEffortForModel(model, 'warp')).toBe('warp');
+    expect(codexRunConfig(model, { reasoningEffort: 'warp', serviceTier: 'burst-v3' }))
+      .toMatchObject({ reasoningEffort: 'warp', serviceTier: 'burst-v3' });
+  });
+
+  it('stuurt modeldefaults alleen na een expliciete gebruikerskeuze', () => {
+    const model = codex('Future Codex', 'future-codex', {
+      supportedReasoningEfforts: ['eco-v2', 'warp'],
+      defaultReasoningEffort: 'eco-v2',
+      supportedServiceTiers: ['burst-v3'],
+      runConfig: { reasoningEffort: 'eco-v2', serviceTier: 'burst-v3' },
+    });
+
+    expect(codexRunConfig(model)).toEqual({ baseModelId: 'future-codex' });
+    expect(codexRunConfig(model, { reasoningEffort: 'eco-v2', serviceTier: 'burst-v3' }))
+      .toEqual({ baseModelId: 'future-codex', reasoningEffort: 'eco-v2', serviceTier: 'burst-v3' });
+  });
+
+  it('kiest niet stil het creditgebonden Fable als eerste/default CLI-model', () => {
+    expect(claudeCliModels(models)[0]?.id).toBe('claude-cli:claude-opus-4-8');
+  });
+});
+
+describe('live modelinspanning', () => {
+  it('verzint geen opties wanneer de provider niets publiceert', () => {
+    const model = claudeCli('Claude Opus 4.8 (CLI)', 'claude-opus-4-8');
+    expect(reasoningEffortsForModel(model)).toEqual([]);
+    expect(reasoningEffortForModel(model, 'high')).toBeUndefined();
+    expect(runConfigWithAdvertisedEffort(model, { reasoningEffort: 'high' })).toBeUndefined();
+  });
+
+  it('behoudt alleen een door de actuele CLI geadverteerde effort', () => {
+    const model = agy('Gemini-3.6-flash-high');
+    model.supportedReasoningEfforts = ['low', 'medium', 'high'];
+    model.defaultReasoningEffort = 'medium';
+
+    expect(reasoningEffortForModel(model, 'ultra')).toBe('medium');
+    expect(runConfigWithAdvertisedEffort(model, { timeoutSeconds: 180, reasoningEffort: 'ultra' }, 'high'))
+      .toEqual({ timeoutSeconds: 180, reasoningEffort: 'high' });
+  });
+
+  it('laat zonder expliciete live default de provider zelf kiezen', () => {
+    const model = agy('future-model');
+    model.supportedReasoningEfforts = ['eco-v2', 'warp'];
+
+    expect(reasoningEffortForModel(model)).toBeUndefined();
+    expect(reasoningEffortForModel(model, 'unknown')).toBeUndefined();
+    expect(runConfigWithAdvertisedEffort(model, { timeoutSeconds: 180, reasoningEffort: 'unknown' }))
+      .toEqual({ timeoutSeconds: 180 });
+  });
+});
+
+describe('Engelse modelhulplabels', () => {
+  it('vertaalt zichtbare fallbacklabels', () => {
+    expect(modelDisplayName(undefined, 'en')).toBe('No model');
+    expect(reasoningEffortLabel('xhigh', 'en')).toBe('Very High');
+    expect(serviceTierLabel('priority', 'en')).toBe('Fast');
+
+    const ollama = {
+      ...codex('qwen3:8b', 'qwen3:8b'),
+      provider: 'ollama' as const,
+      surfaceLabel: 'Ollama local',
+    };
+    expect(surfaceLabel(ollama, 'nl')).toBe('Ollama lokaal');
+    expect(surfaceLabel(ollama, 'en')).toBe('Ollama local');
+    expect(parseClaudeCliModel(claudeCli('Claude', 'claude'), 'en').version).toBe('Standard');
+    expect(parseAntigravityModel(agy('Claude-sonnet-4-6'), 'en').mode).toBe('Standard');
+    expect(parseGoogleModelChoice({ ...ollama, provider: 'google', id: 'gemini', name: 'Gemini' }, 'en'))
+      .toEqual({ family: 'Gemini', version: 'Other', variant: 'Standard' });
   });
 });
 

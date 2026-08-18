@@ -2,8 +2,10 @@
 //
 // In plaats van het tag-systeem (waarbij het model <file-edit>-tags emit die de app
 // uitvoert) laat dit Claude Code ZELF z'n tools draaien (Read/Write/Edit/Bash/…) in de
-// projectmap van de chat. Vóór elke tool vraagt Claude om goedkeuring via het
-// --permission-prompt-tool-mechanisme; wij routeren die naar de bestaande approval-popup.
+// projectmap van de chat. Voor elke toestemmingsplichtige tool vraagt Claude om
+// goedkeuring via het --permission-prompt-tool-mechanisme; wij routeren die naar
+// de bestaande approval-popup. Veilige reads binnen de werkmap laat Claude zelf toe,
+// maar ze blijven volledig zichtbaar als native tool-events.
 //
 // Bewezen mechanisme (zie docs/06-agent-tools.md §6.8): claude v2.1.x accepteert
 // `--permission-prompt-tool mcp__<srv>__approval_prompt`. De MCP-tool krijgt
@@ -22,7 +24,8 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 import { app } from 'electron';
-import type { AgentApprovalMode } from '../src/providers/types';
+import type { AgentApprovalMode, UiLanguage } from '../src/providers/types';
+import { localizedText } from '../src/i18n/language';
 import type { NativePermissionHandler, NativeToolActivity } from './native-tools';
 import { cliSpawnSpec, clipNativeOutput, terminateProcessTree } from './process-utils';
 import { claudeResultFailure, claudeTextDeltasForEvent, createClaudeTextStreamState } from './claude-stream';
@@ -48,6 +51,8 @@ export interface RunClaudeNativeOptions {
   prompt: string;       // volledige prompt (geschiedenis + system) via stdin
   cwd: string;          // projectmap
   effort?: string;
+  /** Alleen ingevuld nadat de geïnstalleerde CLI deze modus live publiceerde. */
+  executionMode?: string;
   agentMode: AgentApprovalMode;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
@@ -56,6 +61,7 @@ export interface RunClaudeNativeOptions {
   timeoutSeconds?: number;
   // Vraag de gebruiker (of auto-project-logica) om goedkeuring. Resolvt allow/deny.
   requestPermission: NativePermissionHandler;
+  language?: UiLanguage;
 }
 
 export interface RunClaudeNativeResult {
@@ -145,6 +151,7 @@ function ensureBridgeScript(): string {
 // Start het in-proces beslis-endpoint. Retourneert url + token + een stop().
 function startDecisionServer(
   handler: (toolName: string, input: Record<string, unknown>, toolUseId?: string) => Promise<{ allow: boolean; message?: string }>,
+  language: UiLanguage = 'nl',
 ): Promise<{ url: string; token: string; stop: () => void }> {
   const token = crypto.randomBytes(24).toString('hex');
   return new Promise((resolve, reject) => {
@@ -157,16 +164,16 @@ function startDecisionServer(
       req.on('end', async () => {
         let args: any = {};
         try { args = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { /* leeg */ }
-        const toolName = String(args.tool_name || 'onbekend');
+        const toolName = String(args.tool_name || localizedText(language, 'onbekend', 'unknown'));
         const input = (args.input && typeof args.input === 'object') ? args.input : {};
         let verdict: { behavior: 'allow' | 'deny'; updatedInput?: unknown; message?: string };
         try {
           const decision = await handler(toolName, input, typeof args.tool_use_id === 'string' ? args.tool_use_id : undefined);
           verdict = decision.allow
             ? { behavior: 'allow', updatedInput: input }
-            : { behavior: 'deny', message: decision.message || 'Geweigerd door gebruiker.' };
+            : { behavior: 'deny', message: decision.message || localizedText(language, 'Geweigerd door gebruiker.', 'Denied by the user.') };
         } catch (error) {
-          verdict = { behavior: 'deny', message: error instanceof Error ? error.message : 'Goedkeuring mislukt.' };
+          verdict = { behavior: 'deny', message: error instanceof Error ? error.message : localizedText(language, 'Goedkeuring mislukt.', 'Approval failed.') };
         }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify(verdict));
@@ -185,21 +192,25 @@ function startDecisionServer(
   });
 }
 
-function permissionModeFor(agentMode: AgentApprovalMode): string {
+export function claudePermissionModeFor(agentMode: AgentApprovalMode, executionMode?: string): string {
+  // Plan is een native, read-only samenwerkingsmodus. Andere providerwaarden
+  // mogen de LLMelt-goedkeuringslaag niet stil omzeilen.
+  if (executionMode?.toLowerCase() === 'plan') return executionMode;
   // full = geen popups (bridge wordt niet geraadpleegd); ask/auto-project = default,
-  // zodat élke tool via het permission-prompt-tool (en dus onze bridge) loopt.
+  // zodat elke toestemmingsplichtige tool via de permission-prompt-tool loopt.
   return agentMode === 'full' ? 'bypassPermissions' : 'default';
 }
 
 export async function runClaudeNative(options: RunClaudeNativeOptions): Promise<RunClaudeNativeResult> {
   if (options.signal.aborted) throw new Error('cancelled');
+  const language = options.language || 'nl';
   let toolStarted = false;
   const decision = await startDecisionServer(async (toolName, input, toolUseId) => {
     toolStarted = true;
     const verdict = await options.requestPermission(toolName, input);
     options.onToolActivity?.({ provider: 'anthropic', toolName, input, toolUseId, phase: verdict.allow ? 'approved' : 'denied' });
     return verdict;
-  });
+  }, language);
 
   let bridge: string;
   // De mcp-config als BESTAND doorgeven (niet als inline-JSON-arg): via cmd.exe zouden
@@ -233,7 +244,7 @@ export async function runClaudeNative(options: RunClaudeNativeOptions): Promise<
     '--strict-mcp-config',
     '--no-session-persistence',
     '--permission-prompt-tool', `mcp__${MCP_SERVER_NAME}__${PERMISSION_TOOL}`,
-    '--permission-mode', permissionModeFor(options.agentMode),
+    '--permission-mode', claudePermissionModeFor(options.agentMode, options.executionMode),
   ];
   if (options.effort) args.push('--effort', options.effort);
 
@@ -278,7 +289,7 @@ export async function runClaudeNative(options: RunClaudeNativeOptions): Promise<
     const onAbort = () => finishWithError(new Error('cancelled'));
     const timeoutSeconds = Math.max(1, options.timeoutSeconds ?? 600);
     const timeoutTimer = setTimeout(() => {
-      finishWithError(new Error(`Claude stopte niet binnen ${timeoutSeconds} seconden.`));
+      finishWithError(new Error(localizedText(language, `Claude stopte niet binnen ${timeoutSeconds} seconden.`, `Claude did not stop within ${timeoutSeconds} seconds.`)));
     }, timeoutSeconds * 1000);
     options.signal.addEventListener('abort', onAbort);
     if (options.signal.aborted) {
@@ -302,7 +313,7 @@ export async function runClaudeNative(options: RunClaudeNativeOptions): Promise<
             toolStarted = true;
             pendingTools.set(part.id, { name: part.name, input: part.input || {} });
             options.onToolActivity?.({ provider: 'anthropic', toolName: part.name, input: part.input || {}, toolUseId: part.id, phase: 'requested' });
-            options.onStatus?.(`Claude gebruikt ${part.name}`);
+            options.onStatus?.(localizedText(options.language || 'nl', `Claude gebruikt ${part.name}`, `Claude is using ${part.name}`));
           }
         }
       } else if (evt.type === 'user' && evt.message?.content) {
@@ -323,7 +334,7 @@ export async function runClaudeNative(options: RunClaudeNativeOptions): Promise<
         }
       } else if (evt.type === 'result') {
         if (typeof evt.result === 'string') resultText = evt.result;
-        resultError = claudeResultFailure(evt) || resultError;
+        resultError = claudeResultFailure(evt, language) || resultError;
         if (typeof evt.total_cost_usd === 'number') costUsd = evt.total_cost_usd;
         if (evt.usage) {
           inputTokens = (evt.usage.input_tokens || 0) + (evt.usage.cache_read_input_tokens || 0) + (evt.usage.cache_creation_input_tokens || 0);
@@ -337,7 +348,7 @@ export async function runClaudeNative(options: RunClaudeNativeOptions): Promise<
       // stream-json hoort per regel te komen; voorkom onbeperkt geheugen als een
       // kapotte CLI toch een eindeloze regel schrijft.
       if (stdoutBuf.length > 1_000_000 && !stdoutBuf.includes('\n')) {
-        finishWithError(new Error('Claude gaf een ongeldige, te grote streamregel terug.'));
+        finishWithError(new Error(localizedText(language, 'Claude gaf een ongeldige, te grote streamregel terug.', 'Claude returned an invalid, oversized stream line.')));
         return;
       }
       let newline: number;
@@ -353,20 +364,20 @@ export async function runClaudeNative(options: RunClaudeNativeOptions): Promise<
     });
 
     child.on('error', (error) => {
-      finishWithError(new Error(`Claude native kon niet starten: ${error.message}`));
+      finishWithError(new Error(localizedText(language, `Claude native kon niet starten: ${error.message}`, `Claude native could not start: ${error.message}`)));
     });
     child.on('close', (code) => {
       if (settled) return; settled = true; cleanup();
       if (options.signal.aborted) { reject(new Error('cancelled')); return; }
       const text = (resultText || assistantText).trim();
       if (code !== 0 || resultError) {
-        const error = new Error(resultError || cleanStderr(stderrBuf) || `Claude eindigde met code ${code ?? 'onbekend'}.`);
+        const error = new Error(resultError || cleanStderr(stderrBuf) || localizedText(language, `Claude eindigde met code ${code ?? 'onbekend'}.`, `Claude exited with code ${code ?? 'unknown'}.`));
         if (toolStarted) (error as Error & { partialExecution?: boolean }).partialExecution = true;
         reject(error);
         return;
       }
       if (!text) {
-        reject(new Error('Claude sloot zonder eindantwoord.'));
+        reject(new Error(localizedText(language, 'Claude sloot zonder eindantwoord.', 'Claude closed without a final answer.')));
         return;
       }
       resolve({ text, costUsd, inputTokens, outputTokens });

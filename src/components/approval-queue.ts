@@ -1,3 +1,6 @@
+import type { UiLanguage } from '../providers/types';
+import { localizedText } from '../i18n/language';
+
 export type AgentApprovalKind = 'file-read' | 'file-create' | 'file-edit' | 'command';
 
 export interface AgentApprovalRequest {
@@ -72,10 +75,10 @@ export function deferredAgentApprovalsForChat(
   return queue.filter((approval) => approval.deferred && (!approval.chatId || approval.chatId === chatId));
 }
 
-export function approvalTitle(approval?: AgentApprovalRequest | null): string {
+export function approvalTitle(approval?: AgentApprovalRequest | null, language: UiLanguage = 'nl'): string {
   if (approval?.label) return approval.label;
-  if (approval?.kind === 'file-read') return 'Bestand lezen';
-  if (approval?.kind === 'file-create') return 'Bestand maken';
-  if (approval?.kind === 'file-edit') return 'Bestand wijzigen';
-  return 'Commando uitvoeren';
+  if (approval?.kind === 'file-read') return localizedText(language, 'Bestand lezen', 'Read file');
+  if (approval?.kind === 'file-create') return localizedText(language, 'Bestand maken', 'Create file');
+  if (approval?.kind === 'file-edit') return localizedText(language, 'Bestand wijzigen', 'Edit file');
+  return localizedText(language, 'Commando uitvoeren', 'Run command');
 }

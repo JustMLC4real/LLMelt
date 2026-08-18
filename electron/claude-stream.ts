@@ -52,8 +52,10 @@ export function claudeTextDeltasForEvent(event: any, state: ClaudeTextStreamStat
 }
 
 /** Claude kan met exitcode 0 toch een mislukte `result`-subtype rapporteren. */
-export function claudeResultFailure(event: any): string | null {
+export function claudeResultFailure(event: any, language: UiLanguage = 'nl'): string | null {
   if (!event || event.type !== 'result') return null;
   if (event.is_error !== true && !String(event.subtype || '').startsWith('error')) return null;
-  return String(event.result || event.error?.message || event.subtype || 'Claude rapporteerde een mislukte beurt.');
+  return String(event.result || event.error?.message || event.subtype || localizedText(language, 'Claude rapporteerde een mislukte beurt.', 'Claude reported a failed turn.'));
 }
+import type { UiLanguage } from '../src/providers/types';
+import { localizedText } from '../src/i18n/language';

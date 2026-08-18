@@ -1,30 +1,66 @@
-import { PROVIDER_INFO, type AIModel, type ChatgptIntelligencePreset, type ChatgptVersion, type CredentialStatus, type ModelRunConfig, type ProviderType, type ReasoningEffort, type ServiceTier } from '../providers/types';
+import { PROVIDER_INFO, type AIModel, type ChatgptIntelligencePreset, type ChatgptVersion, type CredentialStatus, type ModelRunConfig, type ProviderType, type ReasoningEffort, type ServiceTier, type UiLanguage } from '../providers/types';
+import { localizedText } from '../i18n/language';
 import { limitGroupForModel } from './ui';
-
-export const CODEX_EFFORTS: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
-export const DEFAULT_CODEX_TIERS: ServiceTier[] = ['standard'];
 
 // Leesbare naam voor een Codex-servicetier. "standard"/"fast" volgen de woorden
 // uit de Codex-GUI; overige providerwaarden blijven herkenbaar intact.
-export function serviceTierLabel(tier: string): string {
+export function serviceTierLabel(tier: string, language: UiLanguage = 'nl'): string {
   const t = (tier || '').toLowerCase();
-  if (t === 'standard' || t === 'default' || t === '') return 'Standaard';
-  if (t === 'fast' || t === 'priority') return 'Snel';
+  if (t === 'standard' || t === 'default' || t === '') return localizedText(language, 'Standaard', 'Standard');
+  if (t === 'fast' || t === 'priority') return localizedText(language, 'Snel', 'Fast');
   return tier.charAt(0).toUpperCase() + tier.slice(1);
 }
 
 // Houd de wire-waarde los van het zichtbare label. De live Codex-catalogus kan zowel max als ultra
 // aanbieden; dat zijn in de officiële kiezer twee verschillende regels.
-export function reasoningEffortLabel(effort: string): string {
-  const labels: Record<string, string> = {
-    low: 'Licht',
-    medium: 'Gemiddeld',
-    high: 'Hoog',
-    xhigh: 'Zeer Hoog',
-    max: 'Max',
-    ultra: 'Ultra',
+export function reasoningEffortLabel(effort: string, language: UiLanguage = 'nl'): string {
+  const labels: Record<string, [string, string]> = {
+    low: ['Licht', 'Low'],
+    medium: ['Gemiddeld', 'Medium'],
+    high: ['Hoog', 'High'],
+    xhigh: ['Zeer Hoog', 'Very High'],
+    max: ['Max', 'Max'],
+    ultra: ['Ultra', 'Ultra'],
   };
-  return labels[effort.toLowerCase()] || effort.charAt(0).toUpperCase() + effort.slice(1);
+  const label = labels[effort.toLowerCase()];
+  return label ? localizedText(language, label[0], label[1]) : effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+/**
+ * Geeft uitsluitend inspanningsniveaus terug die het actuele model zelf heeft
+ * gepubliceerd. Een lege lijst betekent bewust dat de app geen instelbare
+ * inspanning mag tonen of naar de provider mag sturen.
+ */
+export function reasoningEffortsForModel(model?: AIModel): ReasoningEffort[] {
+  return Array.from(new Set(model?.supportedReasoningEfforts || []));
+}
+
+export function reasoningEffortForModel(
+  model: AIModel | undefined,
+  requested?: ReasoningEffort | '',
+): ReasoningEffort | undefined {
+  const efforts = reasoningEffortsForModel(model);
+  if (requested && efforts.includes(requested)) return requested;
+  if (model?.defaultReasoningEffort && efforts.includes(model.defaultReasoningEffort)) {
+    return model.defaultReasoningEffort;
+  }
+  // Een live lijst zegt alleen welke waarden geldig zijn, niet welke waarde de
+  // provider standaard kiest. Zonder expliciete catalogusdefault laten we het
+  // argument daarom weg en behoudt de CLI zijn eigen providerdefault.
+  return undefined;
+}
+
+/** Bouwt een runconfig zonder een oude/verzonnen effort door te laten lekken. */
+export function runConfigWithAdvertisedEffort(
+  model: AIModel | undefined,
+  current?: ModelRunConfig,
+  requested?: ReasoningEffort | '',
+): ModelRunConfig | undefined {
+  const next = { ...(model?.runConfig || {}), ...(current || {}) };
+  delete next.reasoningEffort;
+  const effort = reasoningEffortForModel(model, requested);
+  if (effort) next.reasoningEffort = effort;
+  return Object.keys(next).length ? next : undefined;
 }
 
 export function providerLabel(provider: ProviderType) {
@@ -39,31 +75,44 @@ export function codexModelLabel(value: string) {
     .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 }
 
-export function parseCodexModel(model?: AIModel): { version: string; variant: string } {
-  const label = modelDisplayName(model);
+export function parseCodexModel(model?: AIModel, language: UiLanguage = 'nl'): { version: string; variant: string } {
+  const label = modelDisplayName(model, language);
   const match = label.match(/^(\d+(?:\.\d+)+)(?:\s+(.+))?$/);
   return {
     version: match?.[1] || label,
-    variant: match?.[2] || 'Standaard',
+    variant: match?.[2] || localizedText(language, 'Standaard', 'Standard'),
   };
 }
 
-export function modelDisplayName(model?: AIModel) {
-  if (!model) return 'Geen model';
+export function modelDisplayName(model?: AIModel): string;
+export function modelDisplayName(model: AIModel | undefined, language: UiLanguage): string;
+export function modelDisplayName(model?: AIModel, language: UiLanguage = 'nl') {
+  if (!model) return localizedText(language, 'Geen model', 'No model');
   if (model.provider === 'codex') {
     return codexModelLabel(model.name.replace(/\s*\(CLI\)$/i, ''));
   }
   return model.name;
 }
 
-export function surfaceLabel(model: AIModel) {
-  if (model.surfaceLabel) return model.surfaceLabel;
-  if (model.provider === 'openai' && model.id.startsWith('chatgpt:')) return 'ChatGPT Subscription';
+export function surfaceLabel(model: AIModel, language: UiLanguage = 'nl') {
+  const explicitLabel = model.surfaceLabel?.trim();
+  if (explicitLabel) {
+    const knownLabels: Record<string, [string, string]> = {
+      'chatgpt subscription': ['ChatGPT-abonnement', 'ChatGPT Subscription'],
+      'ollama local': ['Ollama lokaal', 'Ollama local'],
+      local: ['Lokaal', 'Local'],
+    };
+    const known = knownLabels[explicitLabel.toLowerCase()];
+    return known ? localizedText(language, known[0], known[1]) : explicitLabel;
+  }
+  if (model.provider === 'openai' && model.id.startsWith('chatgpt:')) {
+    return localizedText(language, 'ChatGPT-abonnement', 'ChatGPT Subscription');
+  }
   if (model.provider === 'openai') return 'OpenAI API';
   if (model.provider === 'codex') return 'Codex CLI';
   if (model.provider === 'anthropic') return model.id.startsWith('claude-cli:') ? 'Claude CLI' : 'Claude API';
   if (model.provider === 'google') return 'Gemini API';
-  if (model.provider === 'ollama') return 'Local';
+  if (model.provider === 'ollama') return localizedText(language, 'Lokaal', 'Local');
   return providerLabel(model.provider);
 }
 
@@ -72,44 +121,52 @@ function choiceParts(...parts: Array<string | undefined | null | false>) {
 }
 
 /** Eén actuele, provider-neutrale samenvatting voor compacte modelkeuzes. */
-export function modelChoiceLabel(model: AIModel, chatgptVersions: ChatgptVersion[] = []) {
+export function modelChoiceLabel(
+  model: AIModel,
+  chatgptVersions: ChatgptVersion[] = [],
+  language: UiLanguage = 'nl',
+) {
   if (model.provider === 'openai' && model.id.startsWith('chatgpt:')) {
     return choiceParts(
-      surfaceLabel(model),
-      chatgptPresetLabel(chatgptVersions, model.id, model.runConfig?.chatgptThinkingEffort) || modelDisplayName(model),
+      surfaceLabel(model, language),
+      chatgptPresetLabel(chatgptVersions, model.id, model.runConfig?.chatgptThinkingEffort) || modelDisplayName(model, language),
     );
   }
   if (model.provider === 'codex') {
-    const parsed = parseCodexModel(model);
+    const parsed = parseCodexModel(model, language);
     const config = codexRunConfig(model, model.runConfig) || {};
     return choiceParts(
-      surfaceLabel(model),
+      surfaceLabel(model, language),
       parsed.version,
       parsed.variant,
-      config.reasoningEffort && reasoningEffortLabel(config.reasoningEffort),
-      config.serviceTier && serviceTierLabel(config.serviceTier),
+      config.reasoningEffort && reasoningEffortLabel(config.reasoningEffort, language),
+      config.serviceTier && serviceTierLabel(config.serviceTier, language),
     );
   }
   if (model.provider === 'anthropic' && model.id.startsWith('claude-cli:')) {
-    const parsed = parseClaudeCliModel(model);
+    const parsed = parseClaudeCliModel(model, language);
     const effort = model.runConfig?.reasoningEffort || model.defaultReasoningEffort;
-    return choiceParts(surfaceLabel(model), parsed.family, parsed.version, effort && reasoningEffortLabel(effort));
+    return choiceParts(surfaceLabel(model, language), parsed.family, parsed.version, effort && reasoningEffortLabel(effort, language));
   }
   if (model.provider === 'antigravity') {
-    const parsed = parseAntigravityModel(model);
-    return choiceParts(surfaceLabel(model), parsed.provider, parsed.model, parsed.mode);
+    const parsed = parseAntigravityModel(model, language);
+    return choiceParts(surfaceLabel(model, language), parsed.provider, parsed.model, parsed.mode);
   }
   if (model.provider === 'google') {
-    const parsed = parseGoogleModelChoice(model);
-    return choiceParts(surfaceLabel(model), parsed.family, parsed.version, parsed.variant);
+    const parsed = parseGoogleModelChoice(model, language);
+    return choiceParts(surfaceLabel(model, language), parsed.family, parsed.version, parsed.variant);
   }
-  return choiceParts(surfaceLabel(model), modelDisplayName(model));
+  return choiceParts(surfaceLabel(model, language), modelDisplayName(model, language));
 }
 
 /** In een al per provider gegroepeerde lijst hoeft de providernaam niet op iedere regel terug te komen. */
-export function compactModelChoiceLabel(model: AIModel, chatgptVersions: ChatgptVersion[] = []) {
-  const fullLabel = modelChoiceLabel(model, chatgptVersions);
-  const prefix = `${surfaceLabel(model)} · `;
+export function compactModelChoiceLabel(
+  model: AIModel,
+  chatgptVersions: ChatgptVersion[] = [],
+  language: UiLanguage = 'nl',
+) {
+  const fullLabel = modelChoiceLabel(model, chatgptVersions, language);
+  const prefix = `${surfaceLabel(model, language)} · `;
   return fullLabel.startsWith(prefix) ? fullLabel.slice(prefix.length) : fullLabel;
 }
 
@@ -136,7 +193,7 @@ export function replacementForUnavailableModel(
 
 /** Splitst Google-modelnamen live op voor dezelfde Familie/Versie/Variant-UI als
  * de andere providers. Er staat bewust geen vaste lijst met modelnamen in. */
-export function parseGoogleModelChoice(model?: AIModel) {
+export function parseGoogleModelChoice(model?: AIModel, language: UiLanguage = 'nl') {
   if (!model) return { family: '', version: '', variant: '' };
   const rawId = model.id.replace(/^models\//, '');
   const idParts = rawId.split('-').filter(Boolean);
@@ -144,15 +201,19 @@ export function parseGoogleModelChoice(model?: AIModel) {
   const versionIndex = idParts.findIndex((part, index) => index > 0 && /^\d+(?:\.\d+)?[a-z]?$/i.test(part));
   const versionRaw = versionIndex >= 0 ? idParts[versionIndex] : 'overig';
   const family = titleCaseModelPart(familyRaw);
-  const version = versionRaw.toLowerCase() === 'overig' ? 'Overig' : versionRaw;
+  const version = versionRaw.toLowerCase() === 'overig'
+    ? localizedText(language, 'Overig', 'Other')
+    : versionRaw;
 
-  const display = modelDisplayName(model);
-  const prefix = version === 'Overig' ? family : `${family} ${version}`;
+  const display = modelDisplayName(model, language);
+  const prefix = versionRaw.toLowerCase() === 'overig' ? family : `${family} ${version}`;
   const displayVariant = display.toLowerCase().startsWith(prefix.toLowerCase())
     ? display.slice(prefix.length).trim()
     : '';
   const fallbackParts = versionIndex >= 0 ? idParts.slice(versionIndex + 1) : idParts.slice(1);
-  const variant = displayVariant || fallbackParts.map(titleCaseModelPart).join(' ') || 'Standaard';
+  const variant = displayVariant
+    || fallbackParts.map(titleCaseModelPart).join(' ')
+    || localizedText(language, 'Standaard', 'Standard');
   return { family, version, variant };
 }
 
@@ -191,15 +252,11 @@ export function codexModels(models: AIModel[]) {
 
 // Exact de live catalogusvolgorde; geen samenvoeging van max en ultra.
 export function codexEffortsForModel(model?: AIModel): ReasoningEffort[] {
-  return model?.supportedReasoningEfforts?.length ? model.supportedReasoningEfforts : CODEX_EFFORTS;
+  return reasoningEffortsForModel(model);
 }
 
-export function codexEffortForModel(model: AIModel | undefined, requested?: ReasoningEffort): ReasoningEffort {
-  const efforts = codexEffortsForModel(model);
-  if (requested && efforts.includes(requested)) return requested;
-  const preferred = model?.defaultReasoningEffort;
-  if (preferred && efforts.includes(preferred)) return preferred;
-  return efforts.includes('high') ? 'high' : efforts[0] || 'high';
+export function codexEffortForModel(model: AIModel | undefined, requested?: ReasoningEffort): ReasoningEffort | undefined {
+  return reasoningEffortForModel(model, requested);
 }
 
 export function isChatgptPickerModel(model: AIModel) {
@@ -290,7 +347,7 @@ export function claudeCliModels(models: AIModel[]) {
     .sort((a, b) => compareClaudeCliModel(a, b));
 }
 
-export function parseClaudeCliModel(model?: AIModel): { family: string; version: string } {
+export function parseClaudeCliModel(model?: AIModel, language: UiLanguage = 'nl'): { family: string; version: string } {
   if (!model) return { family: '', version: '' };
   const name = (model.name || model.id)
     .replace(/^claude-cli:/i, '')
@@ -298,27 +355,27 @@ export function parseClaudeCliModel(model?: AIModel): { family: string; version:
     .replace(/\s*\(CLI\)\s*$/i, '')
     .trim();
   const match = name.match(/^([A-Za-z]+)\s+(.+)$/);
-  if (!match) return { family: name || 'Claude', version: 'Standaard' };
+  if (!match) return { family: name || 'Claude', version: localizedText(language, 'Standaard', 'Standard') };
   return { family: capitalize(match[1]), version: match[2].trim() };
 }
 
 // Volgorde op capaciteit, sterkste eerst. Fable staat boven Opus (krachtiger).
 const CLAUDE_FAMILY_ORDER = ['Fable', 'Opus', 'Sonnet', 'Haiku'];
 
-export function claudeCliFamilies(models: AIModel[]) {
-  return orderBy(Array.from(new Set(claudeCliModels(models).map((model) => parseClaudeCliModel(model).family))), CLAUDE_FAMILY_ORDER);
+export function claudeCliFamilies(models: AIModel[], language: UiLanguage = 'nl') {
+  return orderBy(Array.from(new Set(claudeCliModels(models).map((model) => parseClaudeCliModel(model, language).family))), CLAUDE_FAMILY_ORDER);
 }
 
-export function claudeCliVersionsFor(models: AIModel[], family: string) {
+export function claudeCliVersionsFor(models: AIModel[], family: string, language: UiLanguage = 'nl') {
   return Array.from(new Set(claudeCliModels(models)
-    .filter((model) => parseClaudeCliModel(model).family === family)
-    .map((model) => parseClaudeCliModel(model).version)))
+    .filter((model) => parseClaudeCliModel(model, language).family === family)
+    .map((model) => parseClaudeCliModel(model, language).version)))
     .sort((a, b) => compareVersionLike(b, a));
 }
 
-export function claudeCliModelFor(models: AIModel[], family: string, version: string) {
+export function claudeCliModelFor(models: AIModel[], family: string, version: string, language: UiLanguage = 'nl') {
   return claudeCliModels(models).find((model) => {
-    const parsed = parseClaudeCliModel(model);
+    const parsed = parseClaudeCliModel(model, language);
     return parsed.family === family && parsed.version === version;
   });
 }
@@ -329,11 +386,11 @@ export function antigravityModels(models: AIModel[]) {
     .sort((a, b) => modelDisplayName(a).localeCompare(modelDisplayName(b), undefined, { numeric: true }));
 }
 
-export function parseAntigravityModel(model?: AIModel): { provider: string; model: string; mode: string } {
+export function parseAntigravityModel(model?: AIModel, language: UiLanguage = 'nl'): { provider: string; model: string; mode: string } {
   if (!model) return { provider: '', model: '', mode: '' };
   const raw = (model.name || model.id).trim();
   const modeMatch = raw.match(/\s*\(([^)]+)\)\s*$/);
-  const mode = modeMatch?.[1]?.trim() || 'Standaard';
+  const mode = antigravityModeLabel(modeMatch?.[1]?.trim() || 'standard', language);
   const base = raw.replace(/\s*\([^)]+\)\s*$/, '').trim();
 
   // Recente `agy models`-versies geven stabiele slugs terug, bijvoorbeeld
@@ -349,7 +406,9 @@ export function parseAntigravityModel(model?: AIModel): { provider: string; mode
     return {
       provider,
       model: humanizeAntigravitySlug(modelParts),
-      mode: hasTrailingMode ? humanizeAntigravitySlug(parts.slice(-1)) : 'Standaard',
+      mode: hasTrailingMode
+        ? antigravityModeLabel(humanizeAntigravitySlug(parts.slice(-1)), language)
+        : antigravityModeLabel('standard', language),
     };
   }
 
@@ -363,7 +422,7 @@ export function parseAntigravityModel(model?: AIModel): { provider: string; mode
   }
   const [first, ...rest] = base.split(/\s+/);
   return {
-    provider: normalizeProviderFamily(first || 'Overig'),
+    provider: normalizeProviderFamily(first || localizedText(language, 'Overig', 'Other')),
     model: rest.join(' ') || base || raw,
     mode,
   };
@@ -395,29 +454,29 @@ function humanizeAntigravitySlug(parts: string[]) {
   return words.join(' ');
 }
 
-export function antigravityProviders(models: AIModel[]) {
-  return orderBy(Array.from(new Set(antigravityModels(models).map((model) => parseAntigravityModel(model).provider))), [
+export function antigravityProviders(models: AIModel[], language: UiLanguage = 'nl') {
+  return orderBy(Array.from(new Set(antigravityModels(models).map((model) => parseAntigravityModel(model, language).provider))), [
     'Gemini',
     'Claude',
     'GPT-OSS',
   ]);
 }
 
-export function antigravityModelNamesFor(models: AIModel[], provider: string) {
+export function antigravityModelNamesFor(models: AIModel[], provider: string, language: UiLanguage = 'nl') {
   return Array.from(new Set(antigravityModels(models)
-    .filter((model) => parseAntigravityModel(model).provider === provider)
-    .map((model) => parseAntigravityModel(model).model)))
+    .filter((model) => parseAntigravityModel(model, language).provider === provider)
+    .map((model) => parseAntigravityModel(model, language).model)))
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
-export function antigravityModesFor(models: AIModel[], provider: string, modelName: string) {
+export function antigravityModesFor(models: AIModel[], provider: string, modelName: string, language: UiLanguage = 'nl') {
   return orderBy(Array.from(new Set(antigravityModels(models)
     .filter((model) => {
-      const parsed = parseAntigravityModel(model);
+      const parsed = parseAntigravityModel(model, language);
       return parsed.provider === provider && parsed.model === modelName;
     })
-    .map((model) => parseAntigravityModel(model).mode))), [
-    'Standaard',
+    .map((model) => parseAntigravityModel(model, language).mode))), [
+    antigravityModeLabel('standard', language),
     'Low',
     'Medium',
     'High',
@@ -425,15 +484,15 @@ export function antigravityModesFor(models: AIModel[], provider: string, modelNa
   ]);
 }
 
-export function antigravityModelFor(models: AIModel[], provider: string, modelName: string, mode: string) {
+export function antigravityModelFor(models: AIModel[], provider: string, modelName: string, mode: string, language: UiLanguage = 'nl') {
   return antigravityModels(models).find((model) => {
-    const parsed = parseAntigravityModel(model);
+    const parsed = parseAntigravityModel(model, language);
     return parsed.provider === provider && parsed.model === modelName && parsed.mode === mode;
   });
 }
 
 export function serviceTiersForModel(model?: AIModel): ServiceTier[] {
-  return model?.supportedServiceTiers?.length ? model.supportedServiceTiers : DEFAULT_CODEX_TIERS;
+  return Array.from(new Set(model?.supportedServiceTiers || []));
 }
 
 function orderBy(values: string[], preferredOrder: readonly string[]) {
@@ -480,17 +539,29 @@ export function defaultCodexModel(models: AIModel[], activeModelId?: string) {
 
 export function codexRunConfig(model: AIModel | undefined, current?: ModelRunConfig): ModelRunConfig | undefined {
   if (!model) return current;
-  return {
+  const next: ModelRunConfig = {
     ...(model.runConfig || {}),
     ...(current || {}),
     baseModelId: model.id,
-    reasoningEffort: codexEffortForModel(model, current?.reasoningEffort || model.runConfig?.reasoningEffort),
-    ...(serviceTiersForModel(model).includes(current?.serviceTier as ServiceTier)
-      ? { serviceTier: current?.serviceTier }
-      : model.runConfig?.serviceTier && serviceTiersForModel(model).includes(model.runConfig.serviceTier)
-        ? { serviceTier: model.runConfig.serviceTier }
-        : {}),
   };
+  delete next.reasoningEffort;
+  delete next.serviceTier;
+  const effort = current?.reasoningEffort && codexEffortsForModel(model).includes(current.reasoningEffort)
+    ? current.reasoningEffort
+    : undefined;
+  if (effort) next.reasoningEffort = effort;
+  const tiers = serviceTiersForModel(model);
+  const tier = current?.serviceTier && tiers.includes(current.serviceTier)
+    ? current.serviceTier
+    : undefined;
+  if (tier) next.serviceTier = tier;
+  return next;
+}
+
+function antigravityModeLabel(value: string, language: UiLanguage) {
+  return value.trim().toLowerCase() === 'standard'
+    ? localizedText(language, 'Standaard', 'Standard')
+    : value;
 }
 
 export function configuredModelRef(model: AIModel, runConfig?: ModelRunConfig) {

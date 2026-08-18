@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { AlertTriangle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export interface ConfirmDialogProps {
   title: string;
@@ -21,13 +22,16 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   title,
   message,
   detail,
-  confirmLabel = 'Verwijderen',
-  cancelLabel = 'Annuleren',
+  confirmLabel,
+  cancelLabel,
   danger = false,
   onConfirm,
   onCancel,
 }) => {
+  const { t } = useTranslation();
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const resolvedConfirmLabel = confirmLabel ?? t('confirm.delete');
+  const resolvedCancelLabel = cancelLabel ?? t('confirm.cancel');
 
   useEffect(() => {
     cancelRef.current?.focus();
@@ -64,10 +68,10 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 
         <div className="confirm-dialog-actions">
           <button ref={cancelRef} type="button" className="btn btn-secondary" onClick={onCancel}>
-            {cancelLabel}
+            {resolvedCancelLabel}
           </button>
           <button type="button" className={`btn ${danger ? 'btn-danger' : 'btn-primary'}`} onClick={onConfirm}>
-            {confirmLabel}
+            {resolvedConfirmLabel}
           </button>
         </div>
       </div>

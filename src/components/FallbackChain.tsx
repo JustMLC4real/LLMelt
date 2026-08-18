@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { ArrowDown, ArrowUp, Bot, Cloud, Cpu, Globe2, Link2, Rocket, Server, Terminal, Trash2, Unlink, type LucideIcon } from 'lucide-react';
 import { useProviderStore } from '../stores/provider-store';
 import { PROVIDER_INFO, type AIModel, type FallbackConfig, type ModelRef, type ProviderType, type RateLimitSnapshot, type ReasoningEffort, type ServiceTier } from '../providers/types';
@@ -12,13 +13,12 @@ import {
   codexModels,
   codexRunConfig,
   modelDisplayName,
-  reasoningEffortLabel,
   selectableModels,
-  serviceTierLabel,
   serviceTiersForModel,
   surfaceLabel,
 } from './model-utils';
 import { FlipText, QuotaBadge, SelectField, limitGroupForModel } from './ui';
+import { resolveQuotaForModel } from '../providers/quota-display';
 
 type Entry = { modelRef: ModelRef; enabled: boolean; allowPaidApi?: boolean };
 
@@ -184,7 +184,10 @@ const FallbackChain: React.FC = () => {
   };
   const quotaFor = (ref: ModelRef) => {
     const group = limitGroupForRef(ref, models);
-    return quotaSnapshots.find((item) => item.limitGroupKey === group || (item.provider === ref.provider && (!item.modelId || item.modelId === ref.modelId)));
+    const model = modelFor(ref);
+    return model
+      ? resolveQuotaForModel(model, quotaSnapshots, group)
+      : quotaSnapshots.find((item) => item.limitGroupKey === group);
   };
 
   return (
@@ -204,8 +207,10 @@ const FallbackChain: React.FC = () => {
           const info = PROVIDER_INFO[entry.modelRef.provider];
           const model = modelFor(entry.modelRef);
           const ProviderIcon = providerIcon(entry.modelRef.provider);
-          const title = entry.modelRef.provider === 'codex' ? 'Codex CLI' : modelDisplayName(model) || entry.modelRef.modelId;
-          const subtitle = entry.modelRef.provider === 'codex' ? modelDisplayName(model) : model ? surfaceLabel(model) : info?.name || entry.modelRef.provider;
+          const title = entry.modelRef.provider === 'codex' ? 'Codex CLI' : model ? modelDisplayName(model) : entry.modelRef.modelId;
+          const subtitle = entry.modelRef.provider === 'codex'
+            ? model ? modelDisplayName(model) : t('fallbackChain.noModel')
+            : model ? localizedSurfaceLabel(model, t) : info?.name || entry.modelRef.provider;
           const isChatgpt = entry.modelRef.provider === 'openai' && entry.modelRef.modelId.startsWith('chatgpt:');
           const paidApi = isPaidApiEntry(entry.modelRef);
           return (
@@ -246,7 +251,7 @@ const FallbackChain: React.FC = () => {
                 {entry.modelRef.provider === 'codex' && (
                   <div className="fallback-codex-settings">
                     <SelectField
-                      label="Model"
+                      label={t('fallbackChain.controls.model')}
                       value={model?.id || entry.modelRef.modelId}
                       onChange={(modelId) => updateCodexEntry(index, modelId, {})}
                       options={fallbackCodexModels.map((candidate) => ({
@@ -255,19 +260,25 @@ const FallbackChain: React.FC = () => {
                       }))}
                     />
                     <SelectField
-                      label="Inspanning"
-                      value={codexEffortForModel(model, entry.modelRef.runConfig?.reasoningEffort)}
+                      label={t('fallbackChain.controls.effort')}
+                      value={codexEffortForModel(model, entry.modelRef.runConfig?.reasoningEffort) || ''}
                       onChange={(value) => updateCodexEntry(index, model?.id || entry.modelRef.modelId, { reasoningEffort: value as ReasoningEffort })}
-                      options={codexEffortsForModel(model).map((effort) => ({
-                        value: effort,
-                        label: reasoningEffortLabel(effort),
-                      }))}
+                      options={[
+                        ...(model?.defaultReasoningEffort ? [] : [{ value: '', label: t('models.standard') }]),
+                        ...codexEffortsForModel(model).map((effort) => ({
+                          value: effort,
+                          label: localizedReasoningEffortLabel(effort, t),
+                        })),
+                      ]}
                     />
                     <SelectField
-                      label="Snelheid"
-                      value={entry.modelRef.runConfig?.serviceTier || model?.runConfig?.serviceTier || serviceTiersForModel(model)[0] || ''}
+                      label={t('fallbackChain.controls.speed')}
+                      value={entry.modelRef.runConfig?.serviceTier || ''}
                       onChange={(value) => updateCodexEntry(index, model?.id || entry.modelRef.modelId, { serviceTier: value as ServiceTier })}
-                      options={serviceTiersForModel(model).map((tier) => ({ value: tier, label: serviceTierLabel(tier) }))}
+                      options={[
+                        { value: '', label: t('models.standard') },
+                        ...serviceTiersForModel(model).map((tier) => ({ value: tier, label: localizedServiceTierLabel(tier, t) })),
+                      ]}
                     />
                   </div>
                 )}
@@ -284,14 +295,14 @@ const FallbackChain: React.FC = () => {
                   return (
                     <div className="fallback-codex-settings">
                       <SelectField
-                        label="Model"
+                        label={t('fallbackChain.controls.model')}
                         value={activeVersion?.title || ''}
                         onChange={(versionTitle) => updateChatgptEntry(index, { versionTitle })}
                         options={versions.map((version) => ({ value: version.title, label: version.title }))}
                       />
                       {presets.length > 1 && (
                         <SelectField
-                          label="Intelligentie"
+                          label={t('fallbackChain.controls.intelligence')}
                           value={activeKey}
                           onChange={(levelKey) => updateChatgptEntry(index, { levelKey })}
                           options={presets.map((preset) => ({
@@ -323,16 +334,16 @@ const FallbackChain: React.FC = () => {
           options={availableToAdd.map((model) => ({
             value: modelValue(model),
             label: model.provider === 'codex' ? 'Codex CLI' : `${PROVIDER_INFO[model.provider]?.name} - ${modelDisplayName(model)}`,
-            description: model.provider === 'codex' ? modelDisplayName(model) : surfaceLabel(model),
+            description: model.provider === 'codex' ? modelDisplayName(model) : localizedSurfaceLabel(model, t),
           }))}
         />
         <button type="button" className="btn btn-secondary" onClick={add} disabled={!selectedAddValue}>
           <FlipText text={t('fallbackChain.add')} />
         </button>
-        {justSaved && <span className="fallback-saved">{t('common.save')}</span>}
+        {justSaved && <span className="fallback-saved">{t('fallbackChain.saved')}</span>}
       </div>
       {codexAlreadyInChain && fallbackCodexModels.length > 0 && (
-        <div className="fallback-add-note">{t('fallbackChain.empty')}</div>
+        <div className="fallback-add-note">{t('fallbackChain.codexAlreadyAdded')}</div>
       )}
     </div>
   );
@@ -381,6 +392,37 @@ function isPaidApiEntry(ref: ModelRef) {
   if (ref.provider === 'openai') return !ref.modelId.startsWith('chatgpt:');
   if (ref.provider === 'anthropic') return !ref.modelId.startsWith('claude-cli:');
   return false;
+}
+
+function localizedReasoningEffortLabel(effort: string, t: TFunction) {
+  const normalized = effort.toLowerCase();
+  const known = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  return known.includes(normalized)
+    ? t(`fallbackChain.effort.${normalized}`)
+    : effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function localizedServiceTierLabel(tier: string, t: TFunction) {
+  const normalized = tier.toLowerCase();
+  if (normalized === 'standard' || normalized === 'default' || normalized === '') return t('fallbackChain.serviceTier.standard');
+  if (normalized === 'fast' || normalized === 'priority') return t('fallbackChain.serviceTier.fast');
+  return tier.charAt(0).toUpperCase() + tier.slice(1);
+}
+
+function localizedSurfaceLabel(model: AIModel, t: TFunction) {
+  if (model.provider === 'openai' && model.id.startsWith('chatgpt:')) return t('fallbackChain.surfaces.chatgptSubscription');
+  if (model.provider === 'openai') return t('fallbackChain.surfaces.openaiApi');
+  if (model.provider === 'codex') return t('fallbackChain.surfaces.codexCli');
+  if (model.provider === 'anthropic') {
+    return model.id.startsWith('claude-cli:')
+      ? t('fallbackChain.surfaces.claudeCli')
+      : t('fallbackChain.surfaces.claudeApi');
+  }
+  if (model.provider === 'google') return t('fallbackChain.surfaces.geminiApi');
+  if (model.provider === 'antigravity') return t('fallbackChain.surfaces.antigravityCli');
+  if (model.provider === 'ollama') return t('fallbackChain.surfaces.local');
+  if (model.provider === 'remote') return t('fallbackChain.surfaces.remote');
+  return surfaceLabel(model);
 }
 
 export default FallbackChain;

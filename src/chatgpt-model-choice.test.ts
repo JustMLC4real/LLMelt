@@ -53,4 +53,14 @@ describe('ChatGPT live modelkeuze', () => {
       'chatgpt:gpt-5-6-pro',
     )).toContain('niet beschikbaar');
   });
+
+  it('geeft dezelfde live-cataloguscontrole in het Engels terug', () => {
+    expect(chatGptChoiceValidationError(
+      versions,
+      liveSlugs,
+      'chatgpt:gpt-5-3-instant',
+      undefined,
+      'en',
+    )).toContain('not in the current live web catalog');
+  });
 });

@@ -1,10 +1,13 @@
 {
   "app": {
     "title": "LLMelt",
-    "tagline": "All your AI models in one place"
+    "tagline": "All your AI models in one place",
+    "resizeSidebar": "Resize sidebar",
+    "resizeTerminal": "Resize terminal"
   },
   "chat": {
     "placeholder": "Type a message...",
+    "goalPlaceholder": "Describe the goal for this chat...",
     "send": "Send",
     "stop": "Stop",
     "newChat": "New chat",
@@ -21,7 +24,127 @@
     "switchedTo": "Switched to {{model}}",
     "uploadFiles": "Upload files",
     "dragDrop": "Drag files here or click to upload",
-    "typing": "is typing..."
+    "typing": "is typing...",
+    "startFailed": "The message could not be started.",
+    "switchingModel": "Switching to {{model}}...",
+    "nextModel": "next model",
+    "providerRequestFailed": "Provider request failed.",
+    "demoResponse": "Demo response from {{model}} ({{provider}}). Start the Electron app and add API keys or local CLIs for real provider calls.",
+    "command": "Command",
+    "resetCommand": "Clear command",
+    "approval": {
+      "waiting": "Waiting for approval: {{action}}",
+      "request": "The agent requests approval: {{action}}",
+      "position": "{{current}} of {{total}}",
+      "deferred": "Deferred",
+      "allow": "Allow",
+      "deny": "Deny",
+      "fileRead": "Read file",
+      "fileCreate": "Create file",
+      "fileEdit": "Edit file",
+      "runCommand": "Run command",
+      "shell": "Shell",
+      "defaultShell": "default",
+      "path": "Path",
+      "workingDirectory": "Working directory"
+    },
+    "access": {
+      "full": "Full access",
+      "fullDescription": "No approval prompts for this chat. Risky, but fast.",
+      "autoProject": "Automatic in workspace",
+      "autoProjectDescription": "File tools inside the workspace run automatically; shell commands still require approval.",
+      "ask": "Ask for approval",
+      "askShort": "Ask for approval",
+      "askDescription": "Ask for approval before reading, creating, or editing files and before running commands.",
+      "thisChat": "Only for this chat",
+      "followsSettings": "Follows settings",
+      "toolsOff": "Tools off",
+      "onlyThisChat": "Only this chat",
+      "question": "How should AI actions be approved?",
+      "settingsDefault": "Default from settings",
+      "current": "Current: {{mode}}",
+      "globallyOffNote": "Agent tools are disabled globally in Settings."
+    }
+  },
+  "message": {
+    "userAlt": "You",
+    "userInitials": "YOU",
+    "autoModePrompt": "Auto Mode prompt",
+    "streaming": "Response is streaming",
+    "recoverChatgpt": "Recover ChatGPT",
+    "attachmentNumber": "Attachment {{count}}"
+  },
+  "chatView": {
+    "agentTerminal": "Agent terminal",
+    "terminal": "Terminal",
+    "working": "working…",
+    "providers": {
+      "chatgptWebSession": "ChatGPT web session",
+      "openaiApi": "OpenAI API",
+      "codexCli": "Codex CLI"
+    },
+    "connectionStatus": {
+      "online": "online",
+      "limited": "being checked",
+      "offline": "offline"
+    },
+    "pcAccess": {
+      "full": "PC access: full without prompts",
+      "project": "PC access: automatic in workspace",
+      "thisChat": " (this chat)"
+    },
+    "projectPath": {
+      "legacy": "Legacy chat project",
+      "default": "Default workspace"
+    }
+  },
+  "sidebar": {
+    "chats": "Chats",
+    "projects": "Projects",
+    "projectlessChats": "Chats without project",
+    "defaultProjectName": "Project",
+    "thisProject": "this project",
+    "open": "Open sidebar",
+    "collapse": "Collapse sidebar",
+    "newProject": "New project",
+    "expandProject": "Expand project",
+    "collapseProject": "Collapse project",
+    "projectBusy": "Project contains an active chat",
+    "projectPathValue": "Project folder: {{path}}",
+    "chooseProjectPath": "Choose project folder",
+    "newChatInProject": "New chat in project",
+    "titleGenerating": "Generating title",
+    "chatBusy": "Chat is busy",
+    "renameChat": "Rename chat",
+    "updateBadge": {
+      "ready": "ready",
+      "installing": "install",
+      "error": "error",
+      "available": "update"
+    },
+    "updateTitle": {
+      "ready": "Update {{version}} is ready to install",
+      "downloading": "Downloading update: {{percent}}%",
+      "installing": "Installing update",
+      "error": "Update error: {{error}}",
+      "available": "Update available"
+    },
+    "deleteProject": {
+      "title": "Delete project",
+      "message": "Delete project ‘{{name}}’?",
+      "detailOne": "This also deletes 1 chat and all of its messages. This cannot be undone.",
+      "detailMany": "This also deletes {{count}} chats and all of their messages. This cannot be undone.",
+      "detailEmpty": "This project contains no chats."
+    }
+  },
+  "window": {
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close"
+  },
+  "systemPromptEditor": {
+    "collapse": "Collapse system prompt"
   },
   "models": {
     "title": "Choose model",
@@ -32,11 +155,66 @@
     "offline": "Offline",
     "cooldown": "Available in {{time}}",
     "context": "{{size}} context",
-    "noModels": "No models available"
+    "noModels": "No models available",
+    "noModel": "No model",
+    "model": "Model",
+    "provider": "Provider",
+    "variant": "Variant",
+    "family": "Family",
+    "version": "Version",
+    "mode": "Mode",
+    "effort": "Effort",
+    "standard": "Standard",
+    "intelligence": "Intelligence",
+    "speed": "Speed",
+    "noProviders": "No providers available",
+    "noneFound": "No models found",
+    "noneFoundHelp": "No usable models found. Check your provider settings and refresh the catalog.",
+    "catalogChecking": "Checking model catalog",
+    "refreshing": "Refreshing models",
+    "catalogNotLoaded": "Model catalog not loaded",
+    "webSessionActive": "Web session active",
+    "webSessionSignedOut": "Not signed in",
+    "webSessionUnconfirmed": "Checking web session",
+    "remote": "Remote",
+    "accountWideChooseBelow": "Account-wide limit; choose the model and settings below",
+    "accountWideLimit": "Account-wide limit",
+    "useProvider": "Use {{provider}}",
+    "noApiKey": "No API key",
+    "viaSignedInChatgpt": "through your signed-in ChatGPT account",
+    "catalogMissingNotice": "Your session is connected, but the live model catalog is missing.",
+    "loadCatalogFirst": "Load the model catalog first",
+    "signInChatgptFirst": "Sign in to ChatGPT first",
+    "cliFound": "CLI found",
+    "cliRequired": "CLI required",
+    "cliNotFound": "CLI not found",
+    "cliAuthRequired": "CLI sign-in required",
+    "connected": "Connected",
+    "notConnected": "Not connected",
+    "ollamaLocal": "Ollama local",
+    "ollamaOffline": "Ollama offline",
+    "localModel": "Local model",
+    "modelCount": "{{count}} models",
+    "efforts": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "Extra high",
+      "max": "Max",
+      "ultra": "Ultra"
+    },
+    "serviceTiers": {
+      "standard": "Standard",
+      "default": "Standard",
+      "fast": "Fast",
+      "priority": "Fast",
+      "flex": "Flex"
+    }
   },
   "tokens": {
     "dashboard": "Token Dashboard",
     "contextWindow": "Context Window",
+    "noActiveModel": "No active model",
     "contextUsed": "Context used",
     "used": "Used",
     "remaining": "Remaining",
@@ -63,8 +241,64 @@
     "live": "Live",
     "delayed": "Delayed",
     "estimated": "Estimated",
-    "unavailable": "Unavailable",
-    "local": "Local"
+    "unavailable": "Not published",
+    "local": "Local",
+    "modelUsage": "Model usage",
+    "measurement": "Measurement",
+    "contextHelp": "This is the current context for this conversation, not your account quota.",
+    "contextCountSource": "Token count: {{source}}",
+    "contextWindowSource": "Window: {{source}}",
+    "usageScope": "All conversations in this installation",
+    "usageHelp": "This app-wide total includes all conversations. Per-model usage is shown as measured only when the provider, CLI, or local runtime reports token counts. Estimates are labelled separately.",
+    "quotaHelp": "Account quota is separate from model availability. Missing quota telemetry does not mean a model is offline.",
+    "noReportedUsage": "No token usage from a completed model response has been recorded yet. The context estimate above is not account usage.",
+    "providerMeasured": "Provider measured",
+    "cliMeasured": "CLI measured",
+    "localMeasured": "Locally measured",
+    "usageEstimated": "Estimated",
+    "usageMixed": "Mixed",
+    "usageUnknown": "Source unknown",
+    "surface_subscription_web": "Web subscription",
+    "surface_api": "API",
+    "surface_cli": "CLI",
+    "surface_desktop": "Desktop app",
+    "surface_local": "Local",
+    "surface_remote": "Remote",
+    "quotaSource_headers": "response headers",
+    "quotaSource_codex_app_server": "Codex account server",
+    "quotaSource_claude_statusline": "Claude status line",
+    "quotaSource_antigravity_statusline": "Antigravity status line",
+    "quotaSource_google_service_usage": "Google Service Usage",
+    "quotaSource_google_monitoring": "Google Monitoring",
+    "quotaSource_runtime_error": "runtime error",
+    "quotaSource_local": "local runtime",
+    "quotaSource_unknown": "not published",
+    "limitNotPublished": "limit not published",
+    "limitUnknown": "limit unknown",
+    "accountLimitUnknown": "account limit unknown",
+    "projectLimit": "project limit",
+    "knownAfterRequest": "known after API request",
+    "limitKnown": "limit known",
+    "localLimit": "local",
+    "primaryWindow": "Primary",
+    "secondaryWindow": "Secondary",
+    "fiveHourWindow": "5 hours",
+    "sevenDayWindow": "7 days",
+    "localWindow": "Local",
+    "quotaExhausted": "quota exhausted",
+    "quotaLimited": "nearly exhausted",
+    "quotaDelayed": "quota delayed",
+    "cooldown": "cooldown",
+    "percentRemaining": "{{percent}}% left",
+    "requestsRemaining": "{{count}} req left",
+    "usedPercent": "{{percent}}% used",
+    "usedAndRemainingPercent": "{{used}}% used · {{remaining}}% left",
+    "remainingOfLimit": "{{remaining}} / {{limit}} remaining",
+    "availableNow": "Available",
+    "dayShort": "d",
+    "hourShort": "h",
+    "minuteShort": "m",
+    "secondShort": "s"
   },
   "autoMode": {
     "title": "Auto Mode",
@@ -84,7 +318,33 @@
     "stopped": "Stopped",
     "iteration": "Iteration {{current}}/{{max}}",
     "iterationInfinite": "Iteration {{current}}/infinite",
-    "totalTokens": "Total tokens: {{count}}"
+    "totalTokens": "Total tokens: {{count}}",
+    "unlimitedConfirm": "Auto Mode is set to infinite without a token budget. Are you sure you want to start?",
+    "collapse": "Collapse Auto Mode",
+    "lastPrompt": "Last generated prompt",
+    "goal": "Goal / task for the prompter",
+    "goalPlaceholder": "For example, ‘Build a marketing plan for a new app step by step’ — the prompter will steer the chat toward this goal.",
+    "prompterHelp": "Keeps creating the next concrete task.",
+    "responderHelp": "Performs that task in this chat.",
+    "tokenBudget": "Token budget (0 = no limit)",
+    "roundInfinite": "Round {{current}} / infinite",
+    "round": "Round {{current}} / {{max}}",
+    "steps": {
+      "prompt": "Create prompt",
+      "answer": "Create response",
+      "nextRound": "Next round"
+    },
+    "phases": {
+      "idle": { "label": "Ready", "title": "Auto Mode is ready", "description": "Choose two models and start a run." },
+      "starting": { "label": "Starting", "title": "Auto Mode is starting", "description": "The first round is being prepared." },
+      "prompter": { "label": "Creating prompt", "title": "The prompter is creating a prompt", "description": "The next user prompt is being composed." },
+      "responder": { "label": "Creating response", "title": "The responder model is responding", "description": "The responder model is processing the generated prompt." },
+      "waiting": { "label": "Waiting", "title": "Round complete", "description": "Auto Mode is waiting for the next round." },
+      "paused": { "label": "Paused", "title": "Auto Mode is paused", "description": "Resume to continue." },
+      "completed": { "label": "Done", "title": "Auto Mode is complete", "description": "All configured rounds are complete." },
+      "stopped": { "label": "Stopped", "title": "Auto Mode has stopped", "description": "Start again when you want to continue." },
+      "error": { "label": "Error", "title": "Auto Mode stopped because of an error", "description": "Review the error below." }
+    }
   },
   "fallbackChain": {
     "help": "Set the automatic fallback priority chain. It can switch to another provider and only runs after you explicitly enable it below.",
@@ -99,7 +359,39 @@
     "addPlaceholder": "Add a model...",
     "add": "Add",
     "allowPaidApi": "Allow paid API as fallback",
-    "paidApiConfirm": "This fallback can incur API costs. Do you really want to allow paid API fallback for this model?"
+    "paidApiConfirm": "This fallback can incur API costs. Do you really want to allow paid API fallback for this model?",
+    "saved": "Saved",
+    "noModel": "No model available",
+    "codexAlreadyAdded": "Codex CLI is already in the fallback chain.",
+    "controls": {
+      "model": "Model",
+      "effort": "Effort",
+      "speed": "Speed",
+      "intelligence": "Intelligence"
+    },
+    "effort": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "Very high",
+      "max": "Max",
+      "ultra": "Ultra"
+    },
+    "serviceTier": {
+      "standard": "Standard",
+      "fast": "Fast"
+    },
+    "surfaces": {
+      "chatgptSubscription": "ChatGPT Subscription",
+      "openaiApi": "OpenAI API",
+      "codexCli": "Codex CLI",
+      "claudeCli": "Claude CLI",
+      "claudeApi": "Claude API",
+      "geminiApi": "Gemini API",
+      "antigravityCli": "Antigravity CLI",
+      "local": "Local",
+      "remote": "Remote"
+    }
   },
   "auth": {
     "title": "Accounts and API Keys",
@@ -125,7 +417,32 @@
     "sshResetFingerprint": "Clear saved host fingerprint",
     "sshFingerprintReset": "Host fingerprint cleared; the next connection stores the new key.",
     "sshFingerprintMissing": "No fingerprint was stored for this host.",
-    "connect": "Connect"
+    "connect": "Connect",
+    "notSignedIn": "Not signed in",
+    "notConfigured": "Not configured",
+    "cliFound": "CLI found",
+    "cliFoundSignedIn": "CLI found and signed in",
+    "cliFoundLoginRequired": "CLI found; sign-in required",
+    "cliAuthRequired": "CLI sign-in required",
+    "cliNotFound": "CLI not found",
+    "claudeCliNotFound": "Claude CLI not found",
+    "apiKeyConnected": "API key connected",
+    "apiKeyRequired": "API key required",
+    "signInMethod": "Sign-in method",
+    "route": "Route",
+    "chatgptWebSession": "ChatGPT web session",
+    "subscription": "Subscription",
+    "signInAgain": "Sign in again to restore the session.",
+    "signIn": "Sign in",
+    "openChatgpt": "Open ChatGPT",
+    "resetWebEngine": "Recover web engine",
+    "signOut": "Sign out",
+    "connectRequired": "Connection required",
+    "browserSession": "Browser session",
+    "recoveryRequired": "Recovery required",
+    "stalled": "Stalled",
+    "webSessionActivePlan": "Web session active · {{plan}}",
+    "webSessionActive": "Web session active"
   },
   "keyChecker": {
     "title": "API Key Checker",
@@ -140,7 +457,15 @@
     "expired": "Expired",
     "models": "Available models",
     "useThis": "Use this key",
-    "exportValid": "Export working keys"
+    "exportValid": "Export working keys",
+    "pasteLabel": "Paste key(s)",
+    "pastePlaceholder": "Paste OpenAI, Anthropic, or Gemini keys here. The app masks them in the results.",
+    "smokeTestHelp": "Each key gets a real generation smoke test for OpenAI, Anthropic, or Gemini. On failure, you can see whether it was revoked or expired, credit or quota ran out, or the model is unavailable.",
+    "testPasted": "Test pasted keys",
+    "limitedCount": "{{count}} limited",
+    "status": "Status",
+    "testedModel": "Tested: {{model}}",
+    "limited": "Limited"
   },
   "memory": {
     "title": "Memory",
@@ -177,7 +502,120 @@
     "importChats": "Import chats",
     "clearData": "Clear all data",
     "about": "About",
-    "version": "Version"
+    "version": "Version",
+    "search": "Search settings...",
+    "updates": "Updates",
+    "providers": "Providers",
+    "saveLocalProviders": "Save local provider settings",
+    "discoveredModels": "Discovered models",
+    "modelsAvailable": "{{count}} models available",
+    "refreshModels": "Refresh models",
+    "profile": {
+      "title": "Profile",
+      "yourAvatar": "Your avatar",
+      "chatAvatar": "Avatar in chats",
+      "description": "This image appears next to your messages.",
+      "chooseImage": "Choose image",
+      "chooseImageFile": "Choose an image file",
+      "imageTooLarge": "The image is too large. Choose a file smaller than 8 MB.",
+      "processingImage": "Processing image...",
+      "avatarSaved": "Avatar saved.",
+      "avatarSaveFailed": "Failed to save the avatar.",
+      "avatarRemoved": "Avatar removed."
+    },
+    "onboarding": {
+      "title": "Setup guide",
+      "description": "Run the welcome guide again to install providers or connect accounts.",
+      "restart": "Restart setup guide"
+    },
+    "titles": {
+      "title": "Chat titles",
+      "description": "How should a new chat receive an automatic name during its first turn?",
+      "method": "Method",
+      "ollamaDescription": "Let a local Ollama model create the title",
+      "simple": "Simple (no AI)",
+      "simpleDescription": "Use the first approximately 42 characters of your message",
+      "off": "Off",
+      "offDescription": "No automatic name",
+      "checkingOllama": "Checking Ollama status...",
+      "readyWith": "Ready with {{model}}",
+      "modelRequired": "Model {{model}} is required",
+      "ollamaRequired": "Ollama is required for this",
+      "downloadDescription": "Download {{model}} to create short chat titles automatically.",
+      "installDescription": "Install Ollama, then download {{model}} to create short chat titles automatically.",
+      "downloadedOf": "{{transferred}} of {{total}} downloaded",
+      "downloadModel": "Download {{model}}",
+      "installWithModel": "Install Ollama with {{model}}",
+      "progress": {
+        "checking": "Checking Ollama and the title model…",
+        "downloadingRuntime": "Downloading Ollama for Windows…",
+        "verifyingRuntime": "Verifying the Ollama installer…",
+        "installingRuntime": "Installing Ollama…",
+        "startingRuntime": "Starting the local Ollama server…",
+        "downloadingModel": "Downloading title model {{model}}…",
+        "errorDetail": "Title-model setup failed: {{detail}}"
+      }
+    },
+    "chatgpt": {
+      "statusReadFailed": "Could not read ChatGPT status."
+    },
+    "cli": {
+      "foundAndConnected": "{{name}} was found and connected.",
+      "opened": "{{name}} was opened.",
+      "installedAndOpened": "{{name}} was installed and opened.",
+      "openFailed": "Could not open {{name}}.",
+      "openFailedDetail": "Could not open {{name}} ({{detail}})",
+      "claudeDescription": "Use your Claude account through the native Claude Code CLI; no API key is required.",
+      "codexDescription": "Use your ChatGPT account through the native Codex CLI.",
+      "codexRunConfigHint": "Choose the model, reasoning effort and speed per chat in the model selector or with a slash command.",
+      "antigravityDescription": "Use your Google account through the native Antigravity CLI.",
+      "open": "Open {{name}}",
+      "install": "Install {{name}}",
+      "timeoutSeconds": "Timeout (seconds)",
+      "openLogin": "Open sign-in",
+      "detectedPath": "Detected CLI path",
+      "notFoundYet": "No CLI path found yet",
+      "manualPathOptional": "Manual executable path (optional)"
+    },
+    "gemini": {
+      "invalidApiKey": "The Gemini API key is invalid.",
+      "requiredCloudQuota": "Required Google Cloud quota",
+      "quotaDescription": "Connect the same Google Cloud project to read quota and usage.",
+      "projectId": "Google Cloud project ID",
+      "oauthClientId": "OAuth desktop client ID",
+      "reconnect": "Reconnect",
+      "connect": "Connect Google Cloud",
+      "disconnect": "Disconnect Google Cloud"
+    },
+    "ollama": {
+      "localUrl": "Local Ollama URL",
+      "remoteViaSsh": "Remote through SSH"
+    },
+    "agent": {
+      "title": "Agent tools and approvals",
+      "description": "Control how models may read, create, or edit files and run commands.",
+      "enableToolsPrefix": "Enable agent tools for",
+      "enableToolsAnd": "and",
+      "enableToolsSuffix": "models.",
+      "approval": "Approval",
+      "askEachAction": "Ask for every action",
+      "askEachActionDescription": "Ask permission for each file action and command.",
+      "autoProject": "Automatic in workspace",
+      "autoProjectDescription": "File actions in the workspace run automatically; commands require permission.",
+      "fullAccess": "Full access",
+      "fullAccessDescription": "No approval prompts. Risky, but fast.",
+      "defaultShell": "Default shell",
+      "standardWindowsPowershell": "Standard Windows PowerShell",
+      "pwshOnlyIfInstalled": "PowerShell 7 (only when installed)",
+      "fallbackWorkingDirectory": "Default working directory",
+      "workingDirectoryPlaceholder": "For example C:\\Users\\Name\\Project",
+      "testCommand": "Test command",
+      "testCommandPlaceholder": "For example Get-Location",
+      "run": "Run",
+      "noOutput": "No output received.",
+      "noResponse": "No response received.",
+      "deniedByUser": "Denied by user."
+    }
   },
   "activity": {
     "filesRead": "Files read",
@@ -195,7 +633,323 @@
     "editFailed": "Edit failed",
     "editedFile": "Edited file",
     "copy": "Copy",
-    "copyFileContent": "Copy file changes"
+    "copyFileContent": "Copy file changes",
+    "summaryFailed": "Could not retrieve the summary: {{error}}",
+    "previousAttempt": "Previous attempt",
+    "previousAttempts": "Previous attempts ({{count}})",
+    "noDetails": "(no details)",
+    "readStat": "read",
+    "defaultToolLabel": "Ran: tool output",
+    "attempt": "attempt {{count}}",
+    "toolOutput": "Tool output",
+    "noOutput": "(no output)",
+    "executedCommand": "Ran: {{command}}",
+    "shell": "Shell",
+    "exitCode": "Exit code {{code}}",
+    "phase": {
+      "planning": "Model plans tool steps",
+      "approval_pending": "Waiting for approval",
+      "approval_approved": "Approved",
+      "approval_denied": "Denied",
+      "running": "Running",
+      "sending_output": "Tool output processed",
+      "summarizing": "Model summarizes",
+      "repairing": "Model repairs",
+      "done": "Done",
+      "stopped": "Stopped"
+    },
+    "approval": {
+      "pending": "approval pending",
+      "approved": "approval granted",
+      "denied": "approval denied"
+    },
+    "group": {
+      "runningCommandOne": "runs 1 command",
+      "runningCommandMany": "runs {{count}} commands",
+      "completedCommandOne": "ran 1 command",
+      "completedCommandMany": "ran {{count}} commands",
+      "toolResultOne": "processed 1 tool result",
+      "toolResultMany": "processed {{count}} tool results",
+      "join": "{{first}} and {{last}}",
+      "withPreviousOne": "{{base}} · 1 previous attempt",
+      "withPreviousMany": "{{base}} · {{count}} previous attempts",
+      "readFileOne": "read 1 file",
+      "readFileMany": "read {{count}} files",
+      "createdFileOne": "created 1 file",
+      "createdFileMany": "created {{count}} files",
+      "editedFileOne": "edited 1 file",
+      "editedFileMany": "edited {{count}} files",
+      "changedFileOne": "changed 1 file",
+      "changedFileMany": "changed {{count}} files"
+    }
+  },
+  "onboarding": {
+    "skip": "Skip",
+    "welcome": {
+      "title": "Hello, welcome to LLMelt",
+      "text": "First we'll check what already works, then set up only the services you choose.",
+      "start": "Get started"
+    },
+    "intro": {
+      "title": "All your LLMs in one place",
+      "text": "Installations never start silently. You choose a provider, the guide opens the official installer or login, then verifies that the connection really works.",
+      "check": "Check this PC"
+    },
+    "scanning": {
+      "title": "Checking services and accounts",
+      "text": "We only read provider statuses. Your conversations, files, and existing settings are not deleted.",
+      "progress": "{{scanned}} of {{total}} checked"
+    },
+    "confirm": {
+      "title": "Already found",
+      "text": "“Found” can also mean a CLI still needs a login; we'll handle that in the next steps.",
+      "none": "Nothing found yet. That's okay: next, choose what you want to install or connect."
+    },
+    "missing": {
+      "title": "What would you still like to set up?",
+      "text": "Choose “Yes” to go through the installation or login together now.",
+      "allFound": "All services were found."
+    },
+    "next": "Next",
+    "back": "Back",
+    "setupWithMe": "Set up with me",
+    "step": "Step {{current}} of {{total}}",
+    "working": "Working…",
+    "recheck": "Check again",
+    "finish": "Finish",
+    "finishLater": "Finish later",
+    "saving": "Saving choices…",
+    "done": {
+      "title": "LLMelt is ready",
+      "text": "You can reopen provider settings and this guide at any time."
+    },
+    "status": {
+      "pythonChecking": "Checking the Python runtime…",
+      "pythonInstalling": "Starting the official Python installation…",
+      "chatgptLogin": "Sign in in the ChatGPT window that opened. The guide will check your session automatically.",
+      "codexLogin": "Complete the ChatGPT login in the terminal window that opened.",
+      "claudeLogin": "Complete the Claude login in the terminal window that opened.",
+      "antigravityLogin": "Complete the Google login in the terminal window that opened.",
+      "geminiKeyMissing": "Paste your Gemini API key first.",
+      "geminiProjectMissing": "Also enter the Google Cloud project and OAuth desktop client ID.",
+      "geminiKeyInvalid": "The Gemini API key is invalid.",
+      "geminiQuotaFailed": "Could not connect Google Cloud quota.",
+      "geminiConnected": "The Gemini API key and Google Cloud quota are connected.",
+      "setupStartFailed": "The setup step could not be started.",
+      "providerReady": "{{provider}} was verified and is ready to use.",
+      "providerAlreadyReady": "{{provider}} is already ready to use.",
+      "setupIncomplete": "This step is not finished yet. Complete the installation or login, then choose “Check again”.",
+      "checking": "Checking status…",
+      "notReady": "Not ready yet. Complete the visible installation or login step first."
+    },
+    "python": {
+      "title": "Python for coding tasks",
+      "description": "Python is optional for chat, but required when a model needs to build and run Python scripts.",
+      "steps": {
+        "validate": "The app only accepts an executable that actually returns a Python version.",
+        "install": "Installation only starts after your click, using the official Python Install Manager.",
+        "save": "After installation, the executable path is checked again and saved for tool commands."
+      },
+      "detectedPath": "Detected Python path",
+      "notChecked": "Python has not been checked yet.",
+      "installOfficial": "Install official Python",
+      "continueWithout": "Continue without Python"
+    },
+    "setup": {
+      "providerTitle": "Set up {{provider}}",
+      "detectedCliPath": "Detected CLI path",
+      "geminiApiKey": "Gemini API key",
+      "googleProjectId": "Google Cloud project ID",
+      "oauthClientId": "OAuth desktop client ID"
+    },
+    "progress": {
+      "awaitingLogin": "Waiting for the login to be completed",
+      "live": "Progress is being tracked live"
+    },
+    "providers": {
+      "openai": {
+        "description": "ChatGPT Subscription uses a separate secure web session in LLMelt; no API key is needed.",
+        "steps": {
+          "open": "Open the ChatGPT login window.",
+          "login": "Sign in and choose your workspace if needed.",
+          "return": "Return here; the guide checks the session automatically."
+        },
+        "action": "Open ChatGPT login"
+      },
+      "codex": {
+        "install": "Install Codex CLI",
+        "open": "Open Codex login"
+      },
+      "claude": {
+        "install": "Install Claude CLI",
+        "open": "Open Claude login"
+      },
+      "antigravity": {
+        "install": "Install Antigravity",
+        "open": "Open Antigravity login"
+      },
+      "cli": {
+        "description": "{{name}} uses your {{account}} account directly; LLMelt does not store the account password.",
+        "steps": {
+          "found": "The CLI has already been found.",
+          "install": "Start the official Windows installer.",
+          "login": "Complete the {{account}} login in the visible terminal or browser window.",
+          "return": "Return here; the guide checks the installation and login automatically."
+        }
+      },
+      "google": {
+        "description": "Gemini uses the Developer API. The API key and read-only Google Cloud quota must be connected to the same project.",
+        "steps": {
+          "key": "Create an API key in Google AI Studio.",
+          "apis": "Enable API Keys API, Cloud Resource Manager API, Service Usage API, and Cloud Monitoring API in the same Cloud project.",
+          "oauth": "Create an OAuth desktop client in that project.",
+          "validate": "LLMelt validates everything, then only reads project, quota, and usage data."
+        },
+        "action": "Validate and connect Google Cloud"
+      },
+      "ollama": {
+        "description": "Ollama runs entirely locally and must be active as a local server.",
+        "steps": {
+          "install": "Start the official Windows installation after your click.",
+          "start": "Start the local Ollama server.",
+          "model": "For an empty installation, download the lightweight base model and check the live catalog."
+        },
+        "action": "Install and check Ollama"
+      }
+    },
+    "bulk": {
+      "aria": "Choose all services",
+      "selectAll": "Select all",
+      "deselectAll": "Deselect all"
+    },
+    "answers": {
+      "yes": "Yes",
+      "later": "Later",
+      "no": "No"
+    },
+    "sources": {
+      "lokaal": "local",
+      "account": "account",
+      "api": "API"
+    },
+    "looksAt": {
+      "openai": "ChatGPT web session or OpenAI API key",
+      "codex": "Codex CLI on your PC",
+      "anthropic": "Claude Code CLI or Anthropic API key",
+      "google": "Gemini API key",
+      "antigravity": "Antigravity CLI on your PC",
+      "ollama": "local Ollama server"
+    },
+    "detection": {
+      "checking": "Checking status",
+      "notFound": "{{provider}} has not been found yet",
+      "ready": "{{provider}} is ready to use",
+      "foundNeedsSetup": "{{provider}} was found; installation or login still needs to be completed"
+    }
+  },
+  "ollamaManager": {
+    "aria": "Manage Ollama models",
+    "localModels": "Local models",
+    "manageAt": "Manage the models at {{url}}.",
+    "refreshInstalledAria": "Refresh installed models",
+    "refresh": "Refresh",
+    "offline": "Ollama is unreachable",
+    "offlineHelp": "Start Ollama or check the saved URL.",
+    "offlineDetail": "Ollama is unreachable ({{detail}})",
+    "installing": "Installing…",
+    "installOllama": "Install Ollama",
+    "filterPlaceholder": "Filter installed models…",
+    "filterAria": "Filter installed models",
+    "loadingModels": "Loading models…",
+    "noLocalModel": "No local model installed yet.",
+    "noFilterMatch": "No installed model matches this filter.",
+    "context": "{{value}} context",
+    "removeModelAria": "Remove {{model}}",
+    "removeModel": "Remove model",
+    "removeConfirm": "Do you want to remove {{model}} locally?\n\nChats will remain, but they cannot use this model again until you download it again.",
+    "cancel": "Cancel",
+    "of": "of",
+    "searchNew": "Find a new model",
+    "searchHelp": "Search the official Ollama library, then choose a variant.",
+    "library": "Library",
+    "searchPlaceholder": "For example qwen, coder, or vision…",
+    "searchAria": "Search the official Ollama library",
+    "search": "Search",
+    "searchMinimum": "Enter at least two characters to search for models.",
+    "downloadCount": "{{count}} downloads",
+    "variantCount": "{{count}} variants",
+    "loadingVariants": "Loading variants…",
+    "defaultVariant": "Default variant",
+    "exactModelName": "Exact model name",
+    "directInstallHelp": "Also works when the online search page is temporarily unavailable.",
+    "exactModelAria": "Exact Ollama model name",
+    "download": "Download",
+    "installed": "Installed",
+    "preparingModel": "Preparing {{model}}…",
+    "actionFailed": "The Ollama action failed.",
+    "actionFailedDetail": "The Ollama action failed ({{detail}})",
+    "capabilities": {
+      "audio": "Audio",
+      "cloud": "Cloud",
+      "completion": "Chat",
+      "embedding": "Embeddings",
+      "insert": "Fill in",
+      "thinking": "Reasoning",
+      "tools": "Tools",
+      "vision": "Vision"
+    }
+  },
+  "updates": {
+    "title": "App updates",
+    "installedOnly": "Updates only work in the installed app (not in development mode).",
+    "unknownError": "Unknown update error.",
+    "of": "of",
+    "progressAria": "App update download progress",
+    "preparing": "Preparing download…",
+    "searching": "Checking…",
+    "retry": "Try again",
+    "check": "Check for updates",
+    "installing": "Installing…",
+    "installRestart": "Install now & restart",
+    "errors": {
+      "installed-only": "Updates only work in the installed app (not in development mode).",
+      "no-failed-download": "There is no failed update ready to download again.",
+      "download-first": "Download the update completely before installing it."
+    },
+    "status": {
+      "checking": "Checking for updates…",
+      "available": "Update {{version}} found. The download will start automatically…",
+      "downloadingVersion": "Downloading update {{version}}… {{percent}}%",
+      "downloading": "Downloading update… {{percent}}%",
+      "downloaded": "Update {{version}} has been downloaded and is ready to install.",
+      "installing": "The update is being installed; the app will restart shortly…",
+      "upToDateVersion": "You have the latest version ({{version}}).",
+      "upToDate": "You have the latest version.",
+      "error": "Update failed: {{error}}",
+      "current": "Current version: {{version}}"
+    }
+  },
+  "confirm": {
+    "delete": "Delete",
+    "cancel": "Cancel"
+  },
+  "terminal": {
+    "title": "Terminal",
+    "chooseShell": "Choose shell",
+    "notFound": "not found",
+    "newTerminal": "New terminal",
+    "stopSession": "Stop terminal session",
+    "closeTerminal": "Close terminal",
+    "closeSession": "Close terminal session {{session}}"
+  },
+  "runSettings": {
+    "title": "Run settings",
+    "effort": "Effort",
+    "intelligence": "Intelligence",
+    "speed": "Speed",
+    "providerNative": "Provider-native",
+    "providerNativeActions": "Provider-native actions",
+    "appWorkflows": "LLMelt workflows"
   },
   "common": {
     "save": "Save",
@@ -209,6 +963,12 @@
     "success": "Success",
     "confirm": "Confirm",
     "yes": "Yes",
-    "no": "No"
+    "no": "No",
+    "reload": "Reload",
+    "refresh": "Refresh",
+    "unknown": "Unknown",
+    "pleaseWait": "Please wait...",
+    "running": "Running...",
+    "status": "Status"
   }
 }

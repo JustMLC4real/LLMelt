@@ -63,6 +63,7 @@ voor signing. Beveilig daarom het GitHub-account, de repositoryrechten en eventu
 
 - een artefact ontbreekt;
 - de Git-worktree niet schoon is;
+- de huidige branch niet `main` is of HEAD nog niet rechtstreeks op `origin/main` staat;
 - tag `v<versie>` niet naar HEAD wijst;
 - de tag nog niet naar `origin` is gepusht;
 - de lokale SHA-512 niet overeenkomt met `latest.yml`;
@@ -74,14 +75,16 @@ gratis verkregen certificaat automatisch benut worden zonder unsigned releases n
 
 Het script publiceert installer, blockmap en `latest.yml` samen als één stabiele GitHub Release en
 controleert daarna via de GitHub API of de release niet draft/prerelease is en ieder artefact met de
-juiste bestandsgrootte aanwezig is. Een private repository wordt bewust geweigerd: eindgebruikers
-hebben geen GitHub-token en zouden daar dus geen automatische updates uit kunnen ophalen.
+juiste bestandsgrootte en SHA-256-serverdigest aanwezig is. Ook moeten alle publieke download-URL's
+HTTP 200 geven en moet de gepubliceerde `latest.yml` de lokale SHA-512 van de installer bevatten. Een
+private repository wordt bewust geweigerd: eindgebruikers hebben geen GitHub-token en zouden daar dus
+geen automatische updates uit kunnen ophalen.
 
-## 8.5 Release-recept vanaf 1.0.19
+## 8.5 Release-recept
 
 1. `npm run lint`
 2. `npm run test:coverage`
-3. `npm audit --audit-level=high`
+3. `npm audit --audit-level=low`
 4. `npm run build`
 5. Versie verhogen met `npm version <versie> --no-git-tag-version`.
 6. Commit direct op `main`, tag `v<versie>` en push commit + tag.

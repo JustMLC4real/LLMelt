@@ -65,6 +65,8 @@ describe('lege gebruikersprofiel-database', () => {
 
     expect(db.prepare('SELECT content FROM messages WHERE id = ?').get('fresh-message'))
       .toMatchObject({ content: 'Hallo' });
+    expect((db.prepare('PRAGMA table_info(usage_events)').all() as Array<{ name: string }>).map((column) => column.name))
+      .toContain('usageSource');
     expect(fs.existsSync(path.join(freshProfile.directory, 'attachments'))).toBe(true);
     db.close();
   });

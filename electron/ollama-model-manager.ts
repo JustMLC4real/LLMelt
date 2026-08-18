@@ -3,7 +3,9 @@ import type {
   OllamaLibraryModel,
   OllamaLibraryTag,
   OllamaModelPullProgress,
+  UiLanguage,
 } from '../src/providers/types';
+import { localizedText } from '../src/i18n/language';
 
 type FetchLike = typeof fetch;
 
@@ -25,11 +27,13 @@ const OLLAMA_LIBRARY_ORIGIN = 'https://ollama.com';
 const LIBRARY_CAPABILITIES = new Set(['cloud', 'embedding', 'vision', 'tools', 'thinking', 'audio']);
 const MAX_LIBRARY_RESPONSE_BYTES = 3 * 1024 * 1024;
 
-export function assertOllamaModelName(value: unknown) {
+export function assertOllamaModelName(value: unknown, language: UiLanguage = 'nl') {
   const model = String(value || '').trim();
-  if (!model || model.length > 200) throw new Error('Voer een geldige Ollama-modelnaam in.');
+  if (!model || model.length > 200) {
+    throw new Error(localizedText(language, 'Voer een geldige Ollama-modelnaam in.', 'Enter a valid Ollama model name.'));
+  }
   if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$/.test(model)) {
-    throw new Error('De Ollama-modelnaam bevat ongeldige tekens.');
+    throw new Error(localizedText(language, 'De Ollama-modelnaam bevat ongeldige tekens.', 'The Ollama model name contains invalid characters.'));
   }
   return model;
 }
@@ -37,8 +41,9 @@ export function assertOllamaModelName(value: unknown) {
 export async function listInstalledOllamaModels(
   baseUrl: string,
   fetchImpl: FetchLike = fetch,
+  language: UiLanguage = 'nl',
 ): Promise<OllamaInstalledModel[]> {
-  const models = await readOllamaTags(baseUrl, fetchImpl);
+  const models = await readOllamaTags(baseUrl, fetchImpl, language);
   const details: Array<Record<string, unknown> | undefined> = new Array(models.length);
   let nextIndex = 0;
   const worker = async () => {
@@ -94,22 +99,24 @@ export async function listInstalledOllamaModels(
 export async function searchOllamaLibrary(
   query: string,
   fetchImpl: FetchLike = fetch,
+  language: UiLanguage = 'nl',
 ): Promise<OllamaLibraryModel[]> {
   const normalized = query.trim();
   if (normalized.length < 2) return [];
-  if (normalized.length > 80) throw new Error('De zoekopdracht is te lang.');
+  if (normalized.length > 80) throw new Error(localizedText(language, 'De zoekopdracht is te lang.', 'The search query is too long.'));
   const url = new URL('/search', OLLAMA_LIBRARY_ORIGIN);
   url.searchParams.set('q', normalized);
-  const html = await fetchOfficialLibraryHtml(url, fetchImpl);
+  const html = await fetchOfficialLibraryHtml(url, fetchImpl, language);
   return parseOllamaLibrarySearchHtml(html);
 }
 
 export async function listOllamaLibraryTags(
   libraryPath: string,
   fetchImpl: FetchLike = fetch,
+  language: UiLanguage = 'nl',
 ): Promise<OllamaLibraryTag[]> {
-  const url = officialLibraryTagsUrl(libraryPath);
-  const html = await fetchOfficialLibraryHtml(url, fetchImpl);
+  const url = officialLibraryTagsUrl(libraryPath, language);
+  const html = await fetchOfficialLibraryHtml(url, fetchImpl, language);
   return parseOllamaLibraryTagsHtml(html);
 }
 
@@ -119,28 +126,38 @@ export async function pullOllamaModel(
   signal: AbortSignal,
   onProgress: (progress: OllamaModelPullProgress) => void,
   fetchImpl: FetchLike = fetch,
-  waitImpl: (milliseconds: number, signal: AbortSignal) => Promise<void> = waitForOllamaPullRetry,
+  waitImpl: (milliseconds: number, signal: AbortSignal, language?: UiLanguage) => Promise<void> = waitForOllamaPullRetry,
+  language: UiLanguage = 'nl',
 ) {
-  const model = assertOllamaModelName(requestedModel);
-  onProgress({ model, phase: 'resolving', status: `${model} voorbereiden...`, percent: 0 });
+  const model = assertOllamaModelName(requestedModel, language);
+  onProgress({
+    model,
+    phase: 'resolving',
+    status: localizedText(language, `${model} voorbereiden...`, `Preparing ${model}...`),
+    percent: 0,
+  });
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return await pullOllamaModelAttempt(baseUrl, model, signal, onProgress, fetchImpl);
+      return await pullOllamaModelAttempt(baseUrl, model, signal, onProgress, fetchImpl, language);
     } catch (error) {
       if (signal.aborted) throw error;
       const message = error instanceof Error ? error.message : String(error);
       if (!isRetryableOllamaRegistryError(message) || attempt >= 2) {
-        throw new Error(friendlyOllamaPullError(model, message));
+        throw new Error(friendlyOllamaPullError(model, message, language));
       }
       onProgress({
         model,
         phase: 'resolving',
-        status: `Ollama Registry antwoordde tijdelijk niet goed; poging ${attempt + 2} van 3...`,
+        status: localizedText(
+          language,
+          `Ollama Registry antwoordde tijdelijk niet goed; poging ${attempt + 2} van 3...`,
+          `Ollama Registry returned a temporary error; attempt ${attempt + 2} of 3...`,
+        ),
       });
-      await waitImpl(attempt === 0 ? 750 : 2_000, signal);
+      await waitImpl(attempt === 0 ? 750 : 2_000, signal, language);
     }
   }
-  throw new Error(`Ollama-model ${model} kon niet worden gedownload.`);
+  throw new Error(localizedText(language, `Ollama-model ${model} kon niet worden gedownload.`, `Ollama model ${model} could not be downloaded.`));
 }
 
 async function pullOllamaModelAttempt(
@@ -149,6 +166,7 @@ async function pullOllamaModelAttempt(
   signal: AbortSignal,
   onProgress: (progress: OllamaModelPullProgress) => void,
   fetchImpl: FetchLike,
+  language: UiLanguage,
 ) {
   const response = await fetchImpl(`${trimBaseUrl(baseUrl)}/api/pull`, {
     method: 'POST',
@@ -158,7 +176,7 @@ async function pullOllamaModelAttempt(
   });
   if (!response.ok || !response.body) {
     const body = await response.text().catch(() => '');
-    throw new Error(body || `Ollama-model downloaden mislukt (${response.status}).`);
+    throw new Error(body || localizedText(language, `Ollama-model downloaden mislukt (${response.status}).`, `Downloading the Ollama model failed (${response.status}).`));
   }
 
   const reader = response.body.getReader();
@@ -186,7 +204,7 @@ async function pullOllamaModelAttempt(
       onProgress({
         model,
         phase: ollamaPullPhase(status),
-        status: ollamaPullStatus(status, model),
+        status: ollamaPullStatus(status, model, language),
         percent,
         transferred,
         total,
@@ -196,13 +214,13 @@ async function pullOllamaModelAttempt(
     if (done) break;
   }
 
-  if (!succeeded && !await ollamaModelExists(baseUrl, model, fetchImpl)) {
-    throw new Error(`Ollama bevestigde de installatie van ${model} niet.`);
+  if (!succeeded && !await ollamaModelExists(baseUrl, model, fetchImpl, language)) {
+    throw new Error(localizedText(language, `Ollama bevestigde de installatie van ${model} niet.`, `Ollama did not confirm the installation of ${model}.`));
   }
   onProgress({
     model,
     phase: 'success',
-    status: `${model} is geïnstalleerd.`,
+    status: localizedText(language, `${model} is geïnstalleerd.`, `${model} is installed.`),
     percent: 100,
   });
   return model;
@@ -214,19 +232,21 @@ export function isRetryableOllamaRegistryError(message: string) {
     && /(?:\b401\b|\b408\b|\b425\b|\b429\b|\b5\d\d\b|unauthori[sz]ed|timeout|temporar|connection|eof)/.test(normalized);
 }
 
-export function friendlyOllamaPullError(model: string, message: string) {
+export function friendlyOllamaPullError(model: string, message: string, language: UiLanguage = 'nl') {
   if (/\b401\b|unauthori[sz]ed/i.test(message)) {
-    return `Ollama Registry weigerde het publieke model ${model} (401). `
-      + 'Hiervoor is geen Ollama API-key nodig. Controleer internettoegang en de Windows-datum/tijd, '
-      + 'herstart Ollama en probeer opnieuw.';
+    return localizedText(
+      language,
+      `Ollama Registry weigerde het publieke model ${model} (401). Hiervoor is geen Ollama API-key nodig. Controleer internettoegang en de Windows-datum/tijd, herstart Ollama en probeer opnieuw. Externe melding: ${message}`,
+      `Ollama Registry rejected the public model ${model} (401). No Ollama API key is required. Check internet access and the Windows date/time, restart Ollama, then try again. External detail: ${message}`,
+    );
   }
-  return message || `Ollama-model ${model} kon niet worden gedownload.`;
+  return message || localizedText(language, `Ollama-model ${model} kon niet worden gedownload.`, `Ollama model ${model} could not be downloaded.`);
 }
 
-function waitForOllamaPullRetry(milliseconds: number, signal: AbortSignal) {
+function waitForOllamaPullRetry(milliseconds: number, signal: AbortSignal, language: UiLanguage = 'nl') {
   return new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
-      reject(signal.reason || new Error('Ollama-download geannuleerd.'));
+      reject(signal.reason || new Error(localizedText(language, 'Ollama-download geannuleerd.', 'Ollama download cancelled.')));
       return;
     }
     const timer = setTimeout(() => {
@@ -235,7 +255,7 @@ function waitForOllamaPullRetry(milliseconds: number, signal: AbortSignal) {
     }, milliseconds);
     const onAbort = () => {
       clearTimeout(timer);
-      reject(signal.reason || new Error('Ollama-download geannuleerd.'));
+      reject(signal.reason || new Error(localizedText(language, 'Ollama-download geannuleerd.', 'Ollama download cancelled.')));
     };
     signal.addEventListener('abort', onAbort, { once: true });
   });
@@ -245,8 +265,9 @@ export async function deleteOllamaModel(
   baseUrl: string,
   requestedModel: unknown,
   fetchImpl: FetchLike = fetch,
+  language: UiLanguage = 'nl',
 ) {
-  const model = assertOllamaModelName(requestedModel);
+  const model = assertOllamaModelName(requestedModel, language);
   const response = await fetchImpl(`${trimBaseUrl(baseUrl)}/api/delete`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
@@ -255,7 +276,7 @@ export async function deleteOllamaModel(
   });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(body || `Ollama-model verwijderen mislukt (${response.status}).`);
+    throw new Error(body || localizedText(language, `Ollama-model verwijderen mislukt (${response.status}).`, `Removing the Ollama model failed (${response.status}).`));
   }
   return model;
 }
@@ -340,15 +361,17 @@ export function parseOllamaLibraryTagsHtml(html: string): OllamaLibraryTag[] {
   return results;
 }
 
-function officialLibraryTagsUrl(libraryPath: string) {
+function officialLibraryTagsUrl(libraryPath: string, language: UiLanguage = 'nl') {
   const safePath = safeLibraryPath(libraryPath);
-  if (!safePath) throw new Error('Ongeldig pad naar de Ollama-modelbibliotheek.');
+  if (!safePath) throw new Error(localizedText(language, 'Ongeldig pad naar de Ollama-modelbibliotheek.', 'Invalid Ollama model library path.'));
   const url = new URL(safePath.replace(/\/+$/, '') + '/tags', OLLAMA_LIBRARY_ORIGIN);
-  if (url.origin !== OLLAMA_LIBRARY_ORIGIN) throw new Error('Ongeldige Ollama-modelbibliotheek.');
+  if (url.origin !== OLLAMA_LIBRARY_ORIGIN) {
+    throw new Error(localizedText(language, 'Ongeldige Ollama-modelbibliotheek.', 'Invalid Ollama model library.'));
+  }
   return url;
 }
 
-async function fetchOfficialLibraryHtml(url: URL, fetchImpl: FetchLike) {
+async function fetchOfficialLibraryHtml(url: URL, fetchImpl: FetchLike, language: UiLanguage = 'nl') {
   const response = await fetchImpl(url, {
     headers: {
       Accept: 'text/html',
@@ -357,14 +380,24 @@ async function fetchOfficialLibraryHtml(url: URL, fetchImpl: FetchLike) {
     redirect: 'follow',
     signal: AbortSignal.timeout(15_000),
   });
-  if (!response.ok) throw new Error(`Ollama-modelbibliotheek reageerde met ${response.status}.`);
-  if (new URL(response.url || url.toString()).origin !== OLLAMA_LIBRARY_ORIGIN) {
-    throw new Error('De Ollama-modelbibliotheek stuurde door naar een onverwacht domein.');
+  if (!response.ok) {
+    throw new Error(localizedText(
+      language,
+      `Ollama-modelbibliotheek reageerde met ${response.status}.`,
+      `Ollama model library responded with ${response.status}.`,
+    ));
   }
-  return readBoundedText(response, MAX_LIBRARY_RESPONSE_BYTES);
+  if (new URL(response.url || url.toString()).origin !== OLLAMA_LIBRARY_ORIGIN) {
+    throw new Error(localizedText(
+      language,
+      'De Ollama-modelbibliotheek stuurde door naar een onverwacht domein.',
+      'The Ollama model library redirected to an unexpected domain.',
+    ));
+  }
+  return readBoundedText(response, MAX_LIBRARY_RESPONSE_BYTES, language);
 }
 
-async function readBoundedText(response: Response, maximumBytes: number) {
+async function readBoundedText(response: Response, maximumBytes: number, language: UiLanguage = 'nl') {
   if (!response.body) return response.text();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -374,25 +407,33 @@ async function readBoundedText(response: Response, maximumBytes: number) {
     const { value, done } = await reader.read();
     if (done) break;
     bytes += value?.byteLength || 0;
-    if (bytes > maximumBytes) throw new Error('Ollama-modelbibliotheek gaf een te groot antwoord.');
+    if (bytes > maximumBytes) {
+      throw new Error(localizedText(
+        language,
+        'Ollama-modelbibliotheek gaf een te groot antwoord.',
+        'The Ollama model library returned an oversized response.',
+      ));
+    }
     text += decoder.decode(value, { stream: true });
   }
   text += decoder.decode();
   return text;
 }
 
-async function readOllamaTags(baseUrl: string, fetchImpl: FetchLike) {
+async function readOllamaTags(baseUrl: string, fetchImpl: FetchLike, language: UiLanguage = 'nl') {
   const response = await fetchImpl(`${trimBaseUrl(baseUrl)}/api/tags`, {
     signal: AbortSignal.timeout(7_500),
   });
-  if (!response.ok) throw new Error(`Ollama reageerde met ${response.status}.`);
+  if (!response.ok) {
+    throw new Error(localizedText(language, `Ollama reageerde met ${response.status}.`, `Ollama responded with ${response.status}.`));
+  }
   const data = await response.json() as { models?: unknown };
   return Array.isArray(data.models) ? data.models as OllamaTagRecord[] : [];
 }
 
-async function ollamaModelExists(baseUrl: string, model: string, fetchImpl: FetchLike) {
+async function ollamaModelExists(baseUrl: string, model: string, fetchImpl: FetchLike, language: UiLanguage = 'nl') {
   const normalized = model.toLocaleLowerCase();
-  const models = await readOllamaTags(baseUrl, fetchImpl);
+  const models = await readOllamaTags(baseUrl, fetchImpl, language);
   return models.some((candidate) => ollamaTagName(candidate)?.toLocaleLowerCase() === normalized);
 }
 
@@ -425,17 +466,19 @@ function ollamaPullPhase(status: string): OllamaModelPullProgress['phase'] {
   return 'resolving';
 }
 
-function ollamaPullStatus(status: string, model: string) {
+function ollamaPullStatus(status: string, model: string, language: UiLanguage = 'nl') {
   const normalized = status.toLocaleLowerCase();
-  if (!normalized) return `${model} voorbereiden...`;
-  if (normalized === 'success') return `${model} is gedownload.`;
+  if (!normalized) return localizedText(language, `${model} voorbereiden...`, `Preparing ${model}...`);
+  if (normalized === 'success') return localizedText(language, `${model} is gedownload.`, `${model} has been downloaded.`);
   if (normalized.includes('manifest')) {
-    return normalized.includes('writing') ? 'Modelinformatie opslaan...' : 'Modelinformatie ophalen...';
+    return normalized.includes('writing')
+      ? localizedText(language, 'Modelinformatie opslaan...', 'Saving model information...')
+      : localizedText(language, 'Modelinformatie ophalen...', 'Fetching model information...');
   }
-  if (normalized.includes('verifying')) return 'Download controleren...';
-  if (normalized.includes('removing')) return 'Ongebruikte modelbestanden opruimen...';
-  if (normalized.includes('pulling')) return `${model} downloaden...`;
-  return `${model} voorbereiden...`;
+  if (normalized.includes('verifying')) return localizedText(language, 'Download controleren...', 'Verifying download...');
+  if (normalized.includes('removing')) return localizedText(language, 'Ongebruikte modelbestanden opruimen...', 'Cleaning up unused model files...');
+  if (normalized.includes('pulling')) return localizedText(language, `${model} downloaden...`, `Downloading ${model}...`);
+  return localizedText(language, `${model} voorbereiden...`, `Preparing ${model}...`);
 }
 
 function ollamaContextWindow(show: Record<string, unknown>) {

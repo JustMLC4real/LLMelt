@@ -11,7 +11,8 @@ import { safeStorage } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getStore } from './settings-store';
-import type { AIModel, ChatgptVersion, ChatMessage, TokenUsage } from '../src/providers/types';
+import type { AIModel, ChatgptVersion, ChatMessage, TokenUsage, UiLanguage } from '../src/providers/types';
+import { localizedText } from '../src/i18n/language';
 import type { AttachmentRecord } from './provider-adapters';
 import { classifyChatGptPage } from '../src/components/chatgpt-diagnostics';
 import { createSerialTaskQueue } from '../src/components/serial-task-queue';
@@ -20,6 +21,12 @@ import {
   redactChatGptDiagnosticValue,
 } from './chatgpt-diagnostic-redaction';
 import { chatGptChoiceValidationError } from './chatgpt-model-choice';
+import { patchChatGptConversationBody } from './chatgpt-request-body';
+import { chatgptIntelligenceLabel } from '../src/providers/chatgpt-labels';
+import {
+  chatGptCookieIdentity,
+  toRestorableChatGptCookie,
+} from './chatgpt-session-cookies';
 
 // Diagnostiek is expliciet opt-in, begrensd en ontdaan van bekende geheimen.
 // Het bestand staat in Electron's gebruikersgebonden logmap, nooit in het project.
@@ -79,6 +86,8 @@ interface ChatGptSession {
 }
 
 let cachedSession: ChatGptSession | null = null;
+let storedCookiesHydrated = false;
+let storedCookiesHydration: Promise<void> | null = null;
 let loginWindow: BrowserWindow | null = null;
 let workerWindow: BrowserWindow | null = null;
 let chatWindow: BrowserWindow | null = null;
@@ -146,22 +155,20 @@ function makeEngineError(message: string, stage: ChatGptEngineStage, recoverable
   return error;
 }
 
-function friendlyChatGptError(error: unknown, stage: ChatGptEngineStage): string {
+function friendlyChatGptError(error: unknown, stage: ChatGptEngineStage, language: UiLanguage = 'nl'): string {
   const message = (error as any)?.message || String(error);
-  if (/niet ingelogd|login|log in|auth|unauthor|forbidden/i.test(message)) return 'ChatGPT web-sessie is niet ingelogd';
-  if (/cloudflare|verify you are human|verificatie|turnstile/i.test(message)) return 'ChatGPT verificatie/login blokkeert de sessie';
+  if (/niet ingelogd|login|log in|auth|unauthor|forbidden/i.test(message)) return localizedText(language, 'ChatGPT web-sessie is niet ingelogd', 'The ChatGPT web session is not signed in');
+  if (/cloudflare|verify you are human|verificatie|turnstile/i.test(message)) return localizedText(language, 'ChatGPT verificatie/login blokkeert de sessie', 'ChatGPT verification or sign-in is blocking the session');
   if (/unusual activity|try again later|geautomatiseerde web-engine/i.test(message)) {
-    return message.startsWith('ChatGPT blokkeert deze geautomatiseerde web-engine')
-      ? message
-      : 'ChatGPT blokkeert deze geautomatiseerde web-engine wegens unusual activity';
+    return localizedText(language, 'ChatGPT blokkeert deze geautomatiseerde web-engine wegens unusual activity', 'ChatGPT is blocking this automated web engine because of unusual activity');
   }
-  if (/composer not found|composer/i.test(message)) return 'ChatGPT composer niet gevonden';
-  if (/geen antwoord gestart|verstuurd maar niets terug|no answer/i.test(message)) return 'ChatGPT websessie startte geen antwoord';
-  if (/conduit_token|prepare/i.test(message) && /geen tekst|geen antwoord|prepare/i.test(message)) return 'ChatGPT websessie gaf alleen prepare-data terug, geen antwoordstream';
-  if (/backend.*stream|stream.*start/i.test(message)) return 'ChatGPT websessie startte geen stream';
-  if (/model.*not available|model niet beschikbaar|mismatch/i.test(message)) return 'ChatGPT model niet beschikbaar';
-  if (/timeout|timed out/i.test(message)) return 'ChatGPT web-engine liep vast tijdens wachten op antwoord';
-  return message.startsWith('ChatGPT') ? message : `ChatGPT web-engine faalde bij ${stage}: ${message}`;
+  if (/composer not found|composer/i.test(message)) return localizedText(language, 'ChatGPT composer niet gevonden', 'ChatGPT composer not found');
+  if (/geen antwoord gestart|verstuurd maar niets terug|no answer/i.test(message)) return localizedText(language, 'ChatGPT websessie startte geen antwoord', 'The ChatGPT web session did not start an answer');
+  if (/conduit_token|prepare/i.test(message) && /geen tekst|geen antwoord|no text|no answer|prepare/i.test(message)) return localizedText(language, 'ChatGPT websessie gaf alleen prepare-data terug, geen antwoordstream', 'The ChatGPT web session returned only prepare data, not an answer stream');
+  if (/backend.*stream|stream.*start/i.test(message)) return localizedText(language, 'ChatGPT websessie startte geen stream', 'The ChatGPT web session did not start a stream');
+  if (/model.*not available|model niet beschikbaar|mismatch/i.test(message)) return localizedText(language, 'ChatGPT model niet beschikbaar', 'ChatGPT model unavailable');
+  if (/timeout|timed out/i.test(message)) return localizedText(language, 'ChatGPT web-engine liep vast tijdens wachten op antwoord', 'The ChatGPT web engine timed out while waiting for an answer');
+  return localizedText(language, `ChatGPT-webengine faalde bij ${stage}: ${message}`, `ChatGPT web engine failed at ${stage}: ${message}`);
 }
 
 function isUnusualActivityError(error: unknown) {
@@ -169,16 +176,18 @@ function isUnusualActivityError(error: unknown) {
   return /unusual activity|try again later/i.test(message);
 }
 
-function unusualActivityBlockedMessage() {
-  return 'ChatGPT blokkeert deze websessie wegens unusual activity. Open ChatGPT handmatig of probeer later opnieuw.';
+function unusualActivityBlockedMessage(language: UiLanguage = 'nl') {
+  return localizedText(language,
+    'ChatGPT blokkeert deze websessie wegens unusual activity. Open ChatGPT handmatig of probeer later opnieuw.',
+    'ChatGPT is blocking this web session because of unusual activity. Open ChatGPT manually or try again later.');
 }
 
 // ─── Session Persistence ───────────────────────────────────────────────────
 
-async function saveSession(sess: ChatGptSession) {
+async function saveSession(sess: ChatGptSession, language: UiLanguage = 'nl') {
   const store = await getStore();
   const data = JSON.stringify(sess);
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('Windows veilige opslag is niet beschikbaar; ChatGPT-sessie is niet bewaard.');
+  if (!safeStorage.isEncryptionAvailable()) throw new Error(localizedText(language, 'Veilige Windows-opslag is niet beschikbaar; de ChatGPT-sessie is niet bewaard.', 'Windows secure storage is unavailable; the ChatGPT session was not saved.'));
   store.set('chatgpt.session', { encrypted: true, value: safeStorage.encryptString(data).toString('base64') });
   cachedSession = sess;
   setEngineStatus({ active: true, lastError: null, recoverable: false });
@@ -263,6 +272,8 @@ async function pruneChatGptCookiesIfLarge(): Promise<void> {
 async function clearSession() {
   invalidateSessionModelCatalog();
   cachedSession = null;
+  storedCookiesHydrated = false;
+  storedCookiesHydration = null;
   setEngineStatus({ active: false, plan: null, stage: 'idle', lastError: null, recoverable: false });
   const store = await getStore();
   store.delete('chatgpt.session');
@@ -278,10 +289,56 @@ async function clearSession() {
   }
 }
 
+async function ensureStoredSessionCookies(): Promise<void> {
+  if (storedCookiesHydrated) return;
+  if (storedCookiesHydration) return storedCookiesHydration;
+
+  storedCookiesHydration = (async () => {
+    const stored = await loadSession();
+    if (!stored?.cookies?.length) {
+      storedCookiesHydrated = true;
+      return;
+    }
+
+    const ses = session.fromPartition(SESSION_PARTITION);
+    const current = await ses.cookies.get({ domain: '.chatgpt.com' });
+    const present = new Set(current.map(chatGptCookieIdentity));
+    let restored = 0;
+
+    for (const cookie of stored.cookies) {
+      if (present.has(chatGptCookieIdentity(cookie))) continue;
+      const details = toRestorableChatGptCookie(cookie);
+      if (!details) continue;
+      try {
+        await ses.cookies.set(details);
+        present.add(chatGptCookieIdentity(cookie));
+        restored++;
+      } catch (error) {
+        debugLog('stored ChatGPT-cookie herstellen mislukt', {
+          name: cookie.name,
+          domain: cookie.domain,
+          error: (error as Error)?.message || String(error),
+        });
+      }
+    }
+
+    if (restored) {
+      await ses.cookies.flushStore();
+      console.log(`[chatgpt] ${restored} ontbrekende sessiecookie(s) veilig hersteld`);
+    }
+    storedCookiesHydrated = true;
+  })().finally(() => {
+    storedCookiesHydration = null;
+  });
+
+  return storedCookiesHydration;
+}
+
 // ─── Hidden worker window (browser context for backend-api) ──────────────────
 
 async function ensureWorker(): Promise<BrowserWindow> {
   if (workerWindow && !workerWindow.isDestroyed()) return workerWindow;
+  await ensureStoredSessionCookies();
   const ses = session.fromPartition(SESSION_PARTITION);
   workerWindow = new BrowserWindow({
     show: false,
@@ -345,13 +402,13 @@ async function waitForChatGptPage(win: BrowserWindow, timeoutMs = 15000): Promis
   })()`, true).catch(() => false);
 }
 
-async function openChatGptWindow() {
-  setEngineStage('recovering', { lastError: 'ChatGPT herstelvenster geopend.', recoverable: true });
+async function openChatGptWindow(language: UiLanguage = 'nl') {
+  setEngineStage('recovering', { lastError: localizedText(language, 'ChatGPT-herstelvenster geopend.', 'ChatGPT recovery window opened.'), recoverable: true });
   const ses = session.fromPartition(SESSION_PARTITION);
   const win = new BrowserWindow({
     width: 1200,
     height: 850,
-    title: 'ChatGPT herstellen',
+    title: localizedText(language, 'ChatGPT herstellen', 'Recover ChatGPT'),
     webPreferences: { session: ses, nodeIntegration: false, contextIsolation: true, sandbox: true },
     autoHideMenuBar: true,
   });
@@ -477,10 +534,10 @@ async function apiGet(path: string, allowRefresh = true, withAccount = true): Pr
 
 // ─── Login Flow ──────────────────────────────────────────────────────────────
 
-async function openLoginWindow(): Promise<ChatGptSession> {
+async function openLoginWindow(language: UiLanguage = 'nl'): Promise<ChatGptSession> {
   if (loginWindow && !loginWindow.isDestroyed()) {
     loginWindow.focus();
-    throw new Error('Login window is already open.');
+    throw new Error(localizedText(language, 'Het inlogvenster is al geopend.', 'The sign-in window is already open.'));
   }
   const ses = session.fromPartition(SESSION_PARTITION);
 
@@ -488,18 +545,18 @@ async function openLoginWindow(): Promise<ChatGptSession> {
     loginWindow = new BrowserWindow({
       width: 500,
       height: 700,
-      title: 'ChatGPT — Inloggen',
+      title: localizedText(language, 'ChatGPT — Inloggen', 'ChatGPT — Sign in'),
       webPreferences: { session: ses, nodeIntegration: false, contextIsolation: true, sandbox: true },
       autoHideMenuBar: true,
     });
     loginWindow.loadURL(CHATGPT_ORIGIN);
 
-    const timeout = setTimeout(() => { cleanup(); reject(new Error('Login timed out. Try again.')); }, LOGIN_TIMEOUT_MS);
+    const timeout = setTimeout(() => { cleanup(); reject(new Error(localizedText(language, 'Inloggen duurde te lang. Probeer opnieuw.', 'Sign-in timed out. Try again.'))); }, LOGIN_TIMEOUT_MS);
 
     const interval = setInterval(async () => {
       if (!loginWindow || loginWindow.isDestroyed()) {
         cleanup();
-        reject(new Error('Login window was closed before completing login.'));
+        reject(new Error(localizedText(language, 'Het inlogvenster is gesloten voordat het inloggen was voltooid.', 'The sign-in window was closed before sign-in completed.')));
         return;
       }
       try {
@@ -522,7 +579,9 @@ async function openLoginWindow(): Promise<ChatGptSession> {
             expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
           };
           invalidateSessionModelCatalog();
-          await saveSession(chatGptSession);
+          await saveSession(chatGptSession, language);
+          storedCookiesHydrated = true;
+          await ses.cookies.flushStore();
           cleanup();
           resolve(chatGptSession);
         }
@@ -576,7 +635,7 @@ function makeSessionModel(raw: any): AIModel {
   const efforts = Array.isArray(raw.thinking_efforts)
     ? raw.thinking_efforts
         .filter((e: any) => e && e.thinking_effort)
-        .map((e: any) => ({ value: String(e.thinking_effort), label: String(e.short_label || e.full_label || e.thinking_effort), description: e.description ? String(e.description) : undefined }))
+        .map((e: any) => ({ value: String(e.thinking_effort), label: chatgptIntelligenceLabel(e.short_label || e.full_label || e.thinking_effort), description: e.description ? String(e.description) : undefined }))
     : [];
   return {
     id: `chatgpt:${slug}`,
@@ -648,7 +707,7 @@ function parseSessionVersions(raw: any): ChatgptVersion[] {
       presets: (Array.isArray(version.intelligence_presets) ? version.intelligence_presets : [])
         .filter((preset: any) => preset?.title && preset?.model_slug)
         .map((preset: any) => ({
-          title: String(preset.title),
+          title: chatgptIntelligenceLabel(preset.title),
           subtitle: preset.subtitle ? String(preset.subtitle) : undefined,
           modelSlug: String(preset.model_slug),
           lane: preset.lane ? String(preset.lane) : undefined,
@@ -753,13 +812,14 @@ async function discoverSessionModels(): Promise<AIModel[]> {
   return [];
 }
 
-async function assertLiveSessionModelChoice(modelSlug: string, thinkingEffort?: string) {
+async function assertLiveSessionModelChoice(modelSlug: string, thinkingEffort?: string, language: UiLanguage = 'nl') {
   if (!versionSlugs.size) await listSessionModels();
   const error = chatGptChoiceValidationError(
     cachedVersions,
     versionSlugs,
     modelSlug,
     thinkingEffort,
+    language,
   );
   if (error) throw new Error(error);
 }
@@ -775,6 +835,7 @@ interface ChatGptSendOptions {
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onStatus?: (status: string) => void;
+  language?: UiLanguage;
 }
 
 async function sendChatViaSession(options: ChatGptSendOptions): Promise<{ text: string; usage: TokenUsage }> {
@@ -782,7 +843,7 @@ async function sendChatViaSession(options: ChatGptSendOptions): Promise<{ text: 
     () => sendChatViaSessionUnlocked(options),
     {
       signal: options.signal,
-      onWait: () => options.onStatus?.('Wacht op de actieve ChatGPT-websessie'),
+      onWait: () => options.onStatus?.(localizedText(options.language || 'nl', 'Wacht op de actieve ChatGPT-websessie', 'Waiting for the active ChatGPT web session')),
     },
   );
 }
@@ -796,9 +857,9 @@ async function sendChatViaSessionUnlocked(options: ChatGptSendOptions): Promise<
     route: 'web-session',
     model: options.modelSlug.replace(/^chatgpt:/, ''),
   });
-  await assertLiveSessionModelChoice(options.modelSlug, options.thinkingEffort);
+  await assertLiveSessionModelChoice(options.modelSlug, options.thinkingEffort, options.language || 'nl');
   try {
-    options.onStatus?.('ChatGPT websessie voorbereiden');
+    options.onStatus?.(localizedText(options.language || 'nl', 'ChatGPT websessie voorbereiden', 'Preparing the ChatGPT web session'));
   } catch {
     // Status callbacks are UI-only.
   }
@@ -821,13 +882,13 @@ async function sendChatViaSessionUnlocked(options: ChatGptSendOptions): Promise<
       // An "unusual activity" error from the real page is final for this attempt.
       // Surface it honestly, do not loop or try to bypass the web-session block.
       if (isUnusualActivityError(error)) {
-        const message = unusualActivityBlockedMessage();
+        const message = unusualActivityBlockedMessage(options.language || 'nl');
         setEngineStage('failed', { lastError: message, recoverable: true });
         throw makeEngineError(message, 'send-clicked', true);
       }
       lastError = error;
       const stage = ((error as any)?.chatgptStage || engineStatus.stage || 'failed') as ChatGptEngineStage;
-      const friendly = friendlyChatGptError(error, stage);
+      const friendly = friendlyChatGptError(error, stage, options.language || 'nl');
       const recoverable = (error as any)?.recoverable !== false;
       debugLog('engine failure', {
         attempt,
@@ -836,7 +897,7 @@ async function sendChatViaSessionUnlocked(options: ChatGptSendOptions): Promise<
         raw: (error as any)?.message || String(error),
       });
 
-      if (attempt === 0 && recoverable && /antwoord startte geen antwoord|geen antwoord|geen stream|verstuurd maar niets terug|backend startte/i.test(friendly + ' ' + ((error as any)?.message || ''))) {
+      if (attempt === 0 && recoverable && /antwoord startte geen antwoord|geen antwoord|geen stream|verstuurd maar niets terug|did not start an answer|no answer|no stream|sent but nothing|backend.*start/i.test(friendly + ' ' + ((error as any)?.message || ''))) {
         setEngineStage('recovering', { lastError: friendly, recoverable: true });
         if (chatWindow && !chatWindow.isDestroyed()) chatWindow.close();
         chatWindow = null;
@@ -851,23 +912,23 @@ async function sendChatViaSessionUnlocked(options: ChatGptSendOptions): Promise<
   }
 
   const stage = ((lastError as any)?.chatgptStage || engineStatus.stage || 'failed') as ChatGptEngineStage;
-  const friendly = friendlyChatGptError(lastError, stage);
+  const friendly = friendlyChatGptError(lastError, stage, options.language || 'nl');
   setEngineStage('failed', { lastError: friendly, recoverable: true });
   throw makeEngineError(friendly, stage, true);
 }
 
 
-function buildChatGptPrompt(messages: ChatMessage[], systemPrompt?: string, attachments: AttachmentRecord[] = []) {
+function buildChatGptPrompt(messages: ChatMessage[], systemPrompt?: string, attachments: AttachmentRecord[] = [], language: UiLanguage = 'nl') {
   const lastUserIndex = [...messages].reverse().findIndex((message) => message.role === 'user');
   const actualLastUserIndex = lastUserIndex === -1 ? -1 : messages.length - 1 - lastUserIndex;
   const transcript = messages
     .map((m, index) => {
       const attached = m.role === 'user' ? chatMessageAttachments(m, attachments, index === actualLastUserIndex) : [];
-      return `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${appendChatGptTextAttachments(m.content, attached)}`;
+      return `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${appendChatGptTextAttachments(m.content, attached, language)}`;
     })
     .join('\n\n');
   const base = (systemPrompt ? `${systemPrompt}\n\n` : '')
-    + (messages.length > 1 ? transcript : appendChatGptTextAttachments(messages[messages.length - 1]?.content || '', chatMessageAttachments(messages[messages.length - 1], attachments, true)));
+    + (messages.length > 1 ? transcript : appendChatGptTextAttachments(messages[messages.length - 1]?.content || '', chatMessageAttachments(messages[messages.length - 1], attachments, true), language));
   return base;
 }
 
@@ -878,10 +939,10 @@ function chatMessageAttachments(message: ChatMessage | undefined, fallback: Atta
   return own.length ? own : useFallback ? fallback : [];
 }
 
-function appendChatGptTextAttachments(input: string, attachments: AttachmentRecord[]) {
+function appendChatGptTextAttachments(input: string, attachments: AttachmentRecord[], language: UiLanguage = 'nl') {
   const text = attachments
     .filter((attachment) => attachment.textContent)
-    .map((attachment) => `\n\n[Bijlage: ${attachment.name}]\n${attachment.textContent}`)
+    .map((attachment) => `\n\n[${localizedText(language, 'Bijlage', 'Attachment')}: ${attachment.name}]\n${attachment.textContent}`)
     .join('');
   return text ? `${input}${text}` : input;
 }
@@ -889,7 +950,9 @@ function appendChatGptTextAttachments(input: string, attachments: AttachmentReco
 
 async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text: string; usage: TokenUsage }> {
   const { modelSlug, thinkingEffort, messages, systemPrompt, attachments = [], signal, onDelta, onStatus } = options;
+  const language = options.language || 'nl';
   const slug = modelSlug.replace(/^chatgpt:/, '');
+  const requestBodyPatcherSource = patchChatGptConversationBody.toString();
   const reportStatus = (status: string) => {
     try {
       onStatus?.(status);
@@ -902,10 +965,11 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
   // for multi-turn we include a transcript so the model has context. Keep this
   // on the shared prompt builder so uploaded files and path-read attachments
   // reach the ChatGPT web-session route too.
-  const prompt = buildChatGptPrompt(messages, systemPrompt, attachments);
+  const prompt = buildChatGptPrompt(messages, systemPrompt, attachments, language);
 
+  await ensureStoredSessionCookies();
   await refreshAccessToken().catch(() => {});
-  reportStatus('ChatGPT websessie openen');
+  reportStatus(localizedText(language, 'ChatGPT websessie openen', 'Opening the ChatGPT web session'));
   let win = await ensureChatWindow();
 
   // Plan-B: drive the REAL ChatGPT web app so it generates all anti-bot tokens
@@ -938,7 +1002,9 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
     chatWinHttpStatus = 0;
     chatWinRenderGone = false;
     try {
-      reportStatus(attempt === 1 ? 'ChatGPT websessie laden' : 'ChatGPT websessie herstellen');
+      reportStatus(attempt === 1
+        ? localizedText(language, 'ChatGPT websessie laden', 'Loading the ChatGPT web session')
+        : localizedText(language, 'ChatGPT websessie herstellen', 'Recovering the ChatGPT web session'));
       await win.loadURL(targetUrl);
       await waitForChatGptPage(win, 12000);
       setEngineStage('page-ready');
@@ -946,7 +1012,7 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
       console.warn('[chatgpt] loadURL failed', e);
     }
 
-    reportStatus('Composer zoeken');
+    reportStatus(localizedText(language, 'Composer zoeken', 'Looking for the composer'));
     composerReady = await waitForComposer();
     if (composerReady) break;
 
@@ -970,7 +1036,7 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
       bodyText: diag?.bodyHead || '',
       hasComposer: (diag?.composer || 0) > 0,
       renderGone: chatWinRenderGone,
-    });
+    }, language);
     debugLog('composer MISSING', { attempt, httpStatus: chatWinHttpStatus, renderGone: chatWinRenderGone, verdict, diag });
     console.warn(`[chatgpt] composer MISSING (poging ${attempt}/${MAX_ATTEMPTS}) → ${verdict.kind}: ${verdict.message}`);
 
@@ -989,27 +1055,29 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
   }
 
   if (!composerReady) {
-    const v = verdict || classifyChatGptPage({ httpStatus: chatWinHttpStatus, renderGone: chatWinRenderGone });
+    const v = verdict || classifyChatGptPage({ httpStatus: chatWinHttpStatus, renderGone: chatWinRenderGone }, language);
     if (v.kind === 'blocked') {
       // Message contains "unusual activity" → sendChatViaSession applies the cooldown
       // and reports honestly. We do NOT try to bypass this; it's a real block.
-      throw makeEngineError(unusualActivityBlockedMessage(), 'composer-ready', true);
+      throw makeEngineError(unusualActivityBlockedMessage(language), 'composer-ready', true);
     }
     // Pass the honest, classified message through (it starts with "ChatGPT" so
     // friendlyChatGptError keeps it verbatim).
     throw makeEngineError(v.message, 'composer-ready', v.recoverable);
   }
   setEngineStage('composer-ready');
-  reportStatus('Composer klaar');
+  reportStatus(localizedText(language, 'Composer klaar', 'Composer ready'));
 
   if (attachments.length) {
-    reportStatus('Bijlagen uploaden');
+    reportStatus(localizedText(language, 'Bijlagen uploaden', 'Uploading attachments'));
     await uploadFilesToChatGpt(win, attachments.map((attachment) => attachment.path).filter((filePath): filePath is string => !!filePath));
   }
 
   const driver = `
     (async () => {
       const S = (window.__cgbuf = { text: '', done: false, error: null, status: 0, sent: false, stage: 'init', modelSlug: '', convId: '', reqModel: '', reqUrl: '', sample: '', reqBody: '', modelLines: [], firstFrames: [], lastFrames: [], frameCount: 0, esFrames: 0, esModelLines: [], wsFrames: 0, wsModelLines: [], modelSlugSource: '' });
+      const patchRequestBody = ${requestBodyPatcherSource};
+      window.__cgModel = ${JSON.stringify(slug)};
       window.__cgEffort = ${JSON.stringify(thinkingEffort || '')};
       window.__cgNet = window.__cgNet || [];
       if (!window.__cgHooked) {
@@ -1119,15 +1187,15 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
             && u.indexOf('/conversation') !== -1
             && u.indexOf('/conversations') === -1
             && u.indexOf('/init') === -1;
-          // Inject the chosen thinking effort into the outgoing body — same field the
-          // ChatGPT web app itself uses ("thinking_effort": "standard" | "extended").
-          if (isStreamPost && window.__cgEffort) {
+          // De SPA kan bij de eerste koude beurt de ?model-keuze negeren en nog
+          // haar vorige standaardmodel versturen. Trek uitsluitend model + effort
+          // gelijk met de al live gevalideerde keuze; de webapp maakt de rest.
+          if (isStreamPost) {
             try {
               const body = a[1] && a[1].body;
               if (typeof body === 'string') {
-                const obj = JSON.parse(body);
-                obj.thinking_effort = window.__cgEffort;
-                a[1] = Object.assign({}, a[1], { body: JSON.stringify(obj) });
+                const patched = patchRequestBody(body, window.__cgModel, window.__cgEffort);
+                if (patched !== body) a[1] = Object.assign({}, a[1], { body: patched });
               }
             } catch (e) {}
           }
@@ -1252,10 +1320,10 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
     true
   `;
   setEngineStage('message-injected');
-  reportStatus('Bericht versturen');
+  reportStatus(localizedText(language, 'Bericht versturen', 'Sending message'));
   await win.webContents.executeJavaScript(driver, true);
   setEngineStage('send-clicked');
-  reportStatus('ChatGPT denkt');
+  reportStatus(localizedText(language, 'ChatGPT denkt', 'ChatGPT is thinking'));
 
   let text = '';
   let last: any = null;
@@ -1312,7 +1380,9 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
         if (last.error) throw makeEngineError('ChatGPT: ' + last.error, 'send-clicked', true);
         if (last.reqModel && last.reqModel !== slug) {
           throw makeEngineError(
-            `ChatGPT wilde ${slug} gebruiken, maar de website verstuurde ${last.reqModel}. Het antwoord is gestopt om een verborgen modelfallback te voorkomen.`,
+            localizedText(language,
+              `ChatGPT wilde ${slug} gebruiken, maar de website verstuurde ${last.reqModel}. Het antwoord is gestopt om een verborgen modelfallback te voorkomen.`,
+              `ChatGPT was asked to use ${slug}, but the website sent ${last.reqModel}. The answer was stopped to prevent a hidden model fallback.`),
             'send-clicked',
             true,
           );
@@ -1327,7 +1397,7 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
         if (dom.length > text.length) {
           if (!reportedFirstText) {
             reportedFirstText = true;
-            reportStatus('Antwoord streamt');
+            reportStatus(localizedText(language, 'Antwoord streamt', 'Answer is streaming'));
           }
           onDelta(dom.slice(text.length));
           text = dom;
@@ -1340,7 +1410,7 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
       // can churn for a while before the .markdown answer appears, so don't trip then.
       if (!nativeRetried && !last?.reqUrl && !sawStreaming && Date.now() - start > 8000) {
         nativeRetried = true;
-        reportStatus('Bericht opnieuw versturen');
+        reportStatus(localizedText(language, 'Bericht opnieuw versturen', 'Sending the message again'));
         debugLog('plan-B native input retry', {
           stage: last?.stage || '',
           sent: !!last?.sent,
@@ -1354,10 +1424,10 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
         }
       }
       if (nativeRetried && !last?.reqUrl && !text && !sawStreaming && Date.now() - start > 22000) {
-        throw makeEngineError('ChatGPT browserflow kon geen backend POST starten na klikken op versturen', 'send-clicked', true);
+        throw makeEngineError(localizedText(language, 'ChatGPT browserflow kon geen backend POST starten na klikken op versturen', 'The ChatGPT browser flow could not start a backend POST after clicking send'), 'send-clicked', true);
       }
-      if (last?.sent && !text && !sawStreaming && Date.now() - start > 60000) throw makeEngineError('Bericht verstuurd, maar ChatGPT startte geen antwoord', 'send-clicked', true);
-      if (Date.now() - start > 240000) throw makeEngineError('ChatGPT web-engine liep vast tijdens wachten op antwoord', sawStreaming ? 'stream-detected' : 'send-clicked', true);
+      if (last?.sent && !text && !sawStreaming && Date.now() - start > 60000) throw makeEngineError(localizedText(language, 'Bericht verstuurd, maar ChatGPT startte geen antwoord', 'Message sent, but ChatGPT did not start an answer'), 'send-clicked', true);
+      if (Date.now() - start > 240000) throw makeEngineError(localizedText(language, 'ChatGPT web-engine liep vast tijdens wachten op antwoord', 'The ChatGPT web engine timed out while waiting for an answer'), sawStreaming ? 'stream-detected' : 'send-clicked', true);
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
   } finally {
@@ -1471,11 +1541,11 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
     debugLog('plan-B network (conversation-calls)', (last?.net || []).filter((line: string) => /conversation/i.test(line)));
     if (match === 'MISMATCH') {
       console.warn(`[chatgpt] MODEL MISMATCH: vroeg "${slug}" maar backend gebruikte "${actualSlug}" — de website viel terug op een ander model.`);
-      modelVerificationError = `ChatGPT gebruikte ${actualSlug} in plaats van het gekozen model ${slug}. Het antwoord is afgekeurd.`;
+      modelVerificationError = localizedText(language, `ChatGPT gebruikte ${actualSlug} in plaats van het gekozen model ${slug}. Het antwoord is afgekeurd.`, `ChatGPT used ${actualSlug} instead of the selected model ${slug}. The answer was rejected.`);
     }
     if (match === 'REQUEST-MISMATCH') {
       console.warn(`[chatgpt] VERZOEK-MISMATCH: wilde "${slug}" maar de site verstuurde "${reqModel}".`);
-      modelVerificationError = `ChatGPT verstuurde ${reqModel} in plaats van het gekozen model ${slug}. Het antwoord is afgekeurd.`;
+      modelVerificationError = localizedText(language, `ChatGPT verstuurde ${reqModel} in plaats van het gekozen model ${slug}. Het antwoord is afgekeurd.`, `ChatGPT sent ${reqModel} instead of the selected model ${slug}. The answer was rejected.`);
     }
     if (match === 'REQUEST-OK') {
       // Geen alarm: het verzoek klopte aantoonbaar. De backend meldt het model
@@ -1524,9 +1594,9 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
     // caller can back off honestly (instead of a vague "no answer").
     const sample = String(last?.sample || '');
     if (last?.status === 403 || last?.status === 429 || /unusual activity|try again later/i.test(sample)) {
-      throw makeEngineError(unusualActivityBlockedMessage(), 'send-clicked', true);
+      throw makeEngineError(unusualActivityBlockedMessage(language), 'send-clicked', true);
     }
-    throw makeEngineError('Bericht verstuurd, maar ChatGPT startte geen antwoord', 'send-clicked', true);
+    throw makeEngineError(localizedText(language, 'Bericht verstuurd, maar ChatGPT startte geen antwoord', 'Message sent, but ChatGPT did not start an answer'), 'send-clicked', true);
   }
   setEngineStage('response-complete', { lastError: null, recoverable: false, lastModel: (last?.modelSlug || slug || '').trim() || slug });
 
@@ -1540,6 +1610,7 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
       totalTokens: inputTokens + outputTokens,
       contextWindowSize: 128000,
       contextUsedPercent: Math.round((inputTokens / 128000) * 100),
+      source: 'estimate',
     },
   };
 }

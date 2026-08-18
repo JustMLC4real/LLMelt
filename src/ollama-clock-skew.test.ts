@@ -21,6 +21,17 @@ describe('Ollama-klokdiagnose', () => {
     )).toContain('ongeveer 2 uur voor');
   });
 
+  it('geeft Windows-klokadvies in de gekozen Engelse UI-taal', () => {
+    const detail = describeWindowsClockSkew(
+      'Wed, 29 Jul 2026 18:34:00 GMT',
+      Date.parse('2026-07-26T18:34:00Z'),
+      'en',
+    );
+    expect(detail).toContain('about 3 days behind');
+    expect(detail).toContain('Windows clock');
+    expect(detail).not.toContain('Windows-klok');
+  });
+
   it('meldt geen irrelevant klein verschil of ongeldige serverdatum', () => {
     expect(describeWindowsClockSkew(
       'Wed, 29 Jul 2026 18:34:00 GMT',

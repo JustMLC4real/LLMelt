@@ -567,3 +567,15 @@ describe('command-run activity helpers', () => {
     expect(commandRunGroupLabel(normalized)).toBe('Maakte 1 bestand · 2 eerdere pogingen');
   });
 });
+
+describe('Engelse toolactiviteit', () => {
+  it('bouwt Engelse labels en leest Engelse bestandssecties', () => {
+    const completed = { ...baseRun, status: 'completed' as const, exitCode: 0 };
+    expect(commandRunGroupLabel({ key: 'g', runs: [{ key: 'r', run: completed }] }, 'en')).toBe('Ran 1 command');
+    expect(commandRunItemLabel(completed, 'en')).toBe('Ran: .\\hello.bat');
+    expect(commandRunStatusLabel(completed, Date.now(), 'en')).toBe('Exit code 0');
+    const parsed = parseToolOutputActivity('Tool output:\n\nfile-create demo.py\ncreated demo.py\n\n--- file contents ---\nprint("ok")', 'en');
+    expect(parsed?.label).toBe('Completed: create file demo.py');
+    expect(parsed?.file?.contentPreview).toBe('print("ok")');
+  });
+});

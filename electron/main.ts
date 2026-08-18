@@ -9,6 +9,8 @@ import { appEvents } from './app-events.ts';
 import { createTrustedIpcMain, isAllowedRendererUrl, isSafeExternalUrl, trustRenderer } from './ipc-security.ts';
 import { recoverAntigravityHookMutation } from './antigravity-native.ts';
 import { chatgptScraper } from './chatgpt-scraper.ts';
+import { getStore } from './settings-store.ts';
+import { localizedText, normalizeUiLanguage, type UiLanguage } from '../src/i18n/language.ts';
 
 // Een GUI-launcher, gesloten terminal of testhost kan stdout/stderr loskoppelen
 // terwijl Electron nog draait. Een latere console.log geeft dan EPIPE; zonder
@@ -40,6 +42,7 @@ process.env.VITE_PUBLIC = process.env.VITE_DEV_SERVER_URL
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let mainUiLanguage: UiLanguage = 'nl';
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const trustedIpcMain = createTrustedIpcMain(ipcMain);
@@ -130,21 +133,21 @@ function registerRendererContextMenu(win: BrowserWindow) {
     const template: MenuItemConstructorOptions[] = [];
     if (params.isEditable) {
       template.push(
-        { label: 'Ongedaan maken', role: 'undo', enabled: params.editFlags.canUndo },
-        { label: 'Opnieuw', role: 'redo', enabled: params.editFlags.canRedo },
+        { label: localizedText(mainUiLanguage, 'Ongedaan maken', 'Undo'), role: 'undo', enabled: params.editFlags.canUndo },
+        { label: localizedText(mainUiLanguage, 'Opnieuw', 'Redo'), role: 'redo', enabled: params.editFlags.canRedo },
         { type: 'separator' },
-        { label: 'Knippen', role: 'cut', enabled: params.editFlags.canCut },
-        { label: 'Kopieren', role: 'copy', enabled: params.editFlags.canCopy },
-        { label: 'Plakken', role: 'paste', enabled: params.editFlags.canPaste },
-        { label: 'Verwijderen', role: 'delete', enabled: params.editFlags.canDelete },
+        { label: localizedText(mainUiLanguage, 'Knippen', 'Cut'), role: 'cut', enabled: params.editFlags.canCut },
+        { label: localizedText(mainUiLanguage, 'Kopiëren', 'Copy'), role: 'copy', enabled: params.editFlags.canCopy },
+        { label: localizedText(mainUiLanguage, 'Plakken', 'Paste'), role: 'paste', enabled: params.editFlags.canPaste },
+        { label: localizedText(mainUiLanguage, 'Verwijderen', 'Delete'), role: 'delete', enabled: params.editFlags.canDelete },
         { type: 'separator' },
-        { label: 'Alles selecteren', role: 'selectAll', enabled: params.editFlags.canSelectAll },
+        { label: localizedText(mainUiLanguage, 'Alles selecteren', 'Select all'), role: 'selectAll', enabled: params.editFlags.canSelectAll },
       );
     } else {
       template.push(
-        { label: 'Kopieren', role: 'copy', enabled: hasSelection },
+        { label: localizedText(mainUiLanguage, 'Kopiëren', 'Copy'), role: 'copy', enabled: hasSelection },
         { type: 'separator' },
-        { label: 'Alles selecteren', role: 'selectAll' },
+        { label: localizedText(mainUiLanguage, 'Alles selecteren', 'Select all'), role: 'selectAll' },
       );
     }
 
@@ -172,7 +175,7 @@ function openChatFromTray(chatId: string) {
 type TrayChat = { id: string; title: string; folder?: string };
 
 function trayChatTitleText(chat: TrayChat) {
-  const clean = (chat.title || '').trim() || 'Naamloos gesprek';
+  const clean = (chat.title || '').trim() || localizedText(mainUiLanguage, 'Naamloos gesprek', 'Untitled chat');
   return clean.length > 40 ? `${clean.slice(0, 39)}…` : clean;
 }
 
@@ -208,26 +211,26 @@ function buildTrayMenu(): Menu {
   const rest = chats.slice(3);
 
   const template: MenuItemConstructorOptions[] = [
-    { label: 'LLMelt openen', click: () => showMainWindow() },
-    { label: 'Start nieuw gesprek', click: () => openChatFromTray('__new__') },
+    { label: localizedText(mainUiLanguage, 'LLMelt openen', 'Open LLMelt'), click: () => showMainWindow() },
+    { label: localizedText(mainUiLanguage, 'Start nieuw gesprek', 'Start new chat'), click: () => openChatFromTray('__new__') },
     { type: 'separator' },
   ];
 
   if (recent.length) {
-    template.push({ label: 'Recente gesprekken', enabled: false });
+    template.push({ label: localizedText(mainUiLanguage, 'Recente gesprekken', 'Recent chats'), enabled: false });
     for (const chat of recent) {
       template.push({ label: trayChatLabel(chat), click: () => openChatFromTray(chat.id) });
     }
     if (rest.length) {
       template.push({
-        label: `Meer… (${rest.length})`,
+        label: localizedText(mainUiLanguage, `Meer… (${rest.length})`, `More… (${rest.length})`),
         submenu: rest.map((chat) => ({ label: trayChatLabel(chat), click: () => openChatFromTray(chat.id) })),
       });
     }
     template.push({ type: 'separator' });
   }
 
-  template.push({ label: 'Afsluiten', click: () => { mainWindow?.destroy(); app.quit(); } });
+  template.push({ label: localizedText(mainUiLanguage, 'Afsluiten', 'Quit'), click: () => { mainWindow?.destroy(); app.quit(); } });
   return Menu.buildFromTemplate(template);
 }
 
@@ -255,6 +258,10 @@ function createTray() {
   });
   // Vangnet voor DB-directe wijzigingen (bv. auto-titel) vóór de renderer pusht.
   appEvents.on('chats-changed', refreshTrayMenu);
+  appEvents.on('ui-language-changed', (language) => {
+    mainUiLanguage = normalizeUiLanguage(language, 'nl');
+    refreshTrayMenu();
+  });
 }
 
 function registerWindowControls() {
@@ -313,9 +320,10 @@ if (!gotTheLock) {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   initDatabase();
+  mainUiLanguage = normalizeUiLanguage((await getStore()).get('ui.language'), 'nl');
   void recoverAntigravityHookMutation();
   registerIpcHandlers(trustedIpcMain);
   registerWindowControls();

@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { TFunction } from 'i18next';
+import { useTranslation } from 'react-i18next';
 import {
   ArrowRight,
   Check,
@@ -14,6 +16,8 @@ import {
 } from 'lucide-react';
 import { useProviderStore } from '../stores/provider-store';
 import type {
+  AIModel,
+  ChatgptVersion,
   CredentialStatus,
   ProviderType,
   RuntimeSetupProgress,
@@ -39,6 +43,7 @@ type SetupState = 'idle' | 'working' | 'waiting' | 'success' | 'error';
 const delay = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
 const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const { t, i18n } = useTranslation();
   const [step, setStep] = useState<Step>('welcome');
   const [answers, setAnswers] = useState<Record<string, ServiceAnswer>>({});
   const [gaveUp, setGaveUp] = useState(false);
@@ -125,7 +130,7 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     return api.runtime.onSetupProgress((progress: RuntimeSetupProgress) => {
       if (currentSetup && progress.runtime === setupProgressTarget(currentSetup.provider)) {
         setSetupProgress(progress);
-        setSetupMessage(progress.status);
+        setSetupMessage(localizedRuntimeProgress(progress, i18n.resolvedLanguage));
         setSetupState(
           progress.phase === 'ready'
             ? 'success'
@@ -138,11 +143,11 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       }
       if (progress.runtime === 'python') {
         setPythonProgress(progress);
-        setPythonMessage(progress.status);
+        setPythonMessage(localizedRuntimeProgress(progress, i18n.resolvedLanguage));
         setPythonState(progress.phase === 'ready' ? 'success' : progress.phase === 'error' ? 'error' : 'working');
       }
     });
-  }, [currentSetup]);
+  }, [currentSetup, i18n.resolvedLanguage]);
 
   useEffect(() => {
     if (step !== 'scanning') return;
@@ -182,17 +187,17 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const openRuntimeStep = async () => {
     setStep('runtime');
     setPythonState('working');
-    setPythonMessage('Python-runtime controleren...');
+    setPythonMessage(t('onboarding.status.pythonChecking'));
     try {
       const status = await window.electronAPI?.runtime?.getStatus('python');
       if (cancelled.current || !status) return;
       setPythonStatus(status);
       setPythonState(status.ready ? 'success' : 'idle');
-      setPythonMessage(status.detail);
+      setPythonMessage(localizedRuntimeDetail(status, i18n.resolvedLanguage));
     } catch (error) {
       if (cancelled.current) return;
       setPythonState('error');
-      setPythonMessage(error instanceof Error ? error.message : String(error));
+      setPythonMessage(localizedSetupError(error, t, i18n.resolvedLanguage));
     }
   };
 
@@ -239,27 +244,38 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       let result: { success?: boolean; error?: string; message?: string } | undefined;
       if (provider === 'openai') {
         result = await window.electronAPI.auth.chatgptBrowserLogin();
-        setSetupMessage('Log in in het geopende ChatGPT-venster. De gids controleert je sessie automatisch.');
+        const loginSnapshot = result as typeof result & {
+          models?: AIModel[];
+          versions?: ChatgptVersion[];
+          sessionStatus?: { active?: boolean };
+        };
+        const providerStore = useProviderStore.getState();
+        if (Array.isArray(loginSnapshot.models)) providerStore.setProviderModels('openai', loginSnapshot.models);
+        if (Array.isArray(loginSnapshot.versions)) providerStore.setChatgptVersions(loginSnapshot.versions);
+        if (typeof loginSnapshot.sessionStatus?.active === 'boolean') {
+          providerStore.setChatgptSessionActive(loginSnapshot.sessionStatus.active);
+        }
+        setSetupMessage(t('onboarding.status.chatgptLogin'));
       } else if (provider === 'codex') {
         result = await window.electronAPI.auth.codexCliLogin();
-        setSetupMessage(result?.message || 'Rond de ChatGPT-login af in het geopende terminalvenster.');
+        setSetupMessage(t('onboarding.status.codexLogin'));
       } else if (provider === 'anthropic') {
         result = await window.electronAPI.auth.claudeCliLogin();
-        setSetupMessage(result?.message || 'Rond de Claude-login af in het geopende terminalvenster.');
+        setSetupMessage(t('onboarding.status.claudeLogin'));
       } else if (provider === 'antigravity') {
         result = await window.electronAPI.auth.antigravityCliLogin();
-        setSetupMessage(result?.message || 'Rond de Google-login af in het geopende terminalvenster.');
+        setSetupMessage(t('onboarding.status.antigravityLogin'));
       } else if (provider === 'google') {
-        if (!geminiApiKey.trim()) throw new Error('Plak eerst je Gemini API-sleutel.');
-        if (!geminiProjectId.trim() || !geminiOauthClientId.trim()) throw new Error('Vul ook het Google Cloud-project en de OAuth desktop-client-ID in.');
+        if (!geminiApiKey.trim()) throw new Error(t('onboarding.status.geminiKeyMissing'));
+        if (!geminiProjectId.trim() || !geminiOauthClientId.trim()) throw new Error(t('onboarding.status.geminiProjectMissing'));
         const validation = await window.electronAPI.auth.saveCredential('google', geminiApiKey.trim(), 'apikey');
-        if (validation.status !== 'valid') throw new Error(validation.error || 'De Gemini API-sleutel is niet geldig.');
+        if (validation.status !== 'valid') throw new Error(validation.error || t('onboarding.status.geminiKeyInvalid'));
         await window.electronAPI.geminiQuota.configure(geminiProjectId.trim(), geminiOauthClientId.trim());
         const quotaStatus = await window.electronAPI.geminiQuota.connect();
-        if (!quotaStatus.connected) throw new Error(quotaStatus.error || 'Google Cloud-quota koppelen is niet gelukt.');
+        if (!quotaStatus.connected) throw new Error(quotaStatus.error || t('onboarding.status.geminiQuotaFailed'));
         setGeminiApiKey('');
-        result = { success: true, message: 'Gemini API-key en Google Cloud-quota zijn gekoppeld.' };
-        setSetupMessage(result.message || 'Gemini API-key en Google Cloud-quota zijn gekoppeld.');
+        result = { success: true, message: t('onboarding.status.geminiConnected') };
+        setSetupMessage(t('onboarding.status.geminiConnected'));
       } else {
         const status = await window.electronAPI.runtime.install('ollama');
         result = {
@@ -267,10 +283,10 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           error: status.ready ? undefined : status.detail,
           message: status.detail,
         };
-        setSetupMessage(status.detail);
+        setSetupMessage(localizedRuntimeDetail(status, i18n.resolvedLanguage));
       }
 
-      if (result && result.success === false) throw new Error(result.error || 'De configuratiestap kon niet worden gestart.');
+      if (result && result.success === false) throw new Error(result.error || t('onboarding.status.setupStartFailed'));
       if (provider === 'codex' || provider === 'anthropic' || provider === 'antigravity') {
         setSetupState('waiting');
       }
@@ -278,19 +294,19 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       if (cancelled.current || setupActionRun.current !== runId) return;
       if (ready) {
         setSetupState('success');
-        setSetupMessage(`${currentSetup.name} is gecontroleerd en gebruiksklaar.`);
+        setSetupMessage(t('onboarding.status.providerReady', { provider: currentSetup.name }));
       } else {
         setSetupState(
           provider === 'codex' || provider === 'anthropic' || provider === 'antigravity'
             ? 'waiting'
             : 'idle',
         );
-        setSetupMessage('De stap is nog niet afgerond. Rond de installatie/login af en kies daarna “Controleer opnieuw”.');
+        setSetupMessage(t('onboarding.status.setupIncomplete'));
       }
     } catch (error) {
       if (cancelled.current) return;
       setSetupState('error');
-      setSetupMessage(error instanceof Error ? error.message : String(error));
+      setSetupMessage(localizedSetupError(error, t, i18n.resolvedLanguage));
     }
   };
 
@@ -298,7 +314,7 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     if (!currentSetup) return;
     setupActionRun.current += 1;
     setSetupState('working');
-    setSetupMessage('Status controleren…');
+    setSetupMessage(t('onboarding.status.checking'));
     if (currentSetup.provider !== 'openai') {
       await window.electronAPI?.auth.testCredential(currentSetup.provider).catch(() => null);
     }
@@ -306,8 +322,8 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const ready = detectOnboardingService(currentSetup.provider, useProviderStore.getState()).ready;
     setSetupState(ready ? 'success' : 'idle');
     setSetupMessage(ready
-      ? `${currentSetup.name} is gebruiksklaar.`
-      : 'Nog niet klaar. Rond de zichtbare installatie- of login-stap eerst af.');
+      ? t('onboarding.status.providerReady', { provider: currentSetup.name })
+      : t('onboarding.status.notReady'));
   };
 
   const nextSetup = () => {
@@ -326,18 +342,18 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const installPython = async () => {
     if (!window.electronAPI?.runtime || pythonState === 'working') return;
     setPythonState('working');
-    setPythonMessage('Officiële Python-installatie starten...');
+    setPythonMessage(t('onboarding.status.pythonInstalling'));
     setPythonProgress(null);
     try {
       const status = await window.electronAPI.runtime.install('python');
       if (cancelled.current) return;
       setPythonStatus(status);
       setPythonState(status.ready ? 'success' : 'error');
-      setPythonMessage(status.detail);
+      setPythonMessage(localizedRuntimeDetail(status, i18n.resolvedLanguage));
     } catch (error) {
       if (cancelled.current) return;
       setPythonState('error');
-      setPythonMessage(error instanceof Error ? error.message : String(error));
+      setPythonMessage(localizedSetupError(error, t, i18n.resolvedLanguage));
     }
   };
 
@@ -347,7 +363,7 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
   return (
     <div className={`onboarding-screen ${step === 'done' ? 'leaving' : ''}`}>
-      <button className="onboarding-close btn-icon" onClick={onClose} title="Overslaan" aria-label="Overslaan">
+      <button className="onboarding-close btn-icon" onClick={onClose} title={t('onboarding.skip')} aria-label={t('onboarding.skip')}>
         <X size={18} />
       </button>
 
@@ -355,21 +371,18 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         {step === 'welcome' && (
           <div key="welcome" className="onboarding-step onboarding-center">
             <img className="onboarding-logo" src="./icon.png" alt="" />
-            <h1 className="onboarding-title">Hallo, welkom bij LLMelt</h1>
-            <p className="onboarding-text">We controleren eerst wat al werkt en stellen daarna alleen jouw gekozen diensten in.</p>
+            <h1 className="onboarding-title">{t('onboarding.welcome.title')}</h1>
+            <p className="onboarding-text">{t('onboarding.welcome.text')}</p>
             <button className="btn btn-primary onboarding-next" onClick={() => setStep('what')}>
-              Beginnen <ArrowRight size={16} />
+              {t('onboarding.welcome.start')} <ArrowRight size={16} />
             </button>
           </div>
         )}
 
         {step === 'what' && (
           <div key="what" className="onboarding-step onboarding-center">
-            <h1 className="onboarding-title">Al je LLM's op één plek</h1>
-            <p className="onboarding-text">
-              Installaties starten nooit stil. Jij kiest een provider, de gids opent de officiële installer of login,
-              en controleert daarna of de koppeling echt werkt.
-            </p>
+            <h1 className="onboarding-title">{t('onboarding.intro.title')}</h1>
+            <p className="onboarding-text">{t('onboarding.intro.text')}</p>
             <div className="onboarding-logos">
               {ONBOARDING_SERVICES.map((service) => (
                 <span key={service.provider} className={`onboarding-logo-chip ${service.provider}`} title={service.name}>
@@ -378,7 +391,7 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               ))}
             </div>
             <button className="btn btn-primary onboarding-next" onClick={() => setStep('scanning')}>
-              Controleer deze pc <ArrowRight size={16} />
+              {t('onboarding.intro.check')} <ArrowRight size={16} />
             </button>
           </div>
         )}
@@ -386,10 +399,8 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         {step === 'scanning' && (
           <div key="scanning" className="onboarding-step onboarding-center">
             <Loader2 size={30} className="spin onboarding-spinner" />
-            <h1 className="onboarding-title">Diensten en accounts controleren</h1>
-            <p className="onboarding-text">
-              We lezen alleen providerstatussen. Je gesprekken, bestanden en bestaande instellingen worden niet gewist.
-            </p>
+            <h1 className="onboarding-title">{t('onboarding.scanning.title')}</h1>
+            <p className="onboarding-text">{t('onboarding.scanning.text')}</p>
             <div className="onboarding-scanlist">
               {ONBOARDING_SERVICES.map((service) => {
                 const hit = detected[service.provider];
@@ -397,7 +408,9 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                   <div key={service.provider} className={`onboarding-scanrow ${hit.state}`}>
                     <span className={`onboarding-logo-chip small ${service.provider}`}><ProviderAvatarIcon provider={service.provider} /></span>
                     <span className="onboarding-scanname">{service.name}</span>
-                    <span className="onboarding-scandetail">{hit.detail || service.looksAt}</span>
+                    <span className="onboarding-scandetail">
+                      {localizedDetectionDetail(service, hit, t, i18n.resolvedLanguage)}
+                    </span>
                     <span className="onboarding-scanstate">
                       {hit.state === 'unknown'
                         ? <Loader2 size={13} className="spin" />
@@ -407,16 +420,14 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 );
               })}
             </div>
-            <p className="onboarding-progress">{scanned} van {ONBOARDING_SERVICES.length} gecontroleerd</p>
+            <p className="onboarding-progress">{t('onboarding.scanning.progress', { scanned, total: ONBOARDING_SERVICES.length })}</p>
           </div>
         )}
 
         {step === 'confirm' && (
           <div key="confirm" className="onboarding-step">
-            <h1 className="onboarding-title">Dit is al gevonden</h1>
-            <p className="onboarding-text">
-              “Gevonden” kan ook betekenen dat een CLI nog login nodig heeft; dat lossen we in de volgende stappen op.
-            </p>
+            <h1 className="onboarding-title">{t('onboarding.confirm.title')}</h1>
+            <p className="onboarding-text">{t('onboarding.confirm.text')}</p>
             <div className="onboarding-list">
               {foundServices.length > 0 && (
                 <BulkServiceAnswers
@@ -437,11 +448,11 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     onAnswer={(answer) => setAnswers((previous) => ({ ...previous, [service.provider]: answer }))}
                   />
                 ))
-                : <p className="onboarding-text">Nog niets gevonden. Geen probleem: kies hierna wat je wilt installeren of koppelen.</p>}
+                : <p className="onboarding-text">{t('onboarding.confirm.none')}</p>}
             </div>
             <div className="onboarding-actions">
               <button className="btn btn-primary" onClick={() => setStep('missing')}>
-                Volgende <ArrowRight size={16} />
+                {t('onboarding.next')} <ArrowRight size={16} />
               </button>
             </div>
           </div>
@@ -449,8 +460,8 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
         {step === 'missing' && (
           <div key="missing" className="onboarding-step">
-            <h1 className="onboarding-title">Wat wil je nog instellen?</h1>
-            <p className="onboarding-text">Kies “Ja” om nu samen de installatie of login te doorlopen.</p>
+            <h1 className="onboarding-title">{t('onboarding.missing.title')}</h1>
+            <p className="onboarding-text">{t('onboarding.missing.text')}</p>
             <div className="onboarding-list">
               {missingServices.length > 0 && (
                 <BulkServiceAnswers
@@ -471,12 +482,12 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     onAnswer={(answer) => setAnswers((previous) => ({ ...previous, [service.provider]: answer }))}
                   />
                 ))
-                : <p className="onboarding-text">Alle diensten zijn gevonden.</p>}
+                : <p className="onboarding-text">{t('onboarding.missing.allFound')}</p>}
             </div>
             <div className="onboarding-actions">
-              <button className="btn btn-secondary" onClick={() => setStep('confirm')}>Terug</button>
+              <button className="btn btn-secondary" onClick={() => setStep('confirm')}>{t('onboarding.back')}</button>
               <button className="btn btn-primary" onClick={beginSetup}>
-                Instellen met mij <ArrowRight size={16} />
+                {t('onboarding.setupWithMe')} <ArrowRight size={16} />
               </button>
             </div>
           </div>
@@ -490,7 +501,9 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             index={setupIndex}
             total={selectedServices.length + 1}
             state={currentDetection.ready ? 'success' : setupState}
-            message={currentDetection.ready ? `${currentSetup.name} is al gebruiksklaar.` : setupMessage}
+            message={currentDetection.ready
+              ? t('onboarding.status.providerAlreadyReady', { provider: currentSetup.name })
+              : setupMessage}
             progress={setupProgress}
             geminiApiKey={geminiApiKey}
             onGeminiApiKeyChange={setGeminiApiKey}
@@ -515,27 +528,25 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         {step === 'runtime' && (
           <div key="runtime" className="onboarding-step">
             <div className="onboarding-setup-progress">
-              Stap {selectedServices.length + 1} van {selectedServices.length + 1}
+              {t('onboarding.step', { current: selectedServices.length + 1, total: selectedServices.length + 1 })}
             </div>
             <div className="onboarding-setup-heading">
               <span className="onboarding-logo-chip python"><FileCode2 size={22} /></span>
               <div>
-                <h1 className="onboarding-title">Python voor code-opdrachten</h1>
-                <p className="onboarding-text">
-                  Python is optioneel voor chat, maar nodig wanneer een model Python-scripts moet bouwen en uitvoeren.
-                </p>
+                <h1 className="onboarding-title">{t('onboarding.python.title')}</h1>
+                <p className="onboarding-text">{t('onboarding.python.description')}</p>
               </div>
             </div>
 
             <ol className="onboarding-setup-list">
-              <li>De app accepteert alleen een executable die echt een Python-versie retourneert.</li>
-              <li>Installeren gebeurt pas na jouw klik via de officiële Python Install Manager.</li>
-              <li>Na installatie wordt het executablepad opnieuw gecontroleerd en voor toolcommando’s bewaard.</li>
+              <li>{t('onboarding.python.steps.validate')}</li>
+              <li>{t('onboarding.python.steps.install')}</li>
+              <li>{t('onboarding.python.steps.save')}</li>
             </ol>
 
             {pythonStatus?.executablePath && (
               <div>
-                <div className="settings-row-label mb-2">Gedetecteerd Python-pad</div>
+                <div className="settings-row-label mb-2">{t('onboarding.python.detectedPath')}</div>
                 <div className="cli-path-display" title={pythonStatus.executablePath}>{pythonStatus.executablePath}</div>
               </div>
             )}
@@ -544,7 +555,7 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               {pythonState === 'working'
                 ? <Loader2 size={16} className="spin" />
                 : pythonStatus?.ready ? <Check size={16} /> : pythonState === 'error' ? <X size={16} /> : <HelpCircle size={16} />}
-              <span>{pythonMessage || pythonStatus?.detail || 'Python is nog niet gecontroleerd.'}</span>
+              <span>{pythonMessage || pythonStatus?.detail || t('onboarding.python.notChecked')}</span>
             </div>
             <SetupProgressBar progress={pythonProgress} />
 
@@ -552,20 +563,20 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               <div className="onboarding-setup-buttons">
                 <button className="btn btn-primary" onClick={installPython} disabled={pythonState === 'working'}>
                   {pythonState === 'working' ? <Loader2 size={15} className="spin" /> : <FileCode2 size={15} />}
-                  {pythonState === 'working' ? 'Bezig…' : 'Installeer officiële Python'}
+                  {pythonState === 'working' ? t('onboarding.working') : t('onboarding.python.installOfficial')}
                 </button>
                 <button className="btn btn-secondary" onClick={() => void openRuntimeStep()} disabled={pythonState === 'working'}>
-                  <RefreshCw size={14} /> Controleer opnieuw
+                  <RefreshCw size={14} /> {t('onboarding.recheck')}
                 </button>
               </div>
             )}
 
             <div className="onboarding-actions">
               <button className="btn btn-secondary" onClick={() => setStep(selectedServices.length ? 'setup' : 'missing')} disabled={pythonState === 'working'}>
-                Terug
+                {t('onboarding.back')}
               </button>
               <button className="btn btn-primary" onClick={() => void finish()} disabled={pythonState === 'working'}>
-                {pythonStatus?.ready ? 'Afronden' : 'Zonder Python doorgaan'} <ArrowRight size={16} />
+                {pythonStatus?.ready ? t('onboarding.finish') : t('onboarding.python.continueWithout')} <ArrowRight size={16} />
               </button>
             </div>
           </div>
@@ -574,15 +585,15 @@ const OnboardingGuide: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         {step === 'ready' && (
           <div key="ready" className="onboarding-step onboarding-center">
             <Loader2 size={30} className="spin onboarding-spinner" />
-            <h1 className="onboarding-title">Keuzes opslaan…</h1>
+            <h1 className="onboarding-title">{t('onboarding.saving')}</h1>
           </div>
         )}
 
         {step === 'done' && (
           <div key="done" className="onboarding-step onboarding-center">
             <Sparkles size={36} className="onboarding-sparkle" />
-            <h1 className="onboarding-title">LLMelt staat klaar</h1>
-            <p className="onboarding-text">Je kunt providerinstellingen en deze gids later altijd opnieuw openen.</p>
+            <h1 className="onboarding-title">{t('onboarding.done.title')}</h1>
+            <p className="onboarding-text">{t('onboarding.done.text')}</p>
           </div>
         )}
       </div>
@@ -627,17 +638,18 @@ function ProviderSetupStep({
   onBack: () => void;
   onNext: () => void;
 }) {
+  const { t, i18n } = useTranslation();
   const working = state === 'working';
   const ready = detection.ready || state === 'success';
-  const info = setupInfo(service.provider, detection);
+  const info = setupInfo(service.provider, detection, t);
 
   return (
     <div className="onboarding-step">
-      <div className="onboarding-setup-progress">Stap {index + 1} van {total}</div>
+      <div className="onboarding-setup-progress">{t('onboarding.step', { current: index + 1, total })}</div>
       <div className="onboarding-setup-heading">
         <span className={`onboarding-logo-chip ${service.provider}`}><ProviderAvatarIcon provider={service.provider} /></span>
         <div>
-          <h1 className="onboarding-title">{service.name} instellen</h1>
+          <h1 className="onboarding-title">{t('onboarding.setup.providerTitle', { provider: service.name })}</h1>
           <p className="onboarding-text">{info.description}</p>
         </div>
       </div>
@@ -648,7 +660,7 @@ function ProviderSetupStep({
 
       {detection.executablePath && (
         <div>
-          <div className="settings-row-label mb-2">Gedetecteerd CLI-pad</div>
+          <div className="settings-row-label mb-2">{t('onboarding.setup.detectedCliPath')}</div>
           <div className="cli-path-display" title={detection.executablePath}>{detection.executablePath}</div>
         </div>
       )}
@@ -656,15 +668,15 @@ function ProviderSetupStep({
       {service.provider === 'google' && !ready && (
         <div className="onboarding-key-field">
           <label>
-            <span><KeyRound size={14} /> Gemini API-sleutel</span>
+            <span><KeyRound size={14} /> {t('onboarding.setup.geminiApiKey')}</span>
             <input className="input" type="password" autoComplete="off" placeholder="AI..." value={geminiApiKey} onChange={(event) => onGeminiApiKeyChange(event.target.value)} />
           </label>
           <label>
-            <span>Google Cloud-project-ID</span>
+            <span>{t('onboarding.setup.googleProjectId')}</span>
             <input className="input" placeholder="mijn-gemini-project" value={geminiProjectId} onChange={(event) => onGeminiProjectIdChange(event.target.value)} />
           </label>
           <label>
-            <span>OAuth desktop-client-ID</span>
+            <span>{t('onboarding.setup.oauthClientId')}</span>
             <input className="input" placeholder="...apps.googleusercontent.com" value={geminiOauthClientId} onChange={(event) => onGeminiOauthClientIdChange(event.target.value)} />
           </label>
         </div>
@@ -680,7 +692,7 @@ function ProviderSetupStep({
               : state === 'waiting'
                 ? <Terminal size={16} />
                 : <HelpCircle size={16} />}
-        <span>{message || detection.detail || 'Nog niet ingesteld'}</span>
+        <span>{message || localizedDetectionDetail(service, detection, t, i18n.resolvedLanguage)}</span>
       </div>
       <SetupProgressBar progress={progress} ready={ready} />
 
@@ -688,18 +700,18 @@ function ProviderSetupStep({
         <div className="onboarding-setup-buttons">
           <button className="btn btn-primary" onClick={onAction} disabled={working || (service.provider === 'google' && (!geminiApiKey.trim() || !geminiProjectId.trim() || !geminiOauthClientId.trim()))}>
             {working ? <Loader2 size={15} className="spin" /> : info.icon}
-            {working ? 'Bezig…' : info.action}
+            {working ? t('onboarding.working') : info.action}
           </button>
           <button className="btn btn-secondary" onClick={onRecheck} disabled={working}>
-            <RefreshCw size={14} /> Controleer opnieuw
+            <RefreshCw size={14} /> {t('onboarding.recheck')}
           </button>
         </div>
       )}
 
       <div className="onboarding-actions">
-        <button className="btn btn-secondary" onClick={onBack} disabled={working}>Terug</button>
+        <button className="btn btn-secondary" onClick={onBack} disabled={working}>{t('onboarding.back')}</button>
         <button className="btn btn-primary" onClick={onNext} disabled={working}>
-          {ready ? 'Volgende' : 'Later afronden'} <ArrowRight size={16} />
+          {ready ? t('onboarding.next') : t('onboarding.finishLater')} <ArrowRight size={16} />
         </button>
       </div>
     </div>
@@ -721,6 +733,7 @@ function SetupProgressBar({
   progress: RuntimeSetupProgress | null;
   ready?: boolean;
 }) {
+  const { t } = useTranslation();
   if (!showOnboardingSetupProgress(ready, progress)) {
     return null;
   }
@@ -742,58 +755,142 @@ function SetupProgressBar({
       </div>
       <span>
         {activeProgress.phase === 'awaiting-login'
-          ? 'Wacht op afronden van de login'
+          ? t('onboarding.progress.awaitingLogin')
           : percent === null
-            ? 'Voortgang wordt live gevolgd'
+            ? t('onboarding.progress.live')
             : `${percent}%`}
       </span>
     </div>
   );
 }
 
-function setupInfo(provider: OnboardingServiceId, detection: OnboardingDetection) {
+function setupInfo(provider: OnboardingServiceId, detection: OnboardingDetection, t: TFunction) {
   switch (provider) {
     case 'openai':
       return {
-        description: 'ChatGPT Subscription gebruikt een aparte beveiligde websessie in LLMelt; er is geen API-key nodig.',
-        steps: ['Open het ChatGPT-loginvenster.', 'Log in en kies zo nodig je workspace.', 'Keer terug; de gids controleert de sessie automatisch.'],
-        action: 'Open ChatGPT-login',
+        description: t('onboarding.providers.openai.description'),
+        steps: [
+          t('onboarding.providers.openai.steps.open'),
+          t('onboarding.providers.openai.steps.login'),
+          t('onboarding.providers.openai.steps.return'),
+        ],
+        action: t('onboarding.providers.openai.action'),
         icon: <ExternalLink size={15} />,
       };
     case 'codex':
-      return cliSetupInfo('Codex CLI', detection, 'ChatGPT', 'Installeer Codex CLI', 'Open Codex-login');
+      return cliSetupInfo('Codex CLI', detection, 'ChatGPT', t('onboarding.providers.codex.install'), t('onboarding.providers.codex.open'), t);
     case 'anthropic':
-      return cliSetupInfo('Claude Code CLI', detection, 'Claude', 'Installeer Claude CLI', 'Open Claude-login');
+      return cliSetupInfo('Claude Code CLI', detection, 'Claude', t('onboarding.providers.claude.install'), t('onboarding.providers.claude.open'), t);
     case 'antigravity':
-      return cliSetupInfo('Antigravity CLI', detection, 'Google', 'Installeer Antigravity', 'Open Antigravity-login');
+      return cliSetupInfo('Antigravity CLI', detection, 'Google', t('onboarding.providers.antigravity.install'), t('onboarding.providers.antigravity.open'), t);
     case 'google':
       return {
-        description: 'Gemini gebruikt de Developer API. De API-key en read-only Google Cloud-quota moeten verplicht aan hetzelfde project zijn gekoppeld.',
-        steps: ['Maak een API-sleutel in Google AI Studio.', 'Activeer API Keys API, Cloud Resource Manager API, Service Usage API en Cloud Monitoring API in hetzelfde Cloud-project.', 'Maak in dat project een OAuth desktop-client.', 'LLMelt valideert alles en leest daarna alleen project-, quota- en verbruiksgegevens.'],
-        action: 'Valideer en koppel Google Cloud',
+        description: t('onboarding.providers.google.description'),
+        steps: [
+          t('onboarding.providers.google.steps.key'),
+          t('onboarding.providers.google.steps.apis'),
+          t('onboarding.providers.google.steps.oauth'),
+          t('onboarding.providers.google.steps.validate'),
+        ],
+        action: t('onboarding.providers.google.action'),
         icon: <KeyRound size={15} />,
       };
     case 'ollama':
       return {
-        description: 'Ollama draait volledig lokaal en moet als lokale server actief zijn.',
-        steps: ['Start na jouw klik de officiële Windows-installatie.', 'Start de lokale Ollama-server.', 'Download bij een lege installatie het lichte basismodel en controleer de live catalogus.'],
-        action: 'Installeer en controleer Ollama',
+        description: t('onboarding.providers.ollama.description'),
+        steps: [
+          t('onboarding.providers.ollama.steps.install'),
+          t('onboarding.providers.ollama.steps.start'),
+          t('onboarding.providers.ollama.steps.model'),
+        ],
+        action: t('onboarding.providers.ollama.action'),
         icon: <Terminal size={15} />,
       };
   }
 }
 
-function cliSetupInfo(name: string, detection: OnboardingDetection, account: string, installLabel: string, openLabel: string) {
+function cliSetupInfo(
+  name: string,
+  detection: OnboardingDetection,
+  account: string,
+  installLabel: string,
+  openLabel: string,
+  t: TFunction,
+) {
   return {
-    description: `${name} gebruikt je ${account}-account rechtstreeks; LLMelt bewaart het accountwachtwoord niet.`,
+    description: t('onboarding.providers.cli.description', { name, account }),
     steps: [
-      detection.state === 'found' ? 'De CLI is al gevonden.' : 'Start de officiële Windows-installer.',
-      `Rond de ${account}-login af in het zichtbare terminal- of browservenster.`,
-      'Keer terug; de gids controleert installatie en login automatisch.',
+      detection.state === 'found'
+        ? t('onboarding.providers.cli.steps.found')
+        : t('onboarding.providers.cli.steps.install'),
+      t('onboarding.providers.cli.steps.login', { account }),
+      t('onboarding.providers.cli.steps.return'),
     ],
     action: detection.state === 'found' ? openLabel : installLabel,
     icon: <Terminal size={15} />,
   };
+}
+
+function localizedDetectionDetail(
+  service: OnboardingService,
+  detection: OnboardingDetection | undefined,
+  t: TFunction,
+  language?: string,
+) {
+  if (!detection) return t(`onboarding.looksAt.${service.provider}`);
+  if (language?.startsWith('nl') && detection.detail) return detection.detail;
+  if (detection.state === 'unknown') return t('onboarding.detection.checking');
+  if (detection.state === 'absent') {
+    return t('onboarding.detection.notFound', { provider: service.name });
+  }
+  if (detection.ready) return t('onboarding.detection.ready', { provider: service.name });
+  return t('onboarding.detection.foundNeedsSetup', { provider: service.name });
+}
+
+function localizedRuntimeProgress(progress: RuntimeSetupProgress, language?: string) {
+  if (language?.startsWith('nl')) return progress.status;
+  const runtime = runtimeDisplayName(progress.runtime);
+  switch (progress.phase) {
+    case 'checking': return `Checking ${runtime}…`;
+    case 'downloading': return `Downloading ${runtime}…`;
+    case 'installing': return `Installing ${runtime}…`;
+    case 'configuring': return `Configuring ${runtime}…`;
+    case 'awaiting-login': return `Waiting for the ${runtime} login to be completed…`;
+    case 'starting': return `Starting ${runtime}…`;
+    case 'pulling-model': return 'Downloading the required Ollama model…';
+    case 'ready': return `${runtime} is ready to use.`;
+    case 'cancelled': return `${runtime} setup was cancelled.`;
+    case 'error': return `${runtime} setup failed. Check the installer or login window and try again.`;
+    default: return `Working on ${runtime}…`;
+  }
+}
+
+function localizedRuntimeDetail(status: RuntimeStatus, language?: string) {
+  if (language?.startsWith('nl')) return status.detail;
+  const runtime = runtimeDisplayName(status.runtime);
+  if (status.ready) {
+    const suffix = status.model ? ` with ${status.model}` : status.version ? ` (${status.version})` : '';
+    return `${runtime} is ready to use${suffix}.`;
+  }
+  return `${runtime} is not ready yet. Complete the installation and try again.`;
+}
+
+function localizedSetupError(error: unknown, t: TFunction, language?: string) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (language?.startsWith('nl')) return message;
+  const technical = [...new Set(message.match(/\b(?:HTTP\s*)?\d{3}\b|\b[A-Z][A-Z0-9_]{3,}\b/g) || [])]
+    .slice(0, 3)
+    .join(', ');
+  const generic = t('onboarding.status.setupStartFailed');
+  return technical ? `${generic} (${technical})` : generic;
+}
+
+function runtimeDisplayName(runtime: RuntimeSetupProgress['runtime'] | RuntimeStatus['runtime']) {
+  if (runtime === 'python') return 'Python';
+  if (runtime === 'ollama') return 'Ollama';
+  if (runtime === 'claude') return 'Claude CLI';
+  if (runtime === 'codex') return 'Codex CLI';
+  return 'Antigravity CLI';
 }
 
 function BulkServiceAnswers({
@@ -803,13 +900,14 @@ function BulkServiceAnswers({
   onSelectAll: () => void;
   onDeselectAll: () => void;
 }) {
+  const { t } = useTranslation();
   return (
-    <div className="onboarding-bulk-actions" role="group" aria-label="Alle diensten kiezen">
+    <div className="onboarding-bulk-actions" role="group" aria-label={t('onboarding.bulk.aria')}>
       <button type="button" className="btn btn-secondary onboarding-yesall" onClick={onSelectAll}>
-        <Check size={15} /> Alles selecteren
+        <Check size={15} /> {t('onboarding.bulk.selectAll')}
       </button>
       <button type="button" className="btn btn-secondary onboarding-yesall" onClick={onDeselectAll}>
-        <X size={15} /> Alles deselecteren
+        <X size={15} /> {t('onboarding.bulk.deselectAll')}
       </button>
     </div>
   );
@@ -828,7 +926,12 @@ function ServiceRow({
   options: ServiceAnswer[];
   onAnswer: (answer: ServiceAnswer) => void;
 }) {
-  const labels: Record<ServiceAnswer, string> = { yes: 'Ja', maybe: 'Later', no: 'Nee' };
+  const { t, i18n } = useTranslation();
+  const labels: Record<ServiceAnswer, string> = {
+    yes: t('onboarding.answers.yes'),
+    maybe: t('onboarding.answers.later'),
+    no: t('onboarding.answers.no'),
+  };
   const icons: Record<ServiceAnswer, React.ReactNode> = {
     yes: <Check size={14} />,
     maybe: <HelpCircle size={14} />,
@@ -843,10 +946,14 @@ function ServiceRow({
       <div className="onboarding-service-text">
         <div className="onboarding-service-name">
           {service.name}
-          {detection?.source && <span className={`onboarding-source ${detection.source}`}>{detection.source}</span>}
+          {detection?.source && (
+            <span className={`onboarding-source ${detection.source}`}>
+              {t(`onboarding.sources.${detection.source}`)}
+            </span>
+          )}
         </div>
         <div className="onboarding-service-detail">
-          {detection?.state === 'unknown' ? 'kon niet controleren' : (detection?.detail || service.looksAt)}
+          {localizedDetectionDetail(service, detection, t, i18n.resolvedLanguage)}
         </div>
       </div>
       <div className="onboarding-choices">

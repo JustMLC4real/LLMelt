@@ -6,6 +6,7 @@ export function boundedString(value: unknown, maxLength: number, label: string) 
 }
 
 export function sanitizeRendererSettingValue(key: string, value: unknown) {
+  if (key === 'ui.language') return value === 'en' ? 'en' : 'nl';
   if (key === 'profile.avatarDataUrl') {
     if (value === null || value === '') return null;
     const avatar = boundedString(value, 5_000_000, 'Profielfoto');
@@ -41,8 +42,6 @@ export function sanitizeRendererSettingValue(key: string, value: unknown) {
   }
   const limits: Record<string, number> = {
     'codex.executable': 32_768,
-    'codex.serviceTier': 100,
-    'codex.reasoningEffort': 100,
     'claude.executable': 32_768,
     'antigravity.executable': 32_768,
     'antigravity.statusJsonPath': 32_768,
@@ -62,8 +61,6 @@ export function buildRendererSettingsSnapshot(get: (key: string) => unknown) {
     },
     codex: {
       executable: get('codex.executable'),
-      serviceTier: get('codex.serviceTier'),
-      reasoningEffort: get('codex.reasoningEffort'),
       timeoutSeconds: get('codex.timeoutSeconds'),
     },
     claude: {

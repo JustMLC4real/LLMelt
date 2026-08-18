@@ -158,7 +158,14 @@ approval-/shell-laag, en alles wordt gelogd (`mcp:call`-events + `mcp-debug.log`
 Los van agent-tools kan de gebruiker een **echte interactieve terminal** openen (`TerminalPanel.tsx`
 + `@xterm/xterm`). `node-pty` spawnt een PowerShell/cmd/pwsh in de projectmap; I/O loopt via
 `terminal:*`-IPC. Sessies zijn eigenaar-gebonden, per renderer begrensd tot acht en worden
-opgeruimd als het venster sluit.
+opgeruimd als het venster sluit. Provider-native acties kunnen in hetzelfde paneel rechtstreeks de
+werkelijk gedetecteerde Codex-, Claude- of Antigravity-CLI starten. Daarmee blijven interactieve
+TUI-commando's eigendom van die CLI; LLMelt hoeft geen onvolledige slashlijst na te bootsen.
+
+Codex vormt de uitzondering voor machineleesbare native acties: `codex app-server` publiceert live
+collaboration modes en skills en heeft protocolmethoden voor goals en reviews. LLMelt toont alleen
+die echte App Server-capabilities. Claude `--print` en Antigravity `--print` publiceren hun
+interactieve slashcatalogus niet; daarvoor opent de app de echte TUI-terminal.
 
 ## 6.8 Native Claude Code-tools (`electron/claude-native.ts`)
 
@@ -168,7 +175,10 @@ de per-tool approval-popup. Alleen actief als PC-tools aanstaan; anders blijft h
 platte-tekst `claude -p`-pad.
 
 **Empirisch bevestigd** tegen `claude` v2.1.202 (de vlag staat niet in `--help` maar ís geregistreerd):
-- `--permission-prompt-tool mcp__<srv>__approval_prompt` gate't **elke** tool.
+- `--permission-prompt-tool mcp__<srv>__approval_prompt` gate't elke
+  **toestemmingsplichtige** tool. Een `Read` binnen de werkmap kan Claude Code onder
+  `default` zelf veilig toelaten; de stream levert daarvoor wel gewoon `tool_use` en
+  `tool_result`, zodat de activiteit zichtbaar en controleerbaar blijft.
 - Contract — **in:** `{ tool_name, input, tool_use_id }`; **uit:** text-content met JSON
   `{ behavior: "allow", updatedInput }` of `{ behavior: "deny", message }`.
 - Werkt alleen in een **schone env** (zonder `CLAUDECODE`/`CLAUDE_CODE_*`/`ANTHROPIC_BASE_URL`;
@@ -189,10 +199,10 @@ platte-tekst `claude -p`-pad.
 > (zelfde patroon als `runProcess`). De env wordt defensief gestript (`CLAUDECODE`/`CLAUDE_CODE_*`/
 > `ANTHROPIC_BASE_URL`) zodat `--permission-prompt-tool` wél gate't.
 
-**Approval-mapping:** `ask` → `--permission-mode default`, elke tool via de popup ·
+**Approval-mapping:** `ask` → `--permission-mode default`, elke toestemmingsplichtige tool via de popup ·
 `auto-project` laat alleen canoniek interne bestandstools automatisch door; shelltools blijven via
 `requestAgentApproval` vragen. `full` gebruikt bovendien
-`--permission-mode bypassPermissions` gebruikt (de brug wordt dan niet eens geraadpleegd).
+`--permission-mode bypassPermissions` (de brug wordt dan niet eens geraadpleegd).
 
 **Integratie** (`runAssistantForExistingChat`, gate via `isNativeToolModel`): bij een native provider
 worden `AGENT_TOOL_INSTRUCTIONS`, de intent-guard, `runAgentToolLoop` én de **directe-commando-router**
@@ -330,8 +340,9 @@ daarna de oorspronkelijke bytes (of verwijdert het nieuw aangemaakte bestand/map
   leest best-effort de uitvoer uit Antigravity's `transcript.jsonl`.
 - De brug draait via `process.execPath + ELECTRON_RUN_AS_NODE`; paden staan in env-vars zodat
   Windows-shellquoting geen executable met spaties vermangelt.
-- `auto-project` start daarnaast met `--sandbox`; alle modi gebruiken `--mode accept-edits` zodat
-  goedgekeurde wijzigingen de echte projectmap raken. Printmodus krijgt ook
+- `auto-project` start daarnaast met `--sandbox`; gewone toolbeurten gebruiken `--mode
+  accept-edits`, terwijl een live geselecteerde provider-planmodus als `--mode plan` wordt
+  meegestuurd. Printmodus krijgt ook
   `--dangerously-skip-permissions`: daarin bestaat geen interactieve TUI voor Antigravity's tweede
   permissionprompt. Dit omzeilt niet de app-goedkeuring, want de tijdelijke `PreToolUse`-hook blijft
   vóór iedere tool autoritatief; een `deny` blokkeert de tool ook met deze vlag.

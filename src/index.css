@@ -121,6 +121,41 @@ html, body {
   flex-direction: column;
 }
 
+/* De taal wisselt appbreed als één rustige fade. De oude en de vertaalde
+   renderer worden als snapshots over elkaar gezet, zodat woorden nergens
+   afzonderlijk springen of flippen. */
+html.language-transition-active::view-transition-group(root) {
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+html.language-transition-active::view-transition-old(root) {
+  animation: languageRootOut 160ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html.language-transition-active::view-transition-new(root) {
+  animation: languageRootIn 220ms cubic-bezier(0, 0, 0.2, 1) both;
+}
+
+html.language-transition-active.language-transition-fallback-out #root {
+  opacity: 0;
+  transition: opacity 120ms cubic-bezier(0.4, 0, 1, 1);
+}
+
+html.language-transition-active.language-transition-fallback-in #root {
+  animation: languageRootIn 180ms cubic-bezier(0, 0, 0.2, 1) both;
+}
+
+@keyframes languageRootOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes languageRootIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar {
   width: 6px;
@@ -149,9 +184,12 @@ html, body {
 /* ── App Layout ── */
 .app-layout {
   display: flex;
+  width: 100%;
+  min-width: 0;
   height: 100%;
   padding-top: var(--titlebar-height);
   background: var(--bg-primary);
+  overflow: hidden;
 }
 
 /* ── Titlebar (custom frameless) ── */
@@ -297,7 +335,9 @@ html, body {
 }
 
 .panel-resize-active .sidebar,
-.panel-resize-active .terminal-panel-slot {
+.panel-resize-active .terminal-panel-slot,
+.window-resize-active .sidebar,
+.window-resize-active .terminal-panel-slot {
   transition: none !important;
 }
 
@@ -316,9 +356,44 @@ html, body {
 
 .sidebar-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-2);
   padding: var(--space-3);
+}
+
+.sidebar-actions > button,
+.sidebar-actions > button > span {
+  min-width: 0;
+}
+
+.sidebar-actions > button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar.mobile-drawer-open {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: min(280px, calc(100vw - 44px));
+  min-width: min(280px, calc(100vw - 44px));
+  z-index: 60;
+  box-shadow: 18px 0 48px rgba(0, 0, 0, 0.48);
+}
+
+.mobile-sidebar-rail {
+  flex: 0 0 var(--sidebar-collapsed);
+  width: var(--sidebar-collapsed);
+}
+
+.mobile-sidebar-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  padding: 0;
+  border: 0;
+  background: rgba(4, 8, 16, 0.42);
+  cursor: default;
 }
 
 .sidebar-folder-form {
@@ -380,6 +455,7 @@ html, body {
   position: relative;
   background: var(--bg-primary);
   overflow: hidden;
+  container: main-content / inline-size;
 }
 
 .view-transition {
@@ -404,6 +480,7 @@ html, body {
 
 .chat-toolbar {
   flex-shrink: 0;
+  min-width: 0;
   min-height: 44px;
   display: flex;
   align-items: center;
@@ -419,6 +496,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
 }
 
 .chat-toolbar-btn {
@@ -435,6 +513,7 @@ html, body {
   font-size: var(--font-size-xs);
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
@@ -1495,6 +1574,7 @@ html, body {
   overflow: visible;
   pointer-events: auto;
   isolation: isolate;
+  min-width: 0;
 }
 
 .chat-input-wrapper:focus-within {
@@ -1512,32 +1592,60 @@ html, body {
   border-bottom: 1px solid var(--glass-border);
 }
 
-.command-state-chip {
+.chat-input-top.command-only {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.composer-command-chip {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 26px;
-  padding: 0 var(--space-2);
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 6px 0 var(--space-3);
   border: 1px solid rgba(6, 182, 212, 0.24);
   border-radius: var(--radius-full);
   background: rgba(6, 182, 212, 0.09);
   color: var(--accent-cyan);
   font-size: var(--font-size-xs);
   font-weight: 700;
+  white-space: nowrap;
 }
 
-.command-state-chip strong {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-primary);
-  font-weight: 600;
+.composer-command-chip.pending {
+  border-color: rgba(139, 92, 246, 0.4);
+  background: rgba(139, 92, 246, 0.12);
+  color: #c4b5fd;
+}
+
+.composer-command-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: currentColor;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.composer-command-remove:hover {
+  background: rgba(255, 255, 255, 0.08);
+  opacity: 1;
 }
 
 .command-palette {
   margin: 0 var(--space-3) var(--space-2);
   padding: var(--space-1);
+  max-height: min(260px, calc(100vh - 300px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   border: 1px solid var(--glass-border-hover);
   border-radius: var(--radius-md);
   background: #151c2c;
@@ -1546,7 +1654,7 @@ html, body {
 
 .command-palette-item {
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -1569,9 +1677,19 @@ html, body {
 
 .command-palette-item span {
   min-width: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+.command-palette-item strong,
+.command-palette-item small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .command-palette-item small {
@@ -1599,33 +1717,39 @@ html, body {
 }
 
 .chat-input-bottom {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
+  gap: var(--space-2);
+  padding: 6px var(--space-3);
+  min-width: 0;
 }
 
 .chat-input-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .composer-model-controls {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: var(--space-2);
   min-width: 0;
-  flex: 1;
+  width: 100%;
+  flex: 1 1 auto;
+  overflow: visible;
 }
 
 .composer-model-chip {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  max-width: 380px;
+  width: 210px;
+  max-width: 210px;
   min-width: 0;
   height: 32px;
   padding: 0 var(--space-3);
@@ -1635,9 +1759,13 @@ html, body {
   color: var(--text-secondary);
   font-size: var(--font-size-xs);
   cursor: pointer;
+  flex: 0 0 210px;
+  overflow: hidden;
 }
 
 .composer-model-label {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1645,11 +1773,17 @@ html, body {
 
 .composer-model-chip .quota-badge {
   margin-left: var(--space-1);
+  min-width: 0;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .composer-access-control {
   position: relative;
   order: -1;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .composer-access-chip {
@@ -1850,6 +1984,7 @@ html, body {
 
 .run-settings {
   position: relative;
+  flex: 0 0 auto;
 }
 
 .run-settings-popover {
@@ -1955,7 +2090,7 @@ html, body {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-width: 190px;
+  min-width: 170px;
   height: 32px;
   padding: 0 var(--space-2);
   border: 1px solid var(--glass-border);
@@ -1963,6 +2098,8 @@ html, body {
   color: var(--text-tertiary);
   font-size: var(--font-size-xs);
   white-space: nowrap;
+  flex: 0 0 170px;
+  overflow: hidden;
 }
 
 .context-mini-bar {
@@ -2241,6 +2378,7 @@ html, body {
   background: #0a0e16;
   border-left: 1px solid var(--glass-border);
   height: 100%;
+  container: terminal-panel / inline-size;
 }
 
 .terminal-resize-handle {
@@ -2255,6 +2393,8 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--glass-border);
   background: var(--bg-secondary);
@@ -2267,17 +2407,98 @@ html, body {
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--text-primary);
+  flex: 0 0 auto;
 }
 
 .terminal-panel-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.run-settings-native-actions {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--glass-border);
+}
+
+.run-settings-native-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.run-settings-native-action {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.run-settings-native-action:hover {
+  border-color: rgba(6, 182, 212, 0.3);
+  background: rgba(6, 182, 212, 0.1);
+  color: var(--text-primary);
+}
+
+.run-settings-native-loading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.command-palette-section-label {
+  padding: 6px var(--space-3) 3px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.run-settings-note {
+  margin: 0 0 var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.run-settings-section-label {
+  margin: 0 0 var(--space-2);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.terminal-panel-actions .btn-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
 }
 
 .terminal-shell-select {
   height: 28px;
+  width: 130px;
+  min-width: 0;
   max-width: 130px;
+  flex: 1 1 72px;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
   background: var(--bg-tertiary);
@@ -2371,10 +2592,160 @@ html, body {
   height: 100%;
 }
 
+/* De middelste kolom kan smal zijn terwijl het venster zelf breed blijft (bij
+   een grote terminal). Container-queries reageren daarom op de echte chatruimte
+   in plaats van op de viewport, zodat toolbar en composer nooit uit beeld lopen. */
+@container main-content (max-width: 720px) {
+  .chat-toolbar {
+    padding-inline: var(--space-3);
+    overflow: hidden;
+  }
+
+  .chat-toolbar-tools {
+    flex: 1 1 auto;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .chat-toolbar-tools::-webkit-scrollbar {
+    display: none;
+  }
+
+  .chat-toolbar > .agent-mode-badge {
+    max-width: 150px;
+    overflow: hidden;
+    flex: 0 1 auto;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-path-chip {
+    display: none;
+  }
+
+  .chat-messages {
+    padding-inline: var(--space-4);
+  }
+
+  .chat-input-container {
+    padding: 0 var(--space-3) var(--space-3);
+  }
+
+  .chat-input-bottom {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .composer-model-controls {
+    order: 1;
+    flex: 1 0 100%;
+    justify-content: flex-start;
+  }
+
+  .chat-input-bottom > .chat-input-actions:first-child {
+    order: 2;
+  }
+
+  .chat-input-bottom > .chat-input-actions:last-child {
+    order: 3;
+    margin-left: auto;
+  }
+
+  .composer-model-chip {
+    max-width: min(380px, 100%);
+    flex: 0 1 auto;
+  }
+
+  .composer-access-control {
+    min-width: 0;
+    max-width: 165px;
+    flex: 0 0 auto;
+  }
+
+  .composer-access-chip {
+    width: 100%;
+    max-width: none;
+  }
+
+  .composer-context-meter {
+    min-width: 0;
+    flex: 0 1 160px;
+  }
+
+  .composer-context-meter span:last-child {
+    display: none;
+  }
+}
+
+@container main-content (max-width: 560px) {
+  .chat-toolbar > .agent-mode-badge {
+    display: none;
+  }
+
+  .composer-model-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    align-items: center;
+    width: 100%;
+    overflow: visible;
+  }
+
+  .composer-model-chip {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .composer-access-control {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .composer-access-chip {
+    min-width: 0;
+  }
+
+  .composer-context-meter {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .composer-context-meter span:nth-of-type(1) {
+    display: none;
+  }
+
+  .composer-command-chip,
+  .model-refresh-hint {
+    grid-column: 1 / -1;
+    justify-self: start;
+    max-width: 100%;
+    overflow: hidden;
+  }
+}
+
+@container main-content (max-width: 380px) {
+  .composer-model-chip .quota-badge {
+    display: none;
+  }
+}
+
+@container terminal-panel (max-width: 300px) {
+  .terminal-panel-header {
+    padding-inline: var(--space-2);
+  }
+
+  .terminal-panel-title span {
+    display: none;
+  }
+}
+
 .model-refresh-hint {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex: 0 0 auto;
   font-size: 0.68rem;
   color: var(--text-muted);
   opacity: 0.8;
@@ -4308,12 +4679,6 @@ select option,
   to { transform: rotate(360deg); }
 }
 
-@keyframes wordFlip {
-  0% { opacity: 0; transform: rotateX(-82deg) translateY(4px); }
-  58% { opacity: 1; transform: rotateX(12deg) translateY(0); }
-  100% { opacity: 1; transform: rotateX(0deg) translateY(0); }
-}
-
 @keyframes clickGlow {
   0% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.32); }
   100% { box-shadow: 0 0 0 8px rgba(6, 182, 212, 0); }
@@ -4449,15 +4814,7 @@ select option,
   display: inline-flex;
   align-items: baseline;
   min-width: 0;
-  perspective: 420px;
   white-space: pre;
-}
-
-.flip-char {
-  display: inline-block;
-  transform-origin: 50% 70%;
-  animation: wordFlip 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-  animation-delay: calc(min(var(--flip-index), 18) * 12ms);
 }
 
 .icon-button {

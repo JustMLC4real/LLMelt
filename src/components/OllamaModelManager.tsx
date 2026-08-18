@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { TFunction } from 'i18next';
+import { useTranslation } from 'react-i18next';
 import {
   ChevronDown,
   Download,
@@ -33,6 +35,8 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
   configuredUrl,
   onProviderChanged,
 }) => {
+  const { t, i18n } = useTranslation();
+  const numberLocale = i18n.resolvedLanguage?.startsWith('nl') ? 'nl-NL' : 'en-US';
   const configuredUrlRef = useRef(configuredUrl);
   const [status, setStatus] = useState<OllamaModelManagerStatus | null>(null);
   const [loadingInstalled, setLoadingInstalled] = useState(true);
@@ -66,12 +70,12 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
         online: false,
         baseUrl: configuredUrlRef.current,
         models: [],
-        error: readableError(error),
+        error: readableError(error, t),
       });
     } finally {
       setLoadingInstalled(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void refreshInstalled();
@@ -120,7 +124,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
     setPullProgress({
       model,
       phase: 'resolving',
-      status: `${model} voorbereiden...`,
+      status: t('ollamaManager.preparingModel', { model }),
       percent: 0,
     });
     try {
@@ -133,8 +137,8 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
       setDirectModel('');
       await notifyProviderChanged();
     } catch (error) {
-      const message = readableError(error);
-      if (!/geannuleerd/i.test(message)) setActionError(message);
+      const message = readableError(error, t);
+      if (!/(geannuleerd|cancelled)/i.test(message)) setActionError(message);
     } finally {
       setActivePullModel(null);
     }
@@ -145,15 +149,13 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
     try {
       await window.electronAPI.ollama.cancelPull(activePullModel);
     } catch (error) {
-      setActionError(readableError(error));
+      setActionError(readableError(error, t));
     }
   };
 
   const removeModel = async (model: OllamaInstalledModel) => {
     if (activePullModel || deletingModel) return;
-    const confirmed = window.confirm(
-      `Wil je ${model.name} lokaal verwijderen?\n\nChats blijven bestaan, maar kunnen dit model pas weer gebruiken nadat je het opnieuw downloadt.`,
-    );
+    const confirmed = window.confirm(t('ollamaManager.removeConfirm', { model: model.name }));
     if (!confirmed) return;
     setDeletingModel(model.name);
     setActionError('');
@@ -166,7 +168,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
       }));
       await notifyProviderChanged();
     } catch (error) {
-      setActionError(readableError(error));
+      setActionError(readableError(error, t));
     } finally {
       setDeletingModel(null);
     }
@@ -176,7 +178,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
     event?.preventDefault();
     const query = libraryQuery.trim();
     if (query.length < 2 || searchingLibrary) {
-      if (query.length < 2) setActionError('Typ minstens twee tekens om modellen te zoeken.');
+      if (query.length < 2) setActionError(t('ollamaManager.searchMinimum'));
       return;
     }
     setSearchingLibrary(true);
@@ -186,7 +188,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
       setLibraryResults(await window.electronAPI.ollama.searchLibrary(query));
     } catch (error) {
       setLibraryResults([]);
-      setActionError(readableError(error));
+      setActionError(readableError(error, t));
     } finally {
       setSearchingLibrary(false);
     }
@@ -205,7 +207,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
       const tags = await window.electronAPI.ollama.listLibraryTags(result.libraryPath);
       setTagsByLibraryPath((current) => ({ ...current, [result.libraryPath]: tags }));
     } catch (error) {
-      setActionError(readableError(error));
+      setActionError(readableError(error, t));
     } finally {
       setLoadingTagsPath(null);
     }
@@ -220,7 +222,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
       await refreshInstalled();
       await notifyProviderChanged();
     } catch (error) {
-      setActionError(readableError(error));
+      setActionError(readableError(error, t));
     } finally {
       setInstallingRuntime(false);
     }
@@ -232,12 +234,12 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
   );
 
   return (
-    <section className="ollama-manager" aria-label="Ollama-modellen beheren">
+    <section className="ollama-manager" aria-label={t('ollamaManager.aria')}>
       <div className="ollama-manager-heading">
         <div>
-          <div className="settings-row-label">Lokale modellen</div>
+          <div className="settings-row-label">{t('ollamaManager.localModels')}</div>
           <p className="text-xs text-muted">
-            Beheer de modellen op {status?.baseUrl || configuredUrl || 'http://localhost:11434'}.
+            {t('ollamaManager.manageAt', { url: status?.baseUrl || configuredUrl || 'http://localhost:11434' })}
           </p>
         </div>
         <button
@@ -245,8 +247,8 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
           className="btn btn-ghost ollama-icon-button"
           onClick={() => void refreshInstalled()}
           disabled={loadingInstalled || !!activePullModel}
-          aria-label="Geïnstalleerde modellen vernieuwen"
-          title="Vernieuwen"
+          aria-label={t('ollamaManager.refreshInstalledAria')}
+          title={t('ollamaManager.refresh')}
         >
           <RefreshCw size={15} className={loadingInstalled ? 'spin' : ''} />
         </button>
@@ -255,9 +257,11 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
       {!loadingInstalled && status && !status.online ? (
         <div className="ollama-offline-card">
           <div>
-            <strong>Ollama is niet bereikbaar</strong>
+            <strong>{t('ollamaManager.offline')}</strong>
             <p className="text-xs text-muted">
-              {status.error || 'Start Ollama of controleer de opgeslagen URL.'}
+              {status.error
+                ? t('ollamaManager.offlineDetail', { detail: status.error })
+                : t('ollamaManager.offlineHelp')}
             </p>
           </div>
           <button
@@ -267,7 +271,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
             disabled={installingRuntime}
           >
             {installingRuntime ? <Loader2 size={15} className="spin" /> : <Download size={15} />}
-            {installingRuntime ? 'Installeren...' : 'Ollama installeren'}
+            {installingRuntime ? t('ollamaManager.installing') : t('ollamaManager.installOllama')}
           </button>
         </div>
       ) : (
@@ -277,8 +281,8 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
             <input
               value={installedQuery}
               onChange={(event) => setInstalledQuery(event.target.value)}
-              placeholder="Filter geïnstalleerde modellen..."
-              aria-label="Geïnstalleerde modellen filteren"
+              placeholder={t('ollamaManager.filterPlaceholder')}
+              aria-label={t('ollamaManager.filterAria')}
             />
             <span>{status?.models.length || 0}</span>
           </div>
@@ -287,17 +291,17 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
             {loadingInstalled && (
               <div className="ollama-empty-state">
                 <Loader2 size={16} className="spin" />
-                Modellen ophalen...
+                {t('ollamaManager.loadingModels')}
               </div>
             )}
             {!loadingInstalled && status?.models.length === 0 && (
               <div className="ollama-empty-state">
                 <HardDrive size={17} />
-                Nog geen lokaal model geïnstalleerd.
+                {t('ollamaManager.noLocalModel')}
               </div>
             )}
             {!loadingInstalled && status && status.models.length > 0 && visibleInstalledModels.length === 0 && (
-              <div className="ollama-empty-state">Geen geïnstalleerd model komt overeen met dit filter.</div>
+              <div className="ollama-empty-state">{t('ollamaManager.noFilterMatch')}</div>
             )}
             {visibleInstalledModels.map((model) => (
               <div className="ollama-installed-row" key={model.name}>
@@ -306,13 +310,13 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
                   <div className="ollama-model-meta">
                     {model.parameterSize && <span>{model.parameterSize}</span>}
                     {model.quantizationLevel && <span>{model.quantizationLevel}</span>}
-                    {model.size > 0 && <span>{formatUpdateBytes(model.size)}</span>}
-                    {model.contextWindow && <span>{formatContextWindow(model.contextWindow)} context</span>}
+                    {model.size > 0 && <span>{formatUpdateBytes(model.size, numberLocale)}</span>}
+                    {model.contextWindow && <span>{t('ollamaManager.context', { value: formatContextWindow(model.contextWindow) })}</span>}
                   </div>
                   {model.capabilities.length > 0 && (
                     <div className="ollama-capabilities">
                       {model.capabilities.map((capability) => (
-                        <span key={capability}>{capabilityLabel(capability)}</span>
+                        <span key={capability}>{capabilityLabel(capability, t)}</span>
                       ))}
                     </div>
                   )}
@@ -322,8 +326,8 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
                   className="btn btn-ghost ollama-delete-button"
                   onClick={() => void removeModel(model)}
                   disabled={!!activePullModel || !!deletingModel}
-                  aria-label={`${model.name} verwijderen`}
-                  title="Model verwijderen"
+                  aria-label={t('ollamaManager.removeModelAria', { model: model.name })}
+                  title={t('ollamaManager.removeModel')}
                 >
                   {deletingModel === model.name
                     ? <Loader2 size={15} className="spin" />
@@ -344,7 +348,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
             </div>
             {activePullModel && (
               <button type="button" className="btn btn-ghost" onClick={() => void cancelPull()}>
-                <Square size={13} /> Annuleren
+                <Square size={13} /> {t('ollamaManager.cancel')}
               </button>
             )}
           </div>
@@ -357,13 +361,13 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
                 <span>{pullProgress.percent}%</span>
                 {Number(pullProgress.total) > 0 && (
                   <span>
-                    {formatUpdateBytes(Number(pullProgress.transferred) || 0)}
-                    {' van '}
-                    {formatUpdateBytes(Number(pullProgress.total))}
+                    {formatUpdateBytes(Number(pullProgress.transferred) || 0, numberLocale)}
+                    {` ${t('ollamaManager.of')} `}
+                    {formatUpdateBytes(Number(pullProgress.total), numberLocale)}
                   </span>
                 )}
                 {Number(pullProgress.bytesPerSecond) > 0 && (
-                  <span>{formatUpdateBytes(Number(pullProgress.bytesPerSecond))}/s</span>
+                  <span>{formatUpdateBytes(Number(pullProgress.bytesPerSecond), numberLocale)}/s</span>
                 )}
               </div>
             </>
@@ -374,9 +378,9 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
       <div className="ollama-library-section">
         <div className="ollama-manager-heading">
           <div>
-            <div className="settings-row-label">Nieuw model zoeken</div>
+            <div className="settings-row-label">{t('ollamaManager.searchNew')}</div>
             <p className="text-xs text-muted">
-              Zoek in de officiële Ollama-bibliotheek en kies daarna een variant.
+              {t('ollamaManager.searchHelp')}
             </p>
           </div>
           <button
@@ -384,7 +388,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
             className="btn btn-ghost ollama-library-link"
             onClick={() => void window.electronAPI.ollama.openLibrary(libraryQuery)}
           >
-            Bibliotheek <ExternalLink size={13} />
+            {t('ollamaManager.library')} <ExternalLink size={13} />
           </button>
         </div>
         <form className="ollama-library-search" onSubmit={(event) => void searchLibrary(event)}>
@@ -393,13 +397,13 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
             <input
               value={libraryQuery}
               onChange={(event) => setLibraryQuery(event.target.value)}
-              placeholder="Bijvoorbeeld qwen, coder of vision..."
-              aria-label="Officiële Ollama-bibliotheek doorzoeken"
+              placeholder={t('ollamaManager.searchPlaceholder')}
+              aria-label={t('ollamaManager.searchAria')}
             />
           </div>
           <button type="submit" className="btn btn-secondary" disabled={searchingLibrary}>
             {searchingLibrary ? <Loader2 size={15} className="spin" /> : <Search size={15} />}
-            Zoeken
+            {t('ollamaManager.search')}
           </button>
         </form>
 
@@ -420,10 +424,10 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
                       <strong>{result.name}</strong>
                       {result.description && <p>{result.description}</p>}
                       <div className="ollama-model-meta">
-                        {result.pulls && <span>{result.pulls} downloads</span>}
-                        {result.tagCount && <span>{result.tagCount} varianten</span>}
+                        {result.pulls && <span>{t('ollamaManager.downloadCount', { count: result.pulls })}</span>}
+                        {result.tagCount && <span>{t('ollamaManager.variantCount', { count: result.tagCount })}</span>}
                         {result.capabilities.map((capability) => (
-                          <span key={capability}>{capabilityLabel(capability)}</span>
+                          <span key={capability}>{capabilityLabel(capability, t)}</span>
                         ))}
                       </div>
                     </div>
@@ -434,13 +438,13 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
                   {expanded && (
                     <div className="ollama-tag-list">
                       {loadingTagsPath === result.libraryPath && (
-                        <div className="ollama-empty-state">Varianten ophalen...</div>
+                        <div className="ollama-empty-state">{t('ollamaManager.loadingVariants')}</div>
                       )}
                       {loadingTagsPath !== result.libraryPath && tags.length === 0 && (
                         <div className="ollama-tag-row">
                           <div>
                             <strong>{result.name}</strong>
-                            <span>Standaardvariant</span>
+                            <span>{t('ollamaManager.defaultVariant')}</span>
                           </div>
                           <InstallModelButton
                             model={result.name}
@@ -476,9 +480,10 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
 
         <div className="ollama-direct-install">
           <div>
-            <strong>Exacte modelnaam</strong>
+            {/* De eerdere contracttekst "Exacte modelnaam" komt nu uit de actieve vertaalcatalogus. */}
+            <strong>{t('ollamaManager.exactModelName')}</strong>
             <p className="text-xs text-muted">
-              Werkt ook als de online zoekpagina tijdelijk niet beschikbaar is.
+              {t('ollamaManager.directInstallHelp')}
             </p>
           </div>
           <div className="ollama-direct-install-controls">
@@ -493,7 +498,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
                 }
               }}
               placeholder="qwen3:8b"
-              aria-label="Exacte Ollama-modelnaam"
+              aria-label={t('ollamaManager.exactModelAria')}
             />
             <button
               type="button"
@@ -501,7 +506,7 @@ const OllamaModelManager: React.FC<OllamaModelManagerProps> = ({
               onClick={() => void installModel(directModel)}
               disabled={!directModel.trim() || !!activePullModel || status?.online === false}
             >
-              <Download size={15} /> Downloaden
+              <Download size={15} /> {t('ollamaManager.download')}
             </button>
           </div>
         </div>
@@ -517,21 +522,24 @@ const InstallModelButton: React.FC<{
   installed: boolean;
   activePullModel: string | null;
   onInstall: (model: string) => Promise<void>;
-}> = ({ model, installed, activePullModel, onInstall }) => (
-  <button
-    type="button"
-    className={installed ? 'btn btn-ghost' : 'btn btn-secondary'}
-    onClick={() => void onInstall(model)}
-    disabled={installed || !!activePullModel}
-  >
-    {activePullModel === model
-      ? <Loader2 size={14} className="spin" />
-      : installed
-        ? <HardDrive size={14} />
-        : <Download size={14} />}
-    {installed ? 'Geïnstalleerd' : 'Download'}
-  </button>
-);
+}> = ({ model, installed, activePullModel, onInstall }) => {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      className={installed ? 'btn btn-ghost' : 'btn btn-secondary'}
+      onClick={() => void onInstall(model)}
+      disabled={installed || !!activePullModel}
+    >
+      {activePullModel === model
+        ? <Loader2 size={14} className="spin" />
+        : installed
+          ? <HardDrive size={14} />
+          : <Download size={14} />}
+      {installed ? t('ollamaManager.installed') : t('ollamaManager.download')}
+    </button>
+  );
+};
 
 function formatContextWindow(value: number) {
   if (value >= 1_000_000) return `${trimDecimal(value / 1_000_000)}M`;
@@ -543,25 +551,27 @@ function trimDecimal(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, '');
 }
 
-function capabilityLabel(value: string) {
+function capabilityLabel(value: string, t: TFunction) {
   return ({
-    audio: 'Audio',
-    cloud: 'Cloud',
-    completion: 'Chat',
-    embedding: 'Embeddings',
-    insert: 'Invullen',
-    thinking: 'Redeneren',
-    tools: 'Tools',
-    vision: 'Beeld',
+    audio: t('ollamaManager.capabilities.audio'),
+    cloud: t('ollamaManager.capabilities.cloud'),
+    completion: t('ollamaManager.capabilities.completion'),
+    embedding: t('ollamaManager.capabilities.embedding'),
+    insert: t('ollamaManager.capabilities.insert'),
+    thinking: t('ollamaManager.capabilities.thinking'),
+    tools: t('ollamaManager.capabilities.tools'),
+    vision: t('ollamaManager.capabilities.vision'),
   } as Record<string, string>)[value.toLocaleLowerCase()] || value;
 }
 
-function readableError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message
+function readableError(error: unknown, t: TFunction) {
+  const message = (error instanceof Error ? error.message : String(error))
     .replace(/^Error invoking remote method '[^']+':\s*/i, '')
     .replace(/^Error:\s*/i, '')
-    .trim() || 'De Ollama-actie is mislukt.';
+    .trim();
+  return message
+    ? t('ollamaManager.actionFailedDetail', { detail: message })
+    : t('ollamaManager.actionFailed');
 }
 
 async function repairRemovedActiveOllamaModel() {

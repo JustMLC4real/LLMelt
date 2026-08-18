@@ -14,6 +14,7 @@ export type ProviderCategory = 'api' | 'local' | 'agent';
 export type ProviderAccountId = ProviderType | 'chatgpt' | 'claude-cli';
 export type ProviderSurface = 'subscription-web' | 'api' | 'cli' | 'desktop' | 'local' | 'remote';
 export type ContextSource = 'provider' | 'cli' | 'estimate' | 'unknown';
+export type TokenUsageSource = 'provider' | 'cli' | 'local' | 'estimate' | 'mixed' | 'unknown';
 export type LimitScope = 'model' | 'account' | 'project' | 'local' | 'unknown';
 export type LimitDisplayState = 'known' | 'unknown' | 'not_exposed' | 'unlimited' | 'cooldown';
 export type QuotaAccuracy = 'live' | 'delayed' | 'estimated' | 'unavailable' | 'local';
@@ -31,9 +32,12 @@ export type QuotaState = 'available' | 'limited' | 'exhausted' | 'cooldown' | 'u
 export type QuotaMeter = 'requests' | 'tokens' | 'input_tokens' | 'output_tokens' | 'context' | 'provider';
 export type ChatRole = 'user' | 'assistant' | 'system';
 export type AttachmentKind = 'text' | 'image' | 'pdf' | 'binary';
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+// CLI-providers publiceren hun effortwaarden live. Dit type moet daarom open
+// blijven: een nieuwe CLI-waarde mag niet door een LLMelt-allowlist verdwijnen.
+export type ReasoningEffort = string;
 export type AgentShell = 'powershell' | 'cmd' | 'pwsh';
 export type AgentApprovalMode = 'ask' | 'auto-project' | 'full';
+export type UiLanguage = 'nl' | 'en';
 // Codex service/speed tiers come live from the CLI catalog (service_tiers +
 // additional_speed_tiers), so this is an open string — not a fixed allowlist.
 export type ServiceTier = string;
@@ -51,6 +55,42 @@ export interface ModelRef {
   runConfig?: ModelRunConfig;
 }
 
+export type NativeProviderCommandKind =
+  | 'collaboration-mode'
+  | 'goal'
+  | 'review'
+  | 'skill';
+
+/** Een echte provideractie uit Codex App Server of live CLI-help. */
+export interface NativeProviderCommand {
+  id: string;
+  provider: ProviderType;
+  slash: string;
+  aliases?: string[];
+  label: string;
+  description: string;
+  source: 'app-server' | 'cli-help';
+  kind: NativeProviderCommandKind;
+  requiresArgument?: boolean;
+  mode?: string;
+  model?: string;
+  reasoningEffort?: string;
+  name?: string;
+  path?: string;
+}
+
+/** Eenmalige native actie die met de eerstvolgende providerbeurt meegaat. */
+export interface NativeProviderCommandSelection {
+  id: string;
+  kind: Exclude<NativeProviderCommandKind, 'goal'>;
+  args?: string;
+  mode?: string;
+  model?: string;
+  reasoningEffort?: string;
+  name?: string;
+  path?: string;
+}
+
 export interface ModelRunConfig {
   baseModelId?: string;
   reasoningEffort?: ReasoningEffort;
@@ -65,6 +105,7 @@ export interface ModelRunConfig {
   // ChatGPT browser: the chosen thinking effort value (e.g. 'standard' | 'extended'),
   // taken live from the model's thinking_efforts — not hardcoded.
   chatgptThinkingEffort?: string;
+  nativeProviderCommand?: NativeProviderCommandSelection;
 }
 
 /**
@@ -308,6 +349,8 @@ export interface ChatRequest {
   input: string;
   attachmentIds?: string[];
   systemPrompt?: string;
+  /** Taal voor zichtbare runtime-status en verborgen host-/toolinstructies. */
+  language?: UiLanguage;
 }
 
 export interface TokenUsage {
@@ -318,6 +361,12 @@ export interface TokenUsage {
   contextUsedPercent: number;
   cachedTokens?: number;
   reasoningTokens?: number;
+  /**
+   * Herkomst van de tokenaantallen. Dit staat los van accountquota en van de
+   * actuele contextschatting: provider/CLI/local zijn gemeten, estimate is een
+   * lokale tekenschatting en mixed is een optelsom met meerdere bronnen.
+   */
+  source?: TokenUsageSource;
 }
 
 export interface UsageEvent {
@@ -331,6 +380,7 @@ export interface UsageEvent {
   totalTokens: number;
   cachedTokens?: number;
   reasoningTokens?: number;
+  source?: TokenUsageSource;
   createdAt: string;
 }
 
@@ -495,6 +545,7 @@ export interface AutoModeConfig {
   // What the prompter should drive the conversation toward. Without it the
   // prompter just generates generic "define your goal" prompts.
   goal?: string;
+  language?: UiLanguage;
 }
 
 export type AutoModeStatus = 'idle' | 'running' | 'paused' | 'stopped';
@@ -615,7 +666,10 @@ export interface TokenDashboard {
     used: number;
     total: number;
     percent: number;
+    /** Bron van het gebruikte tokenaantal. */
     source: ContextSource;
+    /** Bron van de maximale contextvenstergrootte. */
+    windowSource?: ContextSource;
   };
 }
 

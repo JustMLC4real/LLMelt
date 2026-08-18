@@ -15,6 +15,13 @@ import {
 } from '../electron/interactive-cli-setup';
 
 describe('interactieve CLI-installatie', () => {
+  it('opent providerlogin in de LLMelt-werkmap en niet in het volledige gebruikersprofiel', () => {
+    const handlers = readFileSync(new URL('../electron/ipc-handlers.ts', import.meta.url), 'utf8');
+    expect(handlers).toContain('openInteractiveCliLogin(kind, executable, ensureDefaultWorkspacePath(), language)');
+    expect(handlers).toContain('interactiveCliTerminalLauncherPowerShell(kind, executablePath, workingDirectory, language)');
+    expect(handlers).not.toContain('interactiveCliTerminalLauncherPowerShell(kind, executablePath, os.homedir())');
+  });
+
   it('gebruikt uitsluitend de officiële installatiebronnen', () => {
     expect(interactiveCliInstallPowerShell('codex')).toContain("-Uri 'https://chatgpt.com/codex/install.ps1'");
     expect(interactiveCliInstallPowerShell('claude')).toContain("-Uri 'https://claude.ai/install.ps1'");
@@ -82,6 +89,18 @@ describe('interactieve CLI-installatie', () => {
       status: 'Claude Code CLI is geïnstalleerd.',
       percent: 100,
     });
+  });
+
+  it('gebruikt voor Engelse setup uitsluitend Engelse hostframing', () => {
+    expect(parseInteractiveCliInstallerProgress('codex', 'Resolved version: 1.2.3', 'en'))
+      .toEqual({ phase: 'checking', status: 'Verifying Codex CLI download...' });
+    expect(interactiveCliInstallPowerShell('claude', 'en')).toContain('Installing Claude Code CLI...');
+
+    const launcher = interactiveCliTerminalLauncherPowerShell('codex', 'C:\\Tools\\codex.exe', 'C:\\Work', 'en');
+    const encoded = launcher.match(/'-EncodedCommand', '([^']+)'/)?.[1];
+    const childCommand = Buffer.from(encoded!, 'base64').toString('utf16le');
+    expect(childCommand).toContain('Complete the sign-in here. You can close this window afterwards.');
+    expect(childCommand).not.toContain('Rond de login hier af');
   });
 
   it('leest echte bytevoortgang, snelheid en percentage uit de downloadmarker', () => {

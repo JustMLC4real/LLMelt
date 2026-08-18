@@ -15,7 +15,8 @@
 
 import { spawn } from 'child_process';
 import path from 'path';
-import type { AgentApprovalMode } from '../src/providers/types';
+import type { AgentApprovalMode, UiLanguage } from '../src/providers/types';
+import { localizedText } from '../src/i18n/language';
 import type { NativePermissionHandler, NativeToolActivity } from './native-tools';
 import { cliSpawnSpec, clipNativeOutput, terminateProcessTree } from './process-utils';
 import { agentCommandEnvironment } from './agent-command-environment';
@@ -34,6 +35,7 @@ export interface RunCodexNativeOptions {
   onStatus?: (status: string) => void;
   onToolActivity?: (activity: NativeToolActivity) => void;
   requestPermission: NativePermissionHandler;
+  language?: UiLanguage;
 }
 
 export interface RunCodexNativeResult {
@@ -52,7 +54,7 @@ export function codexPolicyFor(mode: AgentApprovalMode): { sandbox: string; appr
   return { sandbox: 'danger-full-access', approval: 'untrusted' }; // ask: popup per actie + volle omgeving
 }
 
-export function codexApprovalRequest(params: any, fallbackCwd: string) {
+export function codexApprovalRequest(params: any, fallbackCwd: string, language: UiLanguage = 'nl') {
   const kind = String(params?.codex_elicitation || '');
   const filePaths = params?.codex_changes && typeof params.codex_changes === 'object'
     ? Object.keys(params.codex_changes)
@@ -64,7 +66,9 @@ export function codexApprovalRequest(params: any, fallbackCwd: string) {
     ? {
       toolName: 'Bash',
       input: {
-        command: commandParts.length ? commandParts.join(' ') : String(params?.message || 'Codex vraagt goedkeuring'),
+        command: commandParts.length
+          ? commandParts.join(' ')
+          : String(params?.message || localizedText(language, 'Codex vraagt goedkeuring', 'Codex requests approval')),
         cwd: typeof params?.codex_cwd === 'string' ? params.codex_cwd : fallbackCwd,
       } as Record<string, unknown>,
     }
@@ -80,6 +84,7 @@ export function codexApprovalRequest(params: any, fallbackCwd: string) {
 
 export async function runCodexNative(options: RunCodexNativeOptions): Promise<RunCodexNativeResult> {
   if (options.signal.aborted) throw new Error('cancelled');
+  const language = options.language || 'nl';
   const { sandbox, approval } = codexPolicyFor(options.agentMode);
 
   const baseArgs = ['mcp-server'];
@@ -127,14 +132,14 @@ export async function runCodexNative(options: RunCodexNativeOptions): Promise<Ru
       if (error) reject(error); else resolve(result!);
     };
     const timeout = setTimeout(
-      () => finish(undefined, new Error(`Codex native timeout na ${Math.max(30, options.timeoutSeconds || 180)} seconden.`)),
+      () => finish(undefined, new Error(localizedText(language, `Codex native timeout na ${Math.max(30, options.timeoutSeconds || 180)} seconden.`, `Codex native timed out after ${Math.max(30, options.timeoutSeconds || 180)} seconds.`))),
       Math.max(30, options.timeoutSeconds || 180) * 1000,
     );
 
     // Codex' elicitatie → onze popup → { decision }.
     const handleElicitation = async (id: number | string, params: any) => {
       toolStarted = true;
-      const { toolName, input } = codexApprovalRequest(params, options.cwd);
+      const { toolName, input } = codexApprovalRequest(params, options.cwd, language);
       let decision = 'denied';
       try {
         const verdict = await options.requestPermission(toolName, input);
@@ -154,11 +159,11 @@ export async function runCodexNative(options: RunCodexNativeOptions): Promise<Ru
           toolStarted = true;
           const id = String(msg.call_id || '');
           const cmd = Array.isArray(msg.command) ? msg.command.join(' ')
-            : (typeof msg.command === 'string' ? msg.command : 'commando');
+            : (typeof msg.command === 'string' ? msg.command : localizedText(language, 'commando', 'command'));
           const input = { command: cmd };
           pendingTools.set(id, { toolName: 'Bash', input });
           options.onToolActivity?.({ provider: 'codex', toolName: 'Bash', input, toolUseId: id, phase: 'requested' });
-          options.onStatus?.('Codex draait een commando');
+          options.onStatus?.(localizedText(options.language || 'nl', 'Codex draait een commando', 'Codex is running a command'));
           break;
         }
         case 'patch_apply_begin': {
@@ -168,7 +173,7 @@ export async function runCodexNative(options: RunCodexNativeOptions): Promise<Ru
           const input = { file_path: paths[0] || '', changes: msg.changes || undefined };
           pendingTools.set(id, { toolName: 'Write', input });
           options.onToolActivity?.({ provider: 'codex', toolName: 'Write', input, toolUseId: id, phase: 'requested' });
-          options.onStatus?.('Codex wijzigt een bestand');
+          options.onStatus?.(localizedText(options.language || 'nl', 'Codex wijzigt een bestand', 'Codex is modifying a file'));
           break;
         }
         case 'item_started': {
@@ -178,7 +183,7 @@ export async function runCodexNative(options: RunCodexNativeOptions): Promise<Ru
           const type = String(item.type || item.kind || '').toLowerCase();
           if (type.includes('command')) {
             toolStarted = true;
-            const command = Array.isArray(item.command) ? item.command.join(' ') : String(item.command || item.cmd || 'commando');
+            const command = Array.isArray(item.command) ? item.command.join(' ') : String(item.command || item.cmd || localizedText(language, 'commando', 'command'));
             const input = { command };
             pendingTools.set(id, { toolName: 'Bash', input });
             options.onToolActivity?.({ provider: 'codex', toolName: 'Bash', input, toolUseId: id, phase: 'requested' });
@@ -237,7 +242,7 @@ export async function runCodexNative(options: RunCodexNativeOptions): Promise<Ru
           break;
         }
         case 'task_started':
-          options.onStatus?.('Codex denkt');
+          options.onStatus?.(localizedText(options.language || 'nl', 'Codex denkt', 'Codex is thinking'));
           break;
         case 'agent_message':
           if (typeof msg.message === 'string' && !assistantText) assistantText = msg.message;
@@ -250,7 +255,7 @@ export async function runCodexNative(options: RunCodexNativeOptions): Promise<Ru
     child.stdout.on('data', (chunk) => {
       stdoutBuf += chunk.toString();
       if (stdoutBuf.length > 1_000_000 && !stdoutBuf.includes('\n')) {
-        finish(undefined, new Error('Codex gaf een ongeldige, te grote MCP-streamregel terug.'));
+        finish(undefined, new Error(localizedText(language, 'Codex gaf een ongeldige, te grote MCP-streamregel terug.', 'Codex returned an invalid, oversized MCP stream line.')));
         return;
       }
       let nl: number;
@@ -258,7 +263,7 @@ export async function runCodexNative(options: RunCodexNativeOptions): Promise<Ru
         const rawLine = stdoutBuf.slice(0, nl);
         stdoutBuf = stdoutBuf.slice(nl + 1);
         if (rawLine.length > 1_000_000) {
-          finish(undefined, new Error('Codex gaf een ongeldige, te grote MCP-streamregel terug.'));
+          finish(undefined, new Error(localizedText(language, 'Codex gaf een ongeldige, te grote MCP-streamregel terug.', 'Codex returned an invalid, oversized MCP stream line.')));
           return;
         }
         const line = rawLine.trim();
@@ -271,7 +276,7 @@ export async function runCodexNative(options: RunCodexNativeOptions): Promise<Ru
         if (o.method === 'codex/event' && o.params?.msg) { handleEvent(o.params.msg); continue; }
         // resultaat van onze tools/call (id 1) → beurt klaar
         if (o.id === 1 && (o.result || o.error)) {
-          if (o.error) { finish(undefined, new Error(o.error?.message || 'Codex mcp-tool faalde.')); return; }
+          if (o.error) { finish(undefined, new Error(o.error?.message || localizedText(language, 'Codex mcp-tool faalde.', 'Codex MCP tool failed.'))); return; }
           const content = o.result?.structuredContent?.content
             || (Array.isArray(o.result?.content) ? o.result.content.map((c: any) => c?.text || '').join('') : '');
           const text = (assistantText || content || '').trim();
@@ -284,18 +289,18 @@ export async function runCodexNative(options: RunCodexNativeOptions): Promise<Ru
     });
     child.stderr.on('data', (chunk) => { stderrTail = (stderrTail + chunk.toString()).slice(-800); });
 
-    child.on('error', (error) => finish(undefined, new Error(`Codex mcp-server kon niet starten: ${error.message}`)));
+    child.on('error', (error) => finish(undefined, new Error(localizedText(language, `Codex mcp-server kon niet starten: ${error.message}`, `Codex MCP server could not start: ${error.message}`))));
     child.on('close', (code) => {
       if (settled) return;
       if (options.signal.aborted) { finish(undefined, new Error('cancelled')); return; }
       if (code !== 0) {
-        const error = new Error(cleanTail(stderrTail) || `Codex mcp-server eindigde met code ${code ?? 'onbekend'}.`);
+        const error = new Error(cleanTail(stderrTail) || localizedText(language, `Codex mcp-server eindigde met code ${code ?? 'onbekend'}.`, `Codex MCP server exited with code ${code ?? 'unknown'}.`));
         finish(undefined, error);
         return;
       }
       const text = assistantText.trim();
       if (text) { finish({ text, inputTokens, outputTokens }); return; }
-      finish(undefined, new Error('Codex mcp-server sloot zonder eindantwoord.'));
+      finish(undefined, new Error(localizedText(language, 'Codex mcp-server sloot zonder eindantwoord.', 'Codex MCP server closed without a final answer.')));
     });
 
     // MCP-handshake → codex-tool starten.

@@ -30,7 +30,10 @@ import {
   parseClaudeCliModel,
   parseCodexModel,
   parseGoogleModelChoice,
+  reasoningEffortForModel,
   reasoningEffortLabel,
+  reasoningEffortsForModel,
+  runConfigWithAdvertisedEffort,
   serviceTierLabel,
   serviceTiersForModel,
   surfaceLabel,
@@ -61,7 +64,12 @@ interface PickerLevel {
 }
 
 const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const isEnglish = (i18n.resolvedLanguage || i18n.language).toLowerCase().startsWith('en');
+  const uiLanguage = isEnglish ? 'en' as const : 'nl' as const;
+  const localizedStatus = (raw: string | undefined, fallbackKey: string) => (
+    isEnglish ? t(fallbackKey) : raw || t(fallbackKey)
+  );
   const [search, setSearch] = useState('');
   const [closing, setClosing] = useState(false);
   const [chatgptCatalogRefreshing, setChatgptCatalogRefreshing] = useState(false);
@@ -128,8 +136,8 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
   const initialCodex = codex.find((model) => model.id === (lastCodexRef?.modelId || activeModelId))
     || codex.find((model) => model.isRecommended) || codex[0];
   const [codexModelId, setCodexModelId] = useState(initialCodex?.id || '');
-  const [codexEffort, setCodexEffort] = useState<ReasoningEffort>(
-    codexEffortForModel(initialCodex, codexActiveCfg?.reasoningEffort),
+  const [codexEffort, setCodexEffort] = useState<ReasoningEffort | ''>(
+    codexEffortForModel(initialCodex, codexActiveCfg?.reasoningEffort) || '',
   );
   const [codexTier, setCodexTier] = useState<ServiceTier | ''>(codexActiveCfg?.serviceTier || '');
 
@@ -149,14 +157,14 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
   const chatgptSelectable = chatgptUsable && chatgptCatalogReady;
   const chatgptStatusClass = chatgptSelectable ? 'online' : chatgptSessionActive ? 'limited' : chatgptAccount?.installed ? 'limited' : 'offline';
   const chatgptStatusLabel = chatgptSessionActive && !chatgptCatalogReady
-    ? 'modelcatalogus niet geladen'
+    ? t('models.catalogNotLoaded')
     : chatgptSelectable
-      ? 'web-sessie actief'
+      ? t('models.webSessionActive')
     : chatgptSessionKnown
-      ? 'web-sessie niet ingelogd'
+      ? t('models.webSessionSignedOut')
       : chatgptAccount?.installed
-        ? 'web-sessie niet bevestigd'
-        : 'web-sessie niet ingelogd';
+        ? t('models.webSessionUnconfirmed')
+        : t('models.webSessionSignedOut');
   const chatgptActiveCfg = (activeProvider === 'openai' && activeModelId.startsWith('chatgpt:')) ? activeRunConfig : lastChatgptRef?.runConfig;
   // Zoek het actieve model terug in ChatGPT's eigen lijst, zodat de dropdowns openen
   // op wat je laatst koos ("GPT-5.6 Sol" + "Hoog").
@@ -179,20 +187,24 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
   // ── Antigravity composite (account-wide, één model kiezen) ──
   const antigravity = useMemo(() => antigravityModels(availableModels), [availableModels]);
   const initialAntigravity = antigravity.find((model) => model.id === activeModelId && activeProvider === 'antigravity') || antigravity[0];
-  const initialAntigravityParsed = parseAntigravityModel(initialAntigravity);
+  const initialAntigravityParsed = parseAntigravityModel(initialAntigravity, uiLanguage);
   const [antigravityProvider, setAntigravityProvider] = useState(initialAntigravityParsed.provider);
   const [antigravityModelName, setAntigravityModelName] = useState(initialAntigravityParsed.model);
   const [antigravityMode, setAntigravityMode] = useState(initialAntigravityParsed.mode);
+  const antigravityActiveCfg = activeProvider === 'antigravity' ? activeRunConfig : undefined;
+  const [antigravityEffort, setAntigravityEffort] = useState<ReasoningEffort | ''>(
+    reasoningEffortForModel(initialAntigravity, antigravityActiveCfg?.reasoningEffort) || '',
+  );
 
   // ── Claude CLI composite (account-wide, één model kiezen) ──
   const claudeCli = useMemo(() => claudeCliModels(availableModels), [availableModels]);
   const initialClaudeCli = claudeCli.find((model) => model.id === activeModelId && activeProvider === 'anthropic') || claudeCli[0];
-  const initialClaudeParsed = parseClaudeCliModel(initialClaudeCli);
+  const initialClaudeParsed = parseClaudeCliModel(initialClaudeCli, uiLanguage);
   const [claudeCliFamily, setClaudeCliFamily] = useState(initialClaudeParsed.family);
   const [claudeCliVersion, setClaudeCliVersion] = useState(initialClaudeParsed.version);
   const claudeCliActiveCfg = (activeProvider === 'anthropic' && activeModelId.startsWith('claude-cli:')) ? activeRunConfig : undefined;
-  const [claudeCliEffort, setClaudeCliEffort] = useState<ReasoningEffort>(
-    (claudeCliActiveCfg?.reasoningEffort as ReasoningEffort) || (initialClaudeCli?.defaultReasoningEffort as ReasoningEffort) || 'high',
+  const [claudeCliEffort, setClaudeCliEffort] = useState<ReasoningEffort | ''>(
+    reasoningEffortForModel(initialClaudeCli, claudeCliActiveCfg?.reasoningEffort) || '',
   );
 
   // Gemini en Ollama gebruiken net als Codex/Claude één providerkaart met een
@@ -204,22 +216,22 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
   const initialGemini = gemini.find((model) => model.provider === activeProvider && model.id === activeModelId) || gemini[0];
   const [geminiModelId, setGeminiModelId] = useState(initialGemini?.id || '');
   const activeGemini = gemini.find((model) => model.id === geminiModelId) || gemini[0];
-  const activeGeminiChoice = parseGoogleModelChoice(activeGemini);
-  const geminiFamilies = Array.from(new Set(gemini.map((model) => parseGoogleModelChoice(model).family)));
+  const activeGeminiChoice = parseGoogleModelChoice(activeGemini, uiLanguage);
+  const geminiFamilies = Array.from(new Set(gemini.map((model) => parseGoogleModelChoice(model, uiLanguage).family)));
   const geminiVersions = Array.from(new Set(gemini
-    .filter((model) => parseGoogleModelChoice(model).family === activeGeminiChoice.family)
-    .map((model) => parseGoogleModelChoice(model).version)));
+    .filter((model) => parseGoogleModelChoice(model, uiLanguage).family === activeGeminiChoice.family)
+    .map((model) => parseGoogleModelChoice(model, uiLanguage).version)));
   const geminiVariants = gemini.filter((model) => {
-    const choice = parseGoogleModelChoice(model);
+    const choice = parseGoogleModelChoice(model, uiLanguage);
     return choice.family === activeGeminiChoice.family && choice.version === activeGeminiChoice.version;
   });
   const onGeminiFamilyChange = (family: string) => {
-    const next = gemini.find((model) => parseGoogleModelChoice(model).family === family);
+    const next = gemini.find((model) => parseGoogleModelChoice(model, uiLanguage).family === family);
     if (next) setGeminiModelId(next.id);
   };
   const onGeminiVersionChange = (version: string) => {
     const next = gemini.find((model) => {
-      const choice = parseGoogleModelChoice(model);
+      const choice = parseGoogleModelChoice(model, uiLanguage);
       return choice.family === activeGeminiChoice.family && choice.version === version;
     });
     if (next) setGeminiModelId(next.id);
@@ -249,7 +261,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
     const q = search.trim().toLowerCase();
     const matches = (model: AIModel) => {
       if (!q) return true;
-      return `${model.name} ${model.id} ${model.provider} ${surfaceLabel(model)}`.toLowerCase().includes(q);
+      return `${model.name} ${model.id} ${model.provider} ${surfaceLabel(model, uiLanguage)}`.toLowerCase().includes(q);
     };
     const make = (key: string, title: string, predicate: (model: AIModel) => boolean): ModelGroup => ({
       key,
@@ -260,9 +272,9 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
     return [
       make('openai-api', 'OpenAI API', (model) => model.provider === 'openai' && !model.id.startsWith('chatgpt:')),
       make('claude', 'Claude', (model) => model.provider === 'anthropic' && !model.id.startsWith('claude-cli:')),
-      make('remote', 'Remote', (model) => model.provider === 'remote'),
+      make('remote', t('models.remote'), (model) => model.provider === 'remote'),
     ].filter((group) => group.models.length > 0);
-  }, [availableModels, search]);
+  }, [availableModels, search, t, uiLanguage]);
 
   const filteredCodex = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -281,10 +293,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
     const q = search.trim().toLowerCase();
     if (!q) return antigravity;
     return antigravity.filter((model) => {
-      const parsed = parseAntigravityModel(model);
+      const parsed = parseAntigravityModel(model, uiLanguage);
       return `${model.name} ${model.id} antigravity ${parsed.provider} ${parsed.model} ${parsed.mode}`.toLowerCase().includes(q);
     });
-  }, [antigravity, search]);
+  }, [antigravity, search, uiLanguage]);
   const matchesAntigravitySearch = filteredAntigravity.length > 0;
 
   const filteredClaudeCli = useMemo(() => {
@@ -297,8 +309,8 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
   const matchesGeminiSearch = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return gemini.length > 0;
-    return gemini.some((model) => `${model.name} ${model.id} gemini google ${surfaceLabel(model)}`.toLowerCase().includes(q));
-  }, [gemini, search]);
+    return gemini.some((model) => `${model.name} ${model.id} gemini google ${surfaceLabel(model, uiLanguage)}`.toLowerCase().includes(q));
+  }, [gemini, search, uiLanguage]);
 
   const matchesOllamaSearch = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -315,34 +327,43 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
   const selectCodex = () => {
     const model = codex.find((candidate) => candidate.id === codexModelId) || codex[0];
     if (!model) return;
-    const runConfig = codexRunConfig(model, { reasoningEffort: codexEffort, ...(codexTier ? { serviceTier: codexTier } : {}) });
+    const runConfig = codexRunConfig(model, { ...(codexEffort ? { reasoningEffort: codexEffort } : {}), ...(codexTier ? { serviceTier: codexTier } : {}) });
     applySelection(model.id, 'codex', runConfig);
     requestClose();
   };
 
   const activeCodex = codex.find((model) => model.id === codexModelId) || codex[0];
-  const activeCodexChoice = parseCodexModel(activeCodex);
-  const codexVersions = Array.from(new Set(codex.map((model) => parseCodexModel(model).version)));
-  const codexVariants = codex.filter((model) => parseCodexModel(model).version === activeCodexChoice.version);
+  const activeCodexChoice = parseCodexModel(activeCodex, uiLanguage);
+  const codexVersions = Array.from(new Set(codex.map((model) => parseCodexModel(model, uiLanguage).version)));
+  const codexVariants = codex.filter((model) => parseCodexModel(model, uiLanguage).version === activeCodexChoice.version);
   const codexTierOptions = serviceTiersForModel(activeCodex);
-  const codexEffortOptions = codexEffortsForModel(activeCodex)
-    .map((effort) => ({ value: effort, label: reasoningEffortLabel(effort) }));
-  const activeCodexEffort = codexEffortForModel(activeCodex, codexEffort);
+  const codexTierSelectOptions = codexTierOptions.map((tier) => ({
+    value: tier,
+    label: t(`models.serviceTiers.${tier}`, { defaultValue: serviceTierLabel(tier, uiLanguage) }),
+  }));
+  if (codexTierOptions.length > 0) codexTierSelectOptions.unshift({ value: '', label: t('models.standard') });
+  const codexEfforts = codexEffortsForModel(activeCodex);
+  const codexEffortOptions = codexEfforts
+    .map((effort) => ({ value: effort, label: t(`models.efforts.${effort}`, { defaultValue: reasoningEffortLabel(effort, uiLanguage) }) }));
+  if (codexEfforts.length > 1 && !activeCodex?.defaultReasoningEffort) {
+    codexEffortOptions.unshift({ value: '', label: t('models.standard') });
+  }
+  const activeCodexEffort = codexEffort === '' ? '' : codexEffortForModel(activeCodex, codexEffort) || '';
   const onCodexModelChange = (modelId: string) => {
     const next = codex.find((model) => model.id === modelId) || codex[0];
     setCodexModelId(modelId);
-    setCodexEffort(codexEffortForModel(next, activeCodexEffort));
+    setCodexEffort(activeCodexEffort ? codexEffortForModel(next, activeCodexEffort) || '' : '');
     const tiers = serviceTiersForModel(next);
-    if (!tiers.includes(codexTier)) setCodexTier(tiers[0] || '');
+    if (!codexTier || !tiers.includes(codexTier)) setCodexTier('');
   };
   const onCodexVersionChange = (version: string) => {
-    const next = codex.find((model) => parseCodexModel(model).version === version);
+    const next = codex.find((model) => parseCodexModel(model, uiLanguage).version === version);
     if (next) onCodexModelChange(next.id);
   };
   const codexControlCount = 1
     + Number(codexVariants.length > 1)
-    + Number(codexEffortOptions.length > 1)
-    + Number(codexTierOptions.length > 1);
+    + Number(codexEfforts.length > 1)
+    + Number(codexTierOptions.length > 0);
 
   // ── ChatGPT helpers ──
   // ChatGPT levert z'n modelkiezer zelf aan (versions + intelligence_presets). Die
@@ -421,14 +442,23 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
     }
   }, [chatgptCatalogReady, chatgptSessionActive, refreshChatgptCatalog]);
 
-  const claudeFamilyList = claudeCliFamilies(availableModels);
-  const claudeVersionList = claudeCliVersionsFor(availableModels, claudeCliFamily);
-  const activeClaudeCli = claudeCliModelFor(availableModels, claudeCliFamily, claudeCliVersion) || initialClaudeCli || claudeCli[0];
-  const claudeEffortOptions = (activeClaudeCli?.supportedReasoningEfforts || ['low', 'medium', 'high', 'xhigh', 'max'])
-    .map((effort) => ({ value: effort, label: reasoningEffortLabel(effort) }));
-  const claudeSummary = compactChoiceLabel(claudeCliFamily, claudeCliVersion, claudeCliEffort);
+  const claudeFamilyList = claudeCliFamilies(availableModels, uiLanguage);
+  const claudeVersionList = claudeCliVersionsFor(availableModels, claudeCliFamily, uiLanguage);
+  const activeClaudeCli = claudeCliModelFor(availableModels, claudeCliFamily, claudeCliVersion, uiLanguage) || initialClaudeCli || claudeCli[0];
+  const claudeEfforts = reasoningEffortsForModel(activeClaudeCli);
+  const activeClaudeEffort = claudeCliEffort === '' ? '' : reasoningEffortForModel(activeClaudeCli, claudeCliEffort) || '';
+  const claudeEffortOptions = claudeEfforts
+    .map((effort) => ({ value: effort, label: t(`models.efforts.${effort}`, { defaultValue: reasoningEffortLabel(effort, uiLanguage) }) }));
+  if (claudeEfforts.length > 1 && !activeClaudeCli?.defaultReasoningEffort) {
+    claudeEffortOptions.unshift({ value: '', label: t('models.standard') });
+  }
+  const claudeSummary = compactChoiceLabel(
+    claudeCliFamily,
+    claudeCliVersion,
+    activeClaudeEffort && reasoningEffortLabel(activeClaudeEffort, uiLanguage),
+  );
   const claudeFamilyOptions = claudeFamilyList.map((family) => {
-    const versions = claudeCliVersionsFor(availableModels, family);
+    const versions = claudeCliVersionsFor(availableModels, family, uiLanguage);
     return {
       value: family,
       label: compactChoiceLabel(family, versions.length === 1 ? versions[0] : ''),
@@ -436,26 +466,38 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
   });
   const onClaudeFamilyChange = (family: string) => {
     setClaudeCliFamily(family);
-    const versions = claudeCliVersionsFor(availableModels, family);
+    const versions = claudeCliVersionsFor(availableModels, family, uiLanguage);
     setClaudeCliVersion(versions.includes(claudeCliVersion) ? claudeCliVersion : versions[0] || '');
   };
 
-  const antigravityProviderList = antigravityProviders(availableModels);
-  const antigravityModelList = antigravityModelNamesFor(availableModels, antigravityProvider);
-  const antigravityModeList = antigravityModesFor(availableModels, antigravityProvider, antigravityModelName);
-  const activeAntigravity = antigravityModelFor(availableModels, antigravityProvider, antigravityModelName, antigravityMode) || initialAntigravity || antigravity[0];
-  const antigravitySummary = compactChoiceLabel(antigravityProvider, antigravityModelName, antigravityMode);
+  const antigravityProviderList = antigravityProviders(availableModels, uiLanguage);
+  const antigravityModelList = antigravityModelNamesFor(availableModels, antigravityProvider, uiLanguage);
+  const antigravityModeList = antigravityModesFor(availableModels, antigravityProvider, antigravityModelName, uiLanguage);
+  const activeAntigravity = antigravityModelFor(availableModels, antigravityProvider, antigravityModelName, antigravityMode, uiLanguage) || initialAntigravity || antigravity[0];
+  const antigravityEfforts = reasoningEffortsForModel(activeAntigravity);
+  const activeAntigravityEffort = antigravityEffort === '' ? '' : reasoningEffortForModel(activeAntigravity, antigravityEffort) || '';
+  const antigravityEffortOptions = antigravityEfforts
+    .map((effort) => ({ value: effort, label: t(`models.efforts.${effort}`, { defaultValue: reasoningEffortLabel(effort, uiLanguage) }) }));
+  if (antigravityEfforts.length > 1 && !activeAntigravity?.defaultReasoningEffort) {
+    antigravityEffortOptions.unshift({ value: '', label: t('models.standard') });
+  }
+  const antigravitySummary = compactChoiceLabel(
+    antigravityProvider,
+    antigravityModelName,
+    antigravityMode,
+    activeAntigravityEffort && reasoningEffortLabel(activeAntigravityEffort, uiLanguage),
+  );
   const antigravityProviderOptions = antigravityProviderList.map((provider) => {
-    const models = antigravityModelNamesFor(availableModels, provider);
+    const models = antigravityModelNamesFor(availableModels, provider, uiLanguage);
     const singleModel = models.length === 1 ? models[0] : '';
-    const modes = singleModel ? antigravityModesFor(availableModels, provider, singleModel) : [];
+    const modes = singleModel ? antigravityModesFor(availableModels, provider, singleModel, uiLanguage) : [];
     return {
       value: provider,
       label: compactChoiceLabel(provider, singleModel, modes.length === 1 ? modes[0] : ''),
     };
   });
   const antigravityModelOptions = antigravityModelList.map((modelName) => {
-    const modes = antigravityModesFor(availableModels, antigravityProvider, modelName);
+    const modes = antigravityModesFor(availableModels, antigravityProvider, modelName, uiLanguage);
     return {
       value: modelName,
       label: compactChoiceLabel(modelName, modes.length === 1 ? modes[0] : ''),
@@ -463,27 +505,35 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
   });
   const onAntigravityProviderChange = (provider: string) => {
     setAntigravityProvider(provider);
-    const models = antigravityModelNamesFor(availableModels, provider);
+    const models = antigravityModelNamesFor(availableModels, provider, uiLanguage);
     const nextModel = models.includes(antigravityModelName) ? antigravityModelName : models[0] || '';
     setAntigravityModelName(nextModel);
-    const modes = antigravityModesFor(availableModels, provider, nextModel);
+    const modes = antigravityModesFor(availableModels, provider, nextModel, uiLanguage);
     setAntigravityMode(modes.includes(antigravityMode) ? antigravityMode : modes[0] || '');
   };
   const onAntigravityModelChange = (modelName: string) => {
     setAntigravityModelName(modelName);
-    const modes = antigravityModesFor(availableModels, antigravityProvider, modelName);
+    const modes = antigravityModesFor(availableModels, antigravityProvider, modelName, uiLanguage);
     setAntigravityMode(modes.includes(antigravityMode) ? antigravityMode : modes[0] || '');
   };
 
   const selectAntigravity = () => {
     if (!activeAntigravity) return;
-    applySelection(activeAntigravity.id, 'antigravity', activeAntigravity.runConfig || undefined);
+    applySelection(
+      activeAntigravity.id,
+      'antigravity',
+      runConfigWithAdvertisedEffort(activeAntigravity, activeAntigravity.runConfig, activeAntigravityEffort),
+    );
     requestClose();
   };
 
   const selectClaudeCli = () => {
     if (!activeClaudeCli) return;
-    applySelection(activeClaudeCli.id, 'anthropic', { ...(activeClaudeCli.runConfig || {}), reasoningEffort: claudeCliEffort });
+    applySelection(
+      activeClaudeCli.id,
+      'anthropic',
+      runConfigWithAdvertisedEffort(activeClaudeCli, activeClaudeCli.runConfig, activeClaudeEffort),
+    );
     requestClose();
   };
 
@@ -513,7 +563,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
               <div className="model-group-label provider-label">
                 <span>Codex CLI</span>
                 <span className={`status-badge ${authStatus.codex?.authenticated ? 'online' : 'offline'}`}>
-                  {authStatus.codex?.statusLabel || 'CLI auth nodig'}
+                  {localizedStatus(authStatus.codex?.statusLabel, authStatus.codex?.authenticated ? 'models.cliFound' : 'models.cliAuthRequired')}
                 </span>
               </div>
               <div className={`model-option model-option-composite ${activeProvider === 'codex' ? 'active' : ''}`}>
@@ -523,7 +573,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                       <Sparkles size={16} />
                       Codex CLI
                     </div>
-                    <div className="model-option-context">Account-brede limiet, model en inspanning hieronder kiezen</div>
+                    <div className="model-option-context">{t('models.accountWideChooseBelow')}</div>
                   </div>
                   <QuotaBadge model={activeCodex} />
                 </div>
@@ -531,19 +581,19 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                   className="codex-config-grid codex-model-config-grid"
                   style={{ '--codex-control-count': codexControlCount } as React.CSSProperties}
                 >
-                  <SelectField label="Model" value={activeCodexChoice.version} onChange={onCodexVersionChange} options={codexVersions.map((version) => ({ value: version, label: version }))} />
+                  <SelectField label={t('models.model')} value={activeCodexChoice.version} onChange={onCodexVersionChange} options={codexVersions.map((version) => ({ value: version, label: version }))} />
                   {codexVariants.length > 1 && (
-                    <SelectField label="Variant" value={activeCodex?.id || ''} onChange={onCodexModelChange} options={codexVariants.map((model) => ({ value: model.id, label: parseCodexModel(model).variant }))} />
+                    <SelectField label={t('models.variant')} value={activeCodex?.id || ''} onChange={onCodexModelChange} options={codexVariants.map((model) => ({ value: model.id, label: parseCodexModel(model, uiLanguage).variant }))} />
                   )}
-                  {codexEffortOptions.length > 1 && (
-                    <SelectField label="Inspanning" value={activeCodexEffort} onChange={(value) => setCodexEffort(value as ReasoningEffort)} options={codexEffortOptions} />
+                  {codexEfforts.length > 1 && (
+                    <SelectField label={t('models.effort')} value={activeCodexEffort} onChange={(value) => setCodexEffort(value as ReasoningEffort | '')} options={codexEffortOptions} />
                   )}
-                  {codexTierOptions.length > 1 && (
-                    <SelectField label="Snelheid" value={codexTier} onChange={(value) => setCodexTier(value as ServiceTier)} options={codexTierOptions.map((tier) => ({ value: tier, label: serviceTierLabel(tier) }))} />
+                  {codexTierOptions.length > 0 && (
+                    <SelectField label={t('models.speed')} value={codexTier} onChange={(value) => setCodexTier(value as ServiceTier | '')} options={codexTierSelectOptions} />
                   )}
                   <button type="button" className="btn btn-primary" onClick={selectCodex} disabled={!activeCodex}>
                     <Check size={16} />
-                    Gebruik Codex
+                    {t('models.useProvider', { provider: 'Codex' })}
                   </button>
                 </div>
               </div>
@@ -563,14 +613,14 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                       <Globe2 size={16} />
                       ChatGPT Subscription
                     </div>
-                    <div className="model-option-context">Geen API-key · {chatgptSummary || 'via je ingelogde ChatGPT-account'}</div>
+                    <div className="model-option-context">{t('models.noApiKey')} · {chatgptSummary || t('models.viaSignedInChatgpt')}</div>
                   </div>
                   <QuotaBadge model={activeChatgpt} />
                 </div>
                 <div className="codex-config-grid">
                   {!chatgptCatalogReady && chatgptSessionActive && (
                     <div className="chatgpt-catalog-notice">
-                      <span>De sessie is gekoppeld, maar de live modelcatalogus ontbreekt. Er wordt geen standaardmodel gekozen.</span>
+                      <span>{t('models.catalogMissingNotice')}</span>
                       <button
                         type="button"
                         className="btn btn-secondary"
@@ -580,16 +630,16 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                         {chatgptCatalogRefreshing
                           ? <Loader2 size={14} className="spin" />
                           : <RefreshCw size={14} />}
-                        Opnieuw laden
+                        {t('common.reload')}
                       </button>
                     </div>
                   )}
                   {chatgptBaseOptions.length > 1 && (
-                    <SelectField label="Model" value={chatgptBaseValue} onChange={onChatgptBaseChange} options={chatgptBaseOptions} />
+                    <SelectField label={t('models.model')} value={chatgptBaseValue} onChange={onChatgptBaseChange} options={chatgptBaseOptions} />
                   )}
                   {chatgptLevelList.length > 1 && (
                     <SelectField
-                      label="Intelligentie"
+                      label={t('models.intelligence')}
                       value={activeLevel?.key || ''}
                       onChange={setChatgptLevel}
                       options={chatgptLevelList.map((level) => ({ value: level.key, label: level.label, disabled: !level.available }))}
@@ -600,10 +650,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                     className="btn btn-primary"
                     onClick={selectChatgpt}
                     disabled={!activeChatgpt || !chatgptSelectable}
-                    title={chatgptSelectable ? undefined : chatgptSessionActive ? 'Laad eerst de live ChatGPT-modelcatalogus' : 'Log eerst in op je ChatGPT-websessie'}
+                    title={chatgptSelectable ? undefined : chatgptSessionActive ? t('models.loadCatalogFirst') : t('models.signInChatgptFirst')}
                   >
                     <Check size={16} />
-                    Gebruik ChatGPT
+                    {t('models.useProvider', { provider: 'ChatGPT' })}
                   </button>
                 </div>
               </div>
@@ -615,7 +665,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
               <div className="model-group-label provider-label">
                 <span>Claude CLI</span>
                 <span className={`status-badge ${claudeCli.length ? 'online' : 'offline'}`}>
-                  {claudeCli.length ? 'CLI gevonden' : 'CLI nodig'}
+                  {claudeCli.length ? t('models.cliFound') : t('models.cliRequired')}
                 </span>
               </div>
               <div className={`model-option model-option-composite ${activeProvider === 'anthropic' && activeModelId.startsWith('claude-cli:') ? 'active' : ''}`}>
@@ -625,23 +675,23 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                       <Bot size={16} />
                       Claude Code CLI
                     </div>
-                    <div className="model-option-context">Account-brede limiet · {claudeSummary || 'Claude CLI'}</div>
+                    <div className="model-option-context">{t('models.accountWideLimit')} · {claudeSummary || 'Claude CLI'}</div>
                   </div>
                   <QuotaBadge model={activeClaudeCli} />
                 </div>
                 <div className="codex-config-grid claude-config-grid">
                   {claudeFamilyOptions.length > 1 && (
-                    <SelectField label="Familie" value={claudeCliFamily} onChange={onClaudeFamilyChange} options={claudeFamilyOptions} />
+                    <SelectField label={t('models.family')} value={claudeCliFamily} onChange={onClaudeFamilyChange} options={claudeFamilyOptions} />
                   )}
                   {claudeVersionList.length > 1 && (
-                    <SelectField label="Versie" value={claudeCliVersion} onChange={setClaudeCliVersion} options={claudeVersionList.map((version) => ({ value: version, label: version }))} />
+                    <SelectField label={t('models.version')} value={claudeCliVersion} onChange={setClaudeCliVersion} options={claudeVersionList.map((version) => ({ value: version, label: version }))} />
                   )}
-                  {claudeEffortOptions.length > 1 && (
-                    <SelectField label="Effort" value={claudeCliEffort} onChange={(value) => setClaudeCliEffort(value as ReasoningEffort)} options={claudeEffortOptions} />
+                  {claudeEfforts.length > 1 && (
+                    <SelectField label={t('models.effort')} value={activeClaudeEffort} onChange={(value) => setClaudeCliEffort(value as ReasoningEffort | '')} options={claudeEffortOptions} />
                   )}
                   <button type="button" className="btn btn-primary" onClick={selectClaudeCli} disabled={!activeClaudeCli}>
                     <Check size={16} />
-                    Gebruik Claude
+                    {t('models.useProvider', { provider: 'Claude' })}
                   </button>
                 </div>
               </div>
@@ -653,7 +703,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
               <div className="model-group-label provider-label">
                 <span>Antigravity</span>
                 <span className={`status-badge ${authStatus.antigravity?.authenticated ? 'online' : 'offline'}`}>
-                  {authStatus.antigravity?.authenticated ? 'CLI gevonden' : 'CLI niet gevonden'}
+                  {authStatus.antigravity?.authenticated ? t('models.cliFound') : t('models.cliNotFound')}
                 </span>
               </div>
               <div className={`model-option model-option-composite ${activeProvider === 'antigravity' ? 'active' : ''}`}>
@@ -663,23 +713,26 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                       <Rocket size={16} />
                       Antigravity CLI
                     </div>
-                    <div className="model-option-context">Account-brede limiet · {antigravitySummary || 'Antigravity CLI'}</div>
+                    <div className="model-option-context">{t('models.accountWideLimit')} · {antigravitySummary || 'Antigravity CLI'}</div>
                   </div>
                   <QuotaBadge model={activeAntigravity} />
                 </div>
                 <div className="codex-config-grid antigravity-config-grid">
                   {antigravityProviderOptions.length > 1 && (
-                    <SelectField label="Provider" value={antigravityProvider} onChange={onAntigravityProviderChange} options={antigravityProviderOptions} />
+                    <SelectField label={t('models.provider')} value={antigravityProvider} onChange={onAntigravityProviderChange} options={antigravityProviderOptions} />
                   )}
                   {antigravityModelOptions.length > 1 && (
-                    <SelectField label="Model" value={antigravityModelName} onChange={onAntigravityModelChange} options={antigravityModelOptions} />
+                    <SelectField label={t('models.model')} value={antigravityModelName} onChange={onAntigravityModelChange} options={antigravityModelOptions} />
                   )}
                   {antigravityModeList.length > 1 && (
-                    <SelectField label="Stand" value={antigravityMode} onChange={setAntigravityMode} options={antigravityModeList.map((mode) => ({ value: mode, label: mode }))} />
+                    <SelectField label={t('models.mode')} value={antigravityMode} onChange={setAntigravityMode} options={antigravityModeList.map((mode) => ({ value: mode, label: mode }))} />
+                  )}
+                  {antigravityEfforts.length > 1 && (
+                    <SelectField label={t('models.effort')} value={activeAntigravityEffort} onChange={(value) => setAntigravityEffort(value as ReasoningEffort | '')} options={antigravityEffortOptions} />
                   )}
                   <button type="button" className="btn btn-primary" onClick={selectAntigravity} disabled={!activeAntigravity}>
                     <Check size={16} />
-                    Gebruik Antigravity
+                    {t('models.useProvider', { provider: 'Antigravity' })}
                   </button>
                 </div>
               </div>
@@ -691,7 +744,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
               <div className="model-group-label provider-label">
                 <span>Gemini</span>
                 <span className={`status-badge ${authStatus.google?.authenticated ? 'online' : 'offline'}`}>
-                  {authStatus.google?.statusLabel || 'Niet verbonden'}
+                  {localizedStatus(authStatus.google?.statusLabel, authStatus.google?.authenticated ? 'models.connected' : 'models.notConnected')}
                 </span>
               </div>
               <div className={`model-option model-option-composite ${activeProvider === 'google' ? 'active' : ''}`}>
@@ -702,33 +755,33 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                       Gemini
                     </div>
                     <div className="model-option-context">
-                      {activeGemini ? `${surfaceLabel(activeGemini)} · ${formatContextSize(activeGemini.contextWindow)} context` : 'Google AI'}
+                      {activeGemini ? `${surfaceLabel(activeGemini, uiLanguage)} · ${t('models.context', { size: formatContextSize(activeGemini.contextWindow) })}` : 'Google AI'}
                     </div>
                   </div>
                   <QuotaBadge model={activeGemini} />
                 </div>
                 <div className="codex-config-grid gemini-config-grid">
                   <SelectField
-                    label="Familie"
+                    label={t('models.family')}
                     value={activeGeminiChoice.family}
                     onChange={onGeminiFamilyChange}
                     options={geminiFamilies.map((family) => ({ value: family, label: family }))}
                   />
                   <SelectField
-                    label="Versie"
+                    label={t('models.version')}
                     value={activeGeminiChoice.version}
                     onChange={onGeminiVersionChange}
                     options={geminiVersions.map((version) => ({ value: version, label: version }))}
                   />
                   <SelectField
-                    label="Variant"
+                    label={t('models.variant')}
                     value={activeGemini?.id || ''}
                     onChange={setGeminiModelId}
-                    options={geminiVariants.map((model) => ({ value: model.id, label: parseGoogleModelChoice(model).variant }))}
+                    options={geminiVariants.map((model) => ({ value: model.id, label: parseGoogleModelChoice(model, uiLanguage).variant }))}
                   />
                   <button type="button" className="btn btn-primary" onClick={selectGemini} disabled={!activeGemini}>
                     <Check size={16} />
-                    Gebruik Gemini
+                    {t('models.useProvider', { provider: 'Gemini' })}
                   </button>
                 </div>
               </div>
@@ -738,9 +791,9 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
           {matchesOllamaSearch && (
             <div className="model-provider-section">
               <div className="model-group-label provider-label">
-                <span>Ollama lokaal</span>
+                <span>{t('models.ollamaLocal')}</span>
                 <span className={`status-badge ${authStatus.ollama?.authenticated ? 'online' : 'offline'}`}>
-                  {authStatus.ollama?.statusLabel || 'Ollama offline'}
+                  {localizedStatus(authStatus.ollama?.statusLabel, authStatus.ollama?.authenticated ? 'models.online' : 'models.ollamaOffline')}
                 </span>
               </div>
               <div className={`model-option model-option-composite ${activeProvider === 'ollama' ? 'active' : ''}`}>
@@ -751,27 +804,27 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                       Ollama
                     </div>
                     <div className="model-option-context">
-                      Lokaal model · {activeOllama ? `${formatContextSize(activeOllama.contextWindow)} context` : 'Ollama'}
+                      {t('models.localModel')} · {activeOllama ? t('models.context', { size: formatContextSize(activeOllama.contextWindow) }) : 'Ollama'}
                     </div>
                   </div>
                   <QuotaBadge model={activeOllama} />
                 </div>
                 <div className="codex-config-grid ollama-config-grid">
                   <SelectField
-                    label="Model"
+                    label={t('models.model')}
                     value={activeOllamaChoice.family}
                     onChange={onOllamaFamilyChange}
                     options={ollamaFamilies.map((family) => ({ value: family, label: family }))}
                   />
                   <SelectField
-                    label="Variant"
+                    label={t('models.variant')}
                     value={activeOllama?.id || ''}
                     onChange={setOllamaModelId}
                     options={ollamaVariants}
                   />
                   <button type="button" className="btn btn-primary" onClick={selectOllama} disabled={!activeOllama}>
                     <Check size={16} />
-                    Gebruik Ollama
+                    {t('models.useProvider', { provider: 'Ollama' })}
                   </button>
                 </div>
               </div>
@@ -782,7 +835,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
             <div key={group.key} className="model-provider-section">
               <div className="model-group-label provider-label">
                 <span>{group.title}</span>
-                <span className="status-badge neutral">{group.models.length} model(len)</span>
+                <span className="status-badge neutral">{t('models.modelCount', { count: group.models.length })}</span>
               </div>
               {group.models.map((model) => (
                 <button
@@ -792,13 +845,13 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
                   onClick={() => selectModel(model)}
                 >
                   <div>
-                    <div className="model-option-name">{modelDisplayName(model)}</div>
+                    <div className="model-option-name">{modelDisplayName(model, uiLanguage)}</div>
                     <div className="model-option-context">
-                      {formatContextSize(model.contextWindow)} context - {surfaceLabel(model)}
+                      {t('models.context', { size: formatContextSize(model.contextWindow) })} - {surfaceLabel(model, uiLanguage)}
                     </div>
                   </div>
                   <div className="model-option-side">
-                    <ProviderBadge provider={model.provider as ProviderType} label={model.sourceLabel || surfaceLabel(model)} />
+                    <ProviderBadge provider={model.provider as ProviderType} label={surfaceLabel(model, uiLanguage)} />
                     <QuotaBadge model={model} />
                   </div>
                 </button>
@@ -807,7 +860,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
           ))}
 
           {!filteredCodex.length && !matchesChatgptSearch && !matchesClaudeCliSearch && !matchesAntigravitySearch && !matchesGeminiSearch && !matchesOllamaSearch && !groups.length && (
-            <div className="model-empty-row">{emptyMessage(authStatus, accountStatuses)}</div>
+            <div className="model-empty-row">{emptyMessage(authStatus, accountStatuses, t, isEnglish)}</div>
           )}
         </div>
       </div>
@@ -837,9 +890,14 @@ function compactChoiceLabel(...parts: Array<string | undefined | null | false>) 
   return parts.map((part) => String(part || '').trim()).filter(Boolean).join(' · ');
 }
 
-function emptyMessage(authStatus: ReturnType<typeof useProviderStore.getState>['authStatus'], accountStatuses: ReturnType<typeof useProviderStore.getState>['accountStatuses']) {
+function emptyMessage(
+  authStatus: ReturnType<typeof useProviderStore.getState>['authStatus'],
+  accountStatuses: ReturnType<typeof useProviderStore.getState>['accountStatuses'],
+  t: ReturnType<typeof useTranslation>['t'],
+  isEnglish: boolean,
+) {
   const labels = [authStatus.openai?.statusLabel, authStatus.codex?.statusLabel, accountStatuses.chatgpt?.statusLabel].filter(Boolean);
-  return labels[0] || 'Geen chatmodellen gevonden. Log in of refresh modellen in Settings.';
+  return (!isEnglish && labels[0]) || t('models.noneFoundHelp');
 }
 
 export default ModelSelector;

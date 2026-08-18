@@ -25,6 +25,14 @@ describe('LLMelt-productbranding', () => {
     const publishScript = readFileSync(new URL('../scripts/publish-update.mjs', import.meta.url), 'utf8');
     expect(publishScript).toContain("const repository = 'JustMLC4real/LLMelt'");
     expect(publishScript).not.toContain('scp');
+    expect(publishScript).toContain("branch !== 'main'");
+    expect(publishScript).toContain("'refs/heads/main'");
+    expect(publishScript).toContain('asset.digest !== localDigest');
+    expect(publishScript).toContain("method: 'HEAD'");
+    expect(publishScript).toContain('remoteManifestHash !== actualHash');
+    expect(publishScript).toContain('!release.isPrerelease');
+    expect(publishScript).toContain('manifestVersion !== version');
+    expect(publishScript).toContain('manifestSize !== statSync(installer).size');
   });
 
   it('heeft de definitieve renderer- en Windows-iconen', () => {

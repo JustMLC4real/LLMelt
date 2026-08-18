@@ -1,4 +1,5 @@
-import type { CommandRun, Message, ToolActivityPhase } from '../providers/types';
+import type { CommandRun, Message, ToolActivityPhase, UiLanguage } from '../providers/types';
+import { localizedText } from '../i18n/language';
 
 export const TOOL_SUMMARY_ERROR_PREFIX = 'Tool summary error:';
 
@@ -115,21 +116,22 @@ export function isToolOutputMessage(message: Message) {
 }
 
 export function isToolIntentMessage(message: Message) {
-  return message.role === 'assistant' && /^Ik voer de gevraagde toolstappen uit\b/.test(message.content.trim());
+  return message.role === 'assistant'
+    && /^(?:Ik voer de gevraagde toolstappen uit|I(?:'ll| will) execute the requested tool steps)\b/i.test(message.content.trim());
 }
 
-export function commandRunGroupLabel(group: CommandRunGroup) {
-  return commandRunGroupSummaryLabel(group);
+export function commandRunGroupLabel(group: CommandRunGroup, language: UiLanguage = 'nl') {
+  return commandRunGroupSummaryLabel(group, language);
 }
 
-export function commandRunGroupSummaryLabel(group: CommandRunGroup) {
+export function commandRunGroupSummaryLabel(group: CommandRunGroup, language: UiLanguage = 'nl') {
   const activeActivity = latestActiveActivity(group);
   if (activeActivity?.phase) {
     return activeActivity.phase === 'planning' && activeActivity.label
       ? activeActivity.label
-      : phaseLabel(activeActivity.phase);
+      : phaseLabel(activeActivity.phase, language);
   }
-  if (group.summaryError) return 'Gestopt';
+  if (group.summaryError) return localizedText(language, 'Gestopt', 'Stopped');
   const normalized = normalizeActivityGroupOrder(group).runs;
   const primaryItems = normalized.filter((item) => item.attemptKind !== 'previous-attempt' && !item.phase);
   const previousCount = normalized.filter((item) => item.attemptKind === 'previous-attempt').length;
@@ -139,28 +141,43 @@ export function commandRunGroupSummaryLabel(group: CommandRunGroup) {
   const running = commands.some((item) => item.run?.status === 'running');
 
   const parts: string[] = [];
-  if (files.length) parts.push(fileActionSummary(files.map((item) => item.file!)));
+  if (files.length) parts.push(fileActionSummary(files.map((item) => item.file!), language));
   if (commands.length) {
-    const verb = running ? 'voert' : 'voerde';
-    parts.push(`${verb} ${commands.length} ${commands.length === 1 ? 'opdracht' : 'opdrachten'} uit`);
+    parts.push(localizedText(
+      language,
+      `${running ? 'voert' : 'voerde'} ${commands.length} ${commands.length === 1 ? 'opdracht' : 'opdrachten'} uit`,
+      `${running ? 'running' : 'ran'} ${commands.length} ${commands.length === 1 ? 'command' : 'commands'}`,
+    ));
   }
   if (!parts.length && other.length) {
     const count = other.length;
-    parts.push(`Verwerkte ${count} ${count === 1 ? 'toolresultaat' : 'toolresultaten'}`);
+    parts.push(localizedText(
+      language,
+      `Verwerkte ${count} ${count === 1 ? 'toolresultaat' : 'toolresultaten'}`,
+      `processed ${count} tool ${count === 1 ? 'result' : 'results'}`,
+    ));
   }
 
-  const base = parts.length ? capitalizeFirst(joinSummaryParts(parts)) : 'Voerde 1 opdracht uit';
-  return previousCount ? `${base} · ${previousCount} eerdere ${previousCount === 1 ? 'poging' : 'pogingen'}` : base;
+  const base = parts.length
+    ? capitalizeFirst(joinSummaryParts(parts, language))
+    : localizedText(language, 'Voerde 1 opdracht uit', 'Ran 1 command');
+  return previousCount
+    ? localizedText(
+      language,
+      `${base} · ${previousCount} eerdere ${previousCount === 1 ? 'poging' : 'pogingen'}`,
+      `${base} · ${previousCount} previous ${previousCount === 1 ? 'attempt' : 'attempts'}`,
+    )
+    : base;
 }
 
-export function commandRunItemLabel(run: CommandRun) {
-  return `Heeft uitgevoerd: ${run.command}`;
+export function commandRunItemLabel(run: CommandRun, language: UiLanguage = 'nl') {
+  return localizedText(language, `Heeft uitgevoerd: ${run.command}`, `Ran: ${run.command}`);
 }
 
-export function commandRunStatusLabel(run: CommandRun, now = Date.now()) {
+export function commandRunStatusLabel(run: CommandRun, now = Date.now(), language: UiLanguage = 'nl') {
   if (run.status === 'running') return formatDuration(Math.max(0, now - new Date(run.startedAt).getTime()));
-  if (run.status === 'denied') return 'geweigerd';
-  if (run.exitCode !== null) return `Afsluitcode ${run.exitCode}`;
+  if (run.status === 'denied') return localizedText(language, 'geweigerd', 'denied');
+  if (run.exitCode !== null) return localizedText(language, `Afsluitcode ${run.exitCode}`, `Exit code ${run.exitCode}`);
   return run.status;
 }
 
@@ -181,16 +198,16 @@ export function commandRunGroupTone(group: CommandRunGroup): 'running' | 'ok' | 
   return 'ok';
 }
 
-export function parseToolOutputActivity(message: Message | string): CommandRunGroupItem | null {
+export function parseToolOutputActivity(message: Message | string, language: UiLanguage = 'nl'): CommandRunGroupItem | null {
   const content = typeof message === 'string' ? message : message.content;
   if (!content.startsWith('Tool output:') && !content.startsWith('Command output:')) return null;
   const body = content.replace(/^(?:Tool output|Command output):\s*/i, '').trim();
   if (!body) return null;
 
   const firstLine = body.split(/\r?\n/)[0]?.trim() || 'tool output';
-  const failed = /\[(?:error|invalid file payload|geen wijziging|geweigerd)\]|Traceback|Error:|Exception|failed|niet gevonden|No such file|overgeslagen/i.test(body);
-  const denied = /\[geweigerd|geweigerd door gebruiker/i.test(body);
-  const skipped = /Command overgeslagen/i.test(body);
+  const failed = /\[(?:error|invalid file payload|geen wijziging|no change|geweigerd|denied)\]|Traceback|Error:|Exception|failed|niet gevonden|not found|No such file|overgeslagen|skipped/i.test(body);
+  const denied = /\[(?:geweigerd|denied)|(?:geweigerd door gebruiker|denied by user)/i.test(body);
+  const skipped = /Command (?:overgeslagen|skipped)/i.test(body);
   const runMatch = firstLine.match(/^\$?\s*(?:run\s+)?(.+)/i);
   const fileMatch = firstLine.match(/^(file-read|file-create|file-edit)\s+(.+)$/i);
   const file = fileMatch && shouldRenderFileReview(body, failed, denied)
@@ -200,15 +217,18 @@ export function parseToolOutputActivity(message: Message | string): CommandRunGr
 
   if (denied) {
     const what = fileMatch ? `${fileMatch[1]} ${fileMatch[2]}`.trim() : (runMatch ? runMatch[1].trim() : firstLine);
-    label = `Geweigerd: ${what}`;
+    label = localizedText(language, `Geweigerd: ${what}`, `Denied: ${what}`);
   } else if (skipped && runMatch) {
-    label = `Heeft overgeslagen: ${runMatch[1].trim()}`;
+    label = localizedText(language, `Heeft overgeslagen: ${runMatch[1].trim()}`, `Skipped: ${runMatch[1].trim()}`);
   } else if (fileMatch) {
-    label = file ? fileToolLineLabel(file) : fileToolOutputLabel(body, fileMatch[1] as 'file-read' | 'file-create' | 'file-edit', fileMatch[2].trim());
+    label = file
+      ? fileToolLineLabel(file, language)
+      : fileToolOutputLabel(body, fileMatch[1] as 'file-read' | 'file-create' | 'file-edit', fileMatch[2].trim(), language);
   } else if (firstLine.startsWith('$')) {
-    label = `Heeft uitgevoerd: ${firstLine.replace(/^\$\s*/, '')}`;
+    const command = firstLine.replace(/^\$\s*/, '');
+    label = localizedText(language, `Heeft uitgevoerd: ${command}`, `Ran: ${command}`);
   } else {
-    label = `Heeft uitgevoerd: ${firstLine}`;
+    label = localizedText(language, `Heeft uitgevoerd: ${firstLine}`, `Ran: ${firstLine}`);
   }
 
   const id = typeof message === 'string' ? body : message.id;
@@ -222,10 +242,10 @@ export function parseToolOutputActivity(message: Message | string): CommandRunGr
 }
 
 /** Zet een native bestandstool om naar dezelfde bestand/diffkaart als de tag-toolroute. */
-export function commandRunFileActivity(run: CommandRun, key = `native-file-${run.id}`): CommandRunGroupItem | null {
+export function commandRunFileActivity(run: CommandRun, key = `native-file-${run.id}`, language: UiLanguage = 'nl'): CommandRunGroupItem | null {
   if (run.status === 'running') return null;
   const output = [run.stdout, run.stderr].filter(Boolean).join('\n').trim();
-  const parsed = output ? parseToolOutputActivity(`Tool output:\n\n${output}`) : null;
+  const parsed = output ? parseToolOutputActivity(`Tool output:\n\n${output}`, language) : null;
   if (parsed?.file) {
     return {
       ...parsed,
@@ -249,14 +269,14 @@ export function commandRunFileActivity(run: CommandRun, key = `native-file-${run
     key,
     file,
     toolText: output || `${run.toolName || run.command} ${run.toolPath}`,
-    label: fileToolLineLabel(file),
+    label: fileToolLineLabel(file, language),
     tone: 'ok',
   };
 }
 
 function shouldRenderFileReview(body: string, failed: boolean, denied: boolean) {
   if (denied || failed) return false;
-  if (/\[geen wijziging\]/i.test(body)) return false;
+  if (/\[(?:geen wijziging|no change)\]/i.test(body)) return false;
   return true;
 }
 
@@ -267,14 +287,14 @@ function parseFileToolActivity(
   failed: boolean,
   denied: boolean,
 ): FileToolActivity {
-  const contentPreview = extractSection(body, 'bestandsinhoud');
-  const diffPreview = parseDiffPreview(extractSection(body, 'wijziging'));
-  const bodyWithoutPreview = body.replace(/\r?\n--- bestandsinhoud ---\r?\n[\s\S]*$/i, '').trim();
+  const contentPreview = extractSection(body, ['bestandsinhoud', 'file contents']);
+  const diffPreview = parseDiffPreview(extractSection(body, ['wijziging', 'change']));
+  const bodyWithoutPreview = body.replace(/\r?\n--- (?:bestandsinhoud|file contents) ---\r?\n[\s\S]*$/i, '').trim();
   const status: FileToolActivity['status'] = denied
     ? 'denied'
     : failed
       ? 'failed'
-      : /\bexists unchanged\b|\[geen wijziging\]/i.test(body)
+      : /\b(?:exists unchanged|unchanged|ongewijzigd)\b|\[(?:geen wijziging|no change)\]/i.test(body)
         ? 'unchanged'
         : kind === 'file-read'
           ? 'read'
@@ -298,30 +318,41 @@ function parseFileToolActivity(
   };
 }
 
-function fileToolLineLabel(file?: FileToolActivity) {
-  if (!file) return 'Bestand bewerkt';
-  if (file.status === 'denied') return `Niet uitgevoerd: ${humanFileAction(file)} ${file.path}`;
-  if (file.status === 'failed') return `Heeft geprobeerd: ${humanFileAction(file)} ${file.path}`;
-  if (file.status === 'unchanged') return `Ongewijzigd: ${file.path}`;
-  return `Heeft uitgevoerd: ${humanFileAction(file)} ${file.path}`;
+function fileToolLineLabel(file: FileToolActivity | undefined, language: UiLanguage) {
+  if (!file) return localizedText(language, 'Bestand bewerkt', 'File edited');
+  const action = humanFileAction(file, language);
+  if (file.status === 'denied') return localizedText(language, `Niet uitgevoerd: ${action} ${file.path}`, `Not run: ${action} ${file.path}`);
+  if (file.status === 'failed') return localizedText(language, `Heeft geprobeerd: ${action} ${file.path}`, `Attempted: ${action} ${file.path}`);
+  if (file.status === 'unchanged') return localizedText(language, `Ongewijzigd: ${file.path}`, `Unchanged: ${file.path}`);
+  return localizedText(language, `Heeft uitgevoerd: ${action} ${file.path}`, `Completed: ${action} ${file.path}`);
 }
 
-function fileToolOutputLabel(body: string, kind: 'file-read' | 'file-create' | 'file-edit', filePath: string) {
-  if (/\[geweigerd|geweigerd door gebruiker/i.test(body)) return `Geweigerd: ${kind} ${filePath}`;
-  if (/\[geen wijziging\]/i.test(body)) return `Geen wijziging: ${filePath}`;
-  if (/\bexists unchanged\b/i.test(body)) return `Ongewijzigd: ${filePath}`;
-  const action = kind === 'file-read' ? 'Bestand niet gelezen' : kind === 'file-create' ? 'Bestand niet gemaakt' : 'Bestand niet bewerkt';
+function fileToolOutputLabel(body: string, kind: 'file-read' | 'file-create' | 'file-edit', filePath: string, language: UiLanguage) {
+  if (/\[(?:geweigerd|denied)|(?:geweigerd door gebruiker|denied by user)/i.test(body)) {
+    return localizedText(language, `Geweigerd: ${kind} ${filePath}`, `Denied: ${kind} ${filePath}`);
+  }
+  if (/\[(?:geen wijziging|no change)\]/i.test(body)) return localizedText(language, `Geen wijziging: ${filePath}`, `No change: ${filePath}`);
+  if (/\b(?:exists unchanged|unchanged|ongewijzigd)\b/i.test(body)) return localizedText(language, `Ongewijzigd: ${filePath}`, `Unchanged: ${filePath}`);
+  const action = kind === 'file-read'
+    ? localizedText(language, 'Bestand niet gelezen', 'File not read')
+    : kind === 'file-create'
+      ? localizedText(language, 'Bestand niet gemaakt', 'File not created')
+      : localizedText(language, 'Bestand niet bewerkt', 'File not edited');
   return `${action}: ${filePath}`;
 }
 
-function humanFileAction(file: FileToolActivity) {
-  if (file.kind === 'file-read') return 'bestand lezen';
-  return file.kind === 'file-create' ? 'bestand maken' : 'bestand bewerken';
+function humanFileAction(file: FileToolActivity, language: UiLanguage) {
+  if (file.kind === 'file-read') return localizedText(language, 'bestand lezen', 'read file');
+  return file.kind === 'file-create'
+    ? localizedText(language, 'bestand maken', 'create file')
+    : localizedText(language, 'bestand bewerken', 'edit file');
 }
 
-function extractSection(body: string, name: string) {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = body.match(new RegExp(`\\r?\\n--- ${escaped} ---\\r?\\n([\\s\\S]*?)(?=\\r?\\n--- [^-\\r\\n]+ ---\\r?\\n|$)`, 'i'));
+function extractSection(body: string, names: string | string[]) {
+  const escaped = (Array.isArray(names) ? names : [names])
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+  const match = body.match(new RegExp(`\\r?\\n--- (?:${escaped}) ---\\r?\\n([\\s\\S]*?)(?=\\r?\\n--- [^-\\r\\n]+ ---\\r?\\n|$)`, 'i'));
   return match ? match[1].trimEnd() : undefined;
 }
 
@@ -342,7 +373,7 @@ function countMeaningfulLines(text: string) {
 }
 
 function estimateAddedLines(body: string, fallback: number) {
-  const edited = body.match(/\bedited\b[^\r\n]*\(([+-]\d+)\s+chars\)/i);
+  const edited = body.match(/\b(?:edited|bewerkt)\b[^\r\n]*\(([+-]\d+)\s+(?:chars|tekens)\)/i);
   if (!edited) return fallback;
   const delta = Number.parseInt(edited[1], 10);
   if (!Number.isFinite(delta) || delta <= 0) return 0;
@@ -415,6 +446,7 @@ export function buildMessageRenderItems(
   liveRuns: LiveToolRun[],
   chatId: string | null,
   liveActivities: LiveToolActivity[] = [],
+  language: UiLanguage = 'nl',
 ): MessageRenderItem[] {
   const persistedRunIds = new Set(messages.map((message) => parseCommandRun(message.toolRun)?.id).filter(Boolean) as string[]);
   const groups = new Map<string, CommandRunGroup>();
@@ -447,14 +479,14 @@ export function buildMessageRenderItems(
       const anchorMessageId = commandRun.anchorMessageId || lastNormalMessageId;
       const key = anchorMessageId || `persisted-${message.id}`;
       ensureGroup(key, anchorMessageId).runs.push(
-        commandRunFileActivity(commandRun, `persisted-${message.id}`)
+        commandRunFileActivity(commandRun, `persisted-${message.id}`, language)
           || { key: `persisted-${message.id}`, run: commandRun, live: false },
       );
       lastGroupKey = key;
       continue;
     }
 
-    const toolActivity = parseToolOutputActivity(message);
+    const toolActivity = parseToolOutputActivity(message, language);
     if (toolActivity) {
       const key = lastNormalMessageId || lastGroupKey || `tool-${message.id}`;
       ensureGroup(key, lastNormalMessageId).runs.push(toolActivity);
@@ -471,7 +503,7 @@ export function buildMessageRenderItems(
     const anchorMessageId = item.anchorMessageId || item.run.anchorMessageId || undefined;
     const key = anchorMessageId || `live-${item.run.id}`;
     ensureGroup(key, anchorMessageId).runs.push(
-      commandRunFileActivity(item.run, `live-${item.run.id}`)
+      commandRunFileActivity(item.run, `live-${item.run.id}`, language)
         || { key: `live-${item.run.id}`, run: item.run, live: true },
     );
   }
@@ -555,19 +587,19 @@ function isModelProgressPhase(phase: ToolActivityPhase) {
     || phase === 'repairing';
 }
 
-function phaseLabel(phase: ToolActivityPhase) {
+function phaseLabel(phase: ToolActivityPhase, language: UiLanguage) {
   switch (phase) {
-    case 'planning': return 'Model plant toolstappen';
-    case 'approval_pending': return 'Wacht op goedkeuring';
-    case 'approval_approved': return 'Goedkeuring ontvangen';
-    case 'running': return 'Voert opdracht uit';
-    case 'sending_output': return 'Verwerkt tool-output';
-    case 'summarizing': return 'Model controleert resultaat';
-    case 'repairing': return 'Model herstelt fout';
-    case 'done': return 'Klaar';
-    case 'approval_denied': return 'Gestopt';
-    case 'stopped': return 'Gestopt';
-    default: return 'Voert opdracht uit';
+    case 'planning': return localizedText(language, 'Model plant toolstappen', 'Model is planning tool steps');
+    case 'approval_pending': return localizedText(language, 'Wacht op goedkeuring', 'Waiting for approval');
+    case 'approval_approved': return localizedText(language, 'Goedkeuring ontvangen', 'Approval received');
+    case 'running': return localizedText(language, 'Voert opdracht uit', 'Running command');
+    case 'sending_output': return localizedText(language, 'Verwerkt tool-output', 'Processing tool output');
+    case 'summarizing': return localizedText(language, 'Model controleert resultaat', 'Model is reviewing the result');
+    case 'repairing': return localizedText(language, 'Model herstelt fout', 'Model is repairing an error');
+    case 'done': return localizedText(language, 'Klaar', 'Done');
+    case 'approval_denied': return localizedText(language, 'Gestopt', 'Stopped');
+    case 'stopped': return localizedText(language, 'Gestopt', 'Stopped');
+    default: return localizedText(language, 'Voert opdracht uit', 'Running command');
   }
 }
 
@@ -644,14 +676,14 @@ function isNoisyToolAttempt(item: CommandRunGroupItem) {
   const text = `${item.label || ''}\n${item.toolText || ''}`;
   return item.tone === 'failed'
     || item.tone === 'denied'
-    || /\bGeen wijziging\b|Ongewijzigd|Heeft overgeslagen|\[geen wijziging\]|invalid file payload|Command overgeslagen/i.test(text);
+    || /\bGeen wijziging\b|\bNo change\b|Ongewijzigd|Unchanged|Heeft overgeslagen|Skipped|\[(?:geen wijziging|no change)\]|invalid file payload|Command (?:overgeslagen|skipped)/i.test(text);
 }
 
 function extractPathFromToolItem(item: CommandRunGroupItem) {
   const text = `${item.label || ''}\n${item.toolText || ''}`;
   const fileMatch = text.match(/\b(?:file-read|file-create|file-edit)\s+([^\s\r\n]+)/i);
   if (fileMatch) return fileMatch[1];
-  const labelMatch = text.match(/(?:Geen wijziging|Ongewijzigd|Bestand niet gemaakt|Bestand niet bewerkt|Heeft geprobeerd:[^ \r\n]+)\s*:?\s*([^\s\r\n]+)/i);
+  const labelMatch = text.match(/(?:Geen wijziging|No change|Ongewijzigd|Unchanged|Bestand niet gemaakt|File not created|Bestand niet bewerkt|File not edited|Heeft geprobeerd:[^ \r\n]+|Attempted:[^ \r\n]+)\s*:?\s*([^\s\r\n]+)/i);
   return labelMatch?.[1] || '';
 }
 
@@ -659,18 +691,18 @@ function normalizePathKey(value?: string) {
   return (value || '').replace(/\\/g, '/').toLowerCase();
 }
 
-function fileActionSummary(files: FileToolActivity[]) {
+function fileActionSummary(files: FileToolActivity[], language: UiLanguage) {
   const count = files.length;
-  const noun = count === 1 ? 'bestand' : 'bestanden';
-  if (files.every((file) => file.status === 'read')) return `Las ${count} ${noun}`;
-  if (files.every((file) => file.status === 'created')) return `Maakte ${count} ${noun}`;
-  if (files.every((file) => file.status === 'edited')) return `Bewerkte ${count} ${noun}`;
-  return `Wijzigde ${count} ${noun}`;
+  const noun = localizedText(language, count === 1 ? 'bestand' : 'bestanden', count === 1 ? 'file' : 'files');
+  if (files.every((file) => file.status === 'read')) return localizedText(language, `Las ${count} ${noun}`, `read ${count} ${noun}`);
+  if (files.every((file) => file.status === 'created')) return localizedText(language, `Maakte ${count} ${noun}`, `created ${count} ${noun}`);
+  if (files.every((file) => file.status === 'edited')) return localizedText(language, `Bewerkte ${count} ${noun}`, `edited ${count} ${noun}`);
+  return localizedText(language, `Wijzigde ${count} ${noun}`, `changed ${count} ${noun}`);
 }
 
-function joinSummaryParts(parts: string[]) {
+function joinSummaryParts(parts: string[], language: UiLanguage) {
   if (parts.length <= 1) return parts[0] || '';
-  return `${parts.slice(0, -1).join(', ')} en ${parts[parts.length - 1]}`;
+  return `${parts.slice(0, -1).join(', ')} ${localizedText(language, 'en', 'and')} ${parts[parts.length - 1]}`;
 }
 
 function capitalizeFirst(value: string) {

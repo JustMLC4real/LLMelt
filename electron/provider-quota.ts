@@ -8,7 +8,7 @@ import type {
   QuotaState,
 } from '../src/providers/types';
 
-const LIVE_SOURCE_MAX_AGE_MS = 10 * 60_000;
+export const LIVE_QUOTA_MAX_AGE_MS = 10 * 60_000;
 const DELAYED_SOURCE_MAX_AGE_MS = 30 * 60_000;
 
 export function quotaSnapshotId(provider: ProviderType, surface: ProviderSurface, limitGroupKey: string) {
@@ -48,7 +48,7 @@ export function parseCodexRateLimitsResponse(payload: any, observedAt = new Date
       const addWindow = (window: any, fallbackLabel: string) => {
         if (!window || typeof window !== 'object') return;
         const usedPercent = numberOrUndefined(window.usedPercent);
-        const resetAt = epochSecondsToIso(window.resetsAt);
+        const resetAt = timestampToIso(window.resetsAt);
         const windowSeconds = numberOrUndefined(window.windowDurationMins) != null
           ? Number(window.windowDurationMins) * 60
           : undefined;
@@ -82,7 +82,7 @@ export function parseCodexRateLimitsResponse(payload: any, observedAt = new Date
         source: 'codex-app-server' as const,
         accuracy: 'live' as const,
         observedAt,
-        staleAfter: new Date(new Date(observedAt).getTime() + LIVE_SOURCE_MAX_AGE_MS).toISOString(),
+        staleAfter: new Date(new Date(observedAt).getTime() + LIVE_QUOTA_MAX_AGE_MS).toISOString(),
         note: stringOrUndefined(raw?.limitName),
         buckets,
       } satisfies ProviderQuotaSnapshot;
@@ -108,7 +108,7 @@ export function parseClaudeStatuslinePayload(payload: any, observedAt = new Date
     source: 'claude-statusline',
     accuracy: 'live',
     observedAt,
-    staleAfter: new Date(new Date(observedAt).getTime() + LIVE_SOURCE_MAX_AGE_MS).toISOString(),
+    staleAfter: new Date(new Date(observedAt).getTime() + LIVE_QUOTA_MAX_AGE_MS).toISOString(),
     buckets,
   };
 }
@@ -143,7 +143,7 @@ export function parseAntigravityStatuslinePayload(payload: any, observedAt = new
     modelId: group === 'antigravity:account' ? undefined : group.slice('antigravity:'.length),
     planTier: stringOrUndefined(payload?.account?.plan || payload?.plan || payload?.subscription_type),
     state: quotaStateForBuckets(buckets), source: 'antigravity-statusline', accuracy: 'live', observedAt,
-    staleAfter: new Date(new Date(observedAt).getTime() + LIVE_SOURCE_MAX_AGE_MS).toISOString(), buckets,
+    staleAfter: new Date(new Date(observedAt).getTime() + LIVE_QUOTA_MAX_AGE_MS).toISOString(), buckets,
   }));
 }
 
@@ -278,7 +278,7 @@ export function parseGoogleMonitoringQuotas(payload: any, projectId: string, obs
   });
 }
 
-export function makeUnavailableQuota(
+export function makeUnknownQuota(
   provider: ProviderType,
   surface: ProviderSurface,
   limitGroupKey: string,
@@ -288,9 +288,15 @@ export function makeUnavailableQuota(
   const observedAt = new Date().toISOString();
   return {
     id: quotaSnapshotId(provider, surface, limitGroupKey), provider, surface, limitGroupKey,
-    state: 'unavailable', source, accuracy: 'unavailable', observedAt, note, buckets: [],
+    // `accuracy: unavailable` betekent alleen dat de provider geen
+    // machineleesbare quotatelemetrie publiceert. De provider of het model zelf
+    // is daarmee niet onbeschikbaar.
+    state: 'unknown', source, accuracy: 'unavailable', observedAt, note, buckets: [],
   };
 }
+
+/** @deprecated Gebruik makeUnknownQuota; behouden voor oude imports/plugins. */
+export const makeUnavailableQuota = makeUnknownQuota;
 
 export function makeLocalUnlimitedQuota(modelId?: string): ProviderQuotaSnapshot {
   const observedAt = new Date().toISOString();
@@ -309,9 +315,14 @@ export function blockingQuotaForModel(
   limitGroupKey: string,
   now = Date.now(),
 ) {
+  const surface = quotaSurfaceForModelRef(modelRef);
   const relevant = snapshots.filter((snapshot) => (
-    snapshot.limitGroupKey === limitGroupKey
-    || (snapshot.provider === modelRef.provider && (!snapshot.modelId || snapshot.modelId === modelRef.modelId))
+    snapshot.provider === modelRef.provider
+    && snapshot.surface === surface
+    && (
+      snapshot.limitGroupKey === limitGroupKey
+      || (!snapshot.modelId || snapshot.modelId === modelRef.modelId)
+    )
   ));
   for (const snapshot of relevant) {
     const staleAt = snapshot.staleAfter ? new Date(snapshot.staleAfter).getTime() : 0;
@@ -327,6 +338,15 @@ export function blockingQuotaForModel(
     if (bucket) return { snapshot, bucket };
   }
   return null;
+}
+
+function quotaSurfaceForModelRef(modelRef: ModelRef): ProviderSurface {
+  if (modelRef.provider === 'ollama') return 'local';
+  if (modelRef.provider === 'remote') return 'remote';
+  if (modelRef.provider === 'codex' || modelRef.provider === 'antigravity') return 'cli';
+  if (modelRef.provider === 'anthropic' && modelRef.modelId.startsWith('claude-cli:')) return 'cli';
+  if (modelRef.provider === 'openai' && modelRef.modelId.startsWith('chatgpt:')) return 'subscription-web';
+  return 'api';
 }
 
 function claudeWindowBucket(id: string, label: string, raw: any): QuotaBucket | null {
@@ -353,11 +373,6 @@ function fractionOrUndefined(value: unknown) {
 
 function stringOrUndefined(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function epochSecondsToIso(value: unknown) {
-  const number = numberOrUndefined(value);
-  return number == null ? undefined : new Date(number * 1000).toISOString();
 }
 
 function timestampToIso(value: unknown) {

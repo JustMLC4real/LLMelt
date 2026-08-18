@@ -13,8 +13,10 @@ vi.mock('electron', () => ({
 }));
 
 import { runAntigravityNative } from '../electron/antigravity-native';
+import { parseAntigravityModelCatalog } from '../electron/antigravity-model-catalog';
 import type { NativeToolActivity } from '../electron/native-tools';
 import { NATIVE_TOOL_RESPONSE_INSTRUCTIONS } from '../electron/native-response-instructions';
+import { assertSkylineArtifacts } from './provider-live-test-utils';
 
 const integration = process.env.RUN_ANTIGRAVITY_INTEGRATION === '1' ? describe : describe.skip;
 
@@ -56,10 +58,9 @@ integration('Antigravity native integratie', () => {
   beforeAll(async () => {
     const exe = process.env.AGY_EXE;
     if (!exe) throw new Error('AGY_EXE ontbreekt voor de Antigravity-integratietest.');
-    const liveModels = execFileSync(exe, ['models'], { encoding: 'utf8', timeout: 30_000 })
-      .split(/\r?\n/)
-      .map((model) => model.trim())
-      .filter(Boolean);
+    const liveModels = parseAntigravityModelCatalog(
+      execFileSync(exe, ['models'], { encoding: 'utf8', timeout: 30_000 }),
+    );
     if (!liveModels.length) throw new Error('Antigravity gaf geen live modellen terug.');
     testModel = process.env.AGY_TEST_MODEL
       || liveModels.find((model) => /(?:^|[-_( ])low(?:\)?$)/i.test(model))
@@ -123,20 +124,15 @@ integration('Antigravity native integratie', () => {
       prompt,
       complexTestModel,
     );
-    const pythonFiles = (await fs.promises.readdir(cwd))
-      .filter((name) => name.toLowerCase().endsWith('.py'));
-    const sources = await Promise.all(pythonFiles.map((name) => fs.promises.readFile(path.join(cwd, name), 'utf8')));
-    const successfulCommands = activities.filter((activity) => (
-      activity.toolName.toLowerCase() === 'run_command' && activity.phase === 'result' && activity.ok === true
-    ));
-    const failedResults = activities.filter((activity) => activity.phase === 'result' && activity.ok === false);
-
-    expect(pythonFiles.length).toBeGreaterThanOrEqual(2);
-    expect(sources.every((source) => source.trim().length > 100)).toBe(true);
-    expect(sources.some((source) => /(?:\\x1b|\\033|\\u001b|colorama)/i.test(source))).toBe(true);
-    expect(sources.some((source) => /time\s*\.\s*sleep|sleep\s*\(/i.test(source))).toBe(true);
-    expect(successfulCommands.length).toBeGreaterThanOrEqual(2);
-    expect(failedResults).toEqual([]);
+    const evidence = await assertSkylineArtifacts(cwd, { text: result.text, activities });
+    expect(evidence.pythonFiles.length).toBeGreaterThanOrEqual(2);
+    expect(evidence.sources.every((source) => source.trim().length > 100)).toBe(true);
+    expect(evidence.hasAnsi).toBe(true);
+    expect(evidence.hasAnimation).toBe(true);
+    // Eén shell-call mag beide scripts achter elkaar uitvoeren. De acceptatie is
+    // dat ieder bestand aantoonbaar in een geslaagde commandoregel voorkomt.
+    expect(evidence.executedPythonFiles.length).toBeGreaterThanOrEqual(2);
+    expect(evidence.failedResults).toEqual([]);
     expect(result.text.trim().length).toBeGreaterThan(0);
     expect(result.text).not.toMatch(/zonder eindantwoord|geen apart eindantwoord|geen bevestigd resultaat/i);
   }, 190_000);

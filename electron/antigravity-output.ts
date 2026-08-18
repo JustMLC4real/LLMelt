@@ -19,7 +19,22 @@ export function antigravityFinalTranscriptText(transcript: string) {
 }
 
 /** Feitelijke UI-fallback als agy na tools met exitcode 0 maar zonder eindtekst sluit. */
-export function antigravityPartialSummary(completed: number, failed: number, denied: number, unreported: number) {
+export function antigravityPartialSummary(
+  completed: number,
+  failed: number,
+  denied: number,
+  unreported: number,
+  language: UiLanguage = 'nl',
+) {
+  if (language === 'en') {
+    const parts: string[] = [];
+    if (completed > 0) parts.push(`${completed} tool ${completed === 1 ? 'action is' : 'actions are'} complete`);
+    if (denied > 0) parts.push(`${denied} tool ${denied === 1 ? 'action was' : 'actions were'} denied`);
+    if (unreported > 0) parts.push(`${unreported} tool ${unreported === 1 ? 'action has' : 'actions have'} no confirmed result`);
+    const result = parts.length ? parts.join(', ') : 'tool execution is unconfirmed';
+    const warning = failed > 0 ? ' Check the failed tool card(s) before continuing.' : '';
+    return `Antigravity did not provide a separate final answer; ${result}.${warning}`;
+  }
   const parts: string[] = [];
   if (completed > 0) parts.push(`${completed} ${completed === 1 ? 'toolactie is' : 'toolacties zijn'} afgerond`);
   if (denied > 0) parts.push(`${denied} ${denied === 1 ? 'toolactie is' : 'toolacties zijn'} geweigerd`);
@@ -28,3 +43,4 @@ export function antigravityPartialSummary(completed: number, failed: number, den
   const warning = failed > 0 ? ' Controleer de mislukte toolkaart(en) voordat je verdergaat.' : '';
   return `Antigravity leverde geen apart eindantwoord; ${result}.${warning}`;
 }
+import type { UiLanguage } from '../src/providers/types';

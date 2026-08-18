@@ -62,6 +62,7 @@ describe('Ollama-modelbeheer', () => {
     for (const invalid of ['', 'qwen 3', '../qwen', 'qwen?x=1', 'qwen; rm']) {
       expect(() => assertOllamaModelName(invalid)).toThrow();
     }
+    expect(() => assertOllamaModelName('qwen?x=1', 'en')).toThrow('contains invalid characters');
   });
 
   it('leest officiële en communityzoekresultaten met capabilities en varianten', () => {
@@ -190,5 +191,7 @@ describe('Ollama-modelbeheer', () => {
     expect(isRetryableOllamaRegistryError('pull model manifest: 401')).toBe(true);
     expect(friendlyOllamaPullError('qwen3:1.7b', 'pull model manifest: 401'))
       .toContain('geen Ollama API-key nodig');
+    expect(friendlyOllamaPullError('qwen3:1.7b', 'pull model manifest: 401', 'en'))
+      .toContain('No Ollama API key is required');
   });
 });

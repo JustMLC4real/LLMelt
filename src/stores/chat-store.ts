@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import type { AttachmentRef, Chat, CommandRun, Message, Folder, MemoryEntry, ModelRunConfig, ProviderType, ReasoningEffort, ToolActivityPhase } from '../providers/types';
+import type { AttachmentRef, Chat, CommandRun, Message, Folder, MemoryEntry, ModelRunConfig, ProviderType, ToolActivityPhase } from '../providers/types';
+import { normalizeLegacyModelId } from '../providers/model-ref-normalization';
 import { appendLiveToolRunOutput, removeLiveToolRuns, upsertLiveToolActivity, upsertLiveToolRun, type LiveToolActivity, type LiveToolRun } from '../components/command-run-utils';
 import {
   appendChatRunContent as appendRunContent,
@@ -44,6 +45,7 @@ interface ChatState {
 
   // Agent terminal panel
   showTerminal: boolean;
+  terminalLaunchRequest?: { id: string; providerCli: 'codex' | 'claude' | 'antigravity' };
   terminalLines: { type: 'cmd' | 'out' | 'err' | 'exit'; text: string }[];
   liveToolRuns: LiveToolRun[];
   liveToolActivities: LiveToolActivity[];
@@ -104,6 +106,8 @@ interface ChatState {
   setPendingAttachmentsForChat: (chatId: string, update: AttachmentRef[] | ((current: AttachmentRef[]) => AttachmentRef[])) => void;
   toggleTerminal: () => void;
   setShowTerminal: (show: boolean) => void;
+  openProviderTerminal: (providerCli: 'codex' | 'claude' | 'antigravity') => void;
+  clearTerminalLaunchRequest: () => void;
   appendTerminalLine: (line: { type: 'cmd' | 'out' | 'err' | 'exit'; text: string }) => void;
   clearTerminal: () => void;
   upsertLiveToolRun: (run: CommandRun, meta: { chatId: string; requestId?: string; anchorMessageId?: string }) => void;
@@ -147,6 +151,7 @@ export const useChatStore = create<ChatState>()(persist((set) => ({
   messageDrafts: {},
   pendingAttachmentsByChat: {},
   showTerminal: false,
+  terminalLaunchRequest: undefined,
   terminalLines: [],
   liveToolRuns: [],
   liveToolActivities: [],
@@ -329,6 +334,11 @@ export const useChatStore = create<ChatState>()(persist((set) => ({
   })),
   toggleTerminal: () => set((state) => ({ showTerminal: !state.showTerminal })),
   setShowTerminal: (show) => set({ showTerminal: show }),
+  openProviderTerminal: (providerCli) => set({
+    showTerminal: true,
+    terminalLaunchRequest: { id: crypto.randomUUID(), providerCli },
+  }),
+  clearTerminalLaunchRequest: () => set({ terminalLaunchRequest: undefined }),
   appendTerminalLine: (line) => set((state) => ({ terminalLines: [...state.terminalLines, line].slice(-600) })),
   clearTerminal: () => set({ terminalLines: [] }),
   upsertLiveToolRun: (run, meta) => set((state) => ({
@@ -393,19 +403,11 @@ function normalizeChatModel(provider?: ProviderType | null, modelId?: string | n
     return { activeProvider: provider, activeModelId: modelId, activeRunConfig: undefined };
   }
 
-  const [baseModelId, legacyMode] = modelId.split('#');
-  const legacyEffort: ReasoningEffort =
-    legacyMode === 'instant' ? 'low' :
-    legacyMode === 'pro' ? 'xhigh' :
-    legacyMode === 'thinking' ? 'high' :
-    'high';
+  const normalized = normalizeLegacyModelId(provider, modelId);
 
   return {
     activeProvider: provider,
-    activeModelId: baseModelId,
-    activeRunConfig: {
-      baseModelId,
-      reasoningEffort: legacyEffort,
-    },
+    activeModelId: normalized.modelId,
+    activeRunConfig: normalized.runConfig,
   };
 }

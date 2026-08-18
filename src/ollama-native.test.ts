@@ -6,6 +6,7 @@ import {
   ollamaArtifactExecutionCommand,
   parseStrictTextToolCalls,
   requestedArtifactExtension,
+  requestedArtifactExtensions,
   runOllamaNative,
 } from '../electron/ollama-native';
 import { nativeToolInputProtocolError } from '../electron/native-tools';
@@ -55,6 +56,44 @@ describe('Ollama native tools', () => {
     expect(requestedArtifactExtension([
       { role: 'user', content: 'Maak twee bestanden.' },
     ])).toBe('');
+    expect(requestedArtifactExtensions([
+      { role: 'user', content: 'Maak twee scripts: een Python-script en een JavaScript-script.' },
+    ])).toEqual(['.py', '.js']);
+    expect(requestedArtifactExtension([
+      { role: 'user', content: 'Maak twee scripts: een Python-script en een JavaScript-script.' },
+    ])).toBe('');
+  });
+
+  it('laat alle expliciet gevraagde typen toe in een mixed-language opdracht', async () => {
+    let round = 0;
+    const replies = [
+      ollamaToolResponse(toolCall('write-py', 'write_file', { path: 'voorbeeld.py', content: 'print(1)' })),
+      ollamaToolResponse(toolCall('write-js', 'write_file', { path: 'voorbeeld.js', content: 'console.log(1)' })),
+      ollamaTextResponse('Beide gevraagde scripts zijn gemaakt.'),
+      ollamaTextResponse('Gecontroleerd: beide scripts zijn klaar.'),
+    ];
+    const baseUrl = await serve((_body, res) => sendNdjson(res, replies[round++]));
+    const calls: Array<{ name: string; path?: unknown }> = [];
+
+    const result = await runOllamaNative({
+      baseUrl,
+      model: 'tool-model',
+      messages: [{ role: 'user', content: 'Maak twee scripts: een Python-script en een JavaScript-script.' }],
+      signal: new AbortController().signal,
+      requireToolUse: true,
+      supportsThinking: false,
+      onDelta: () => {},
+      executeTool: async (name, input) => {
+        calls.push({ name, path: input.path });
+        return { ok: true, output: `created ${String(input.path)}` };
+      },
+    });
+
+    expect(calls).toEqual([
+      { name: 'write_file', path: 'voorbeeld.py' },
+      { name: 'write_file', path: 'voorbeeld.js' },
+    ]);
+    expect(result.text).toContain('Gecontroleerd');
   });
 
   it('weigert een README als de gebruiker expliciet Python-scripts vroeg', async () => {
@@ -331,6 +370,7 @@ describe('Ollama native tools', () => {
     expect(received[0].messages[0]).toMatchObject({ role: 'system' });
     expect(received[0].messages[0].content).toContain('errorCode');
     expect(received[0].think).toBe(false);
+    expect(received[0].options).toEqual({ temperature: 0, num_predict: 2_048 });
     expect(received[0].tools.map((tool: any) => tool.function.name)).toContain('run_command');
     expect(received[1].messages.find((message: any) => message.role === 'assistant')).toMatchObject({
       thinking: 'Eerst het bestand lezen.',
@@ -341,7 +381,7 @@ describe('Ollama native tools', () => {
     });
   });
 
-  it('gebruikt live thinking-capability en herstelt eenmaal als een verplichte eerste toolcall ontbreekt', async () => {
+  it('houdt thinking ook uit tijdens herstel wanneer een verplichte eerste toolcall ontbreekt', async () => {
     let round = 0;
     const received: any[] = [];
     const replies = [
@@ -372,8 +412,8 @@ describe('Ollama native tools', () => {
     });
 
     expect(calls).toEqual(['write_file']);
-    expect(received[0].think).toBe(true);
-    expect(received[1].think).toBe(true);
+    expect(received[0].think).toBe(false);
+    expect(received[1].think).toBe(false);
     expect(received[1].messages.at(-1).content).toContain('toolprotocol-herstel');
     expect(deltas.join('')).toBe('Gecontroleerd: het bestand is echt gemaakt.');
     expect(result.text).toBe('Gecontroleerd: het bestand is echt gemaakt.');
@@ -439,6 +479,46 @@ describe('Ollama native tools', () => {
       errorCode: 'NO_PROGRESS_REPEAT',
     });
     expect(result.text).toContain('niet opnieuw uitgevoerd');
+  });
+
+  it('stuurt een herhaalde write naar een ander pad zolang een tweede gevraagd artefact ontbreekt', async () => {
+    let round = 0;
+    const received: any[] = [];
+    const replies = [
+      ollamaToolResponse(toolCall('write-1', 'write_file', { path: 'een.py', content: 'print(1)' })),
+      ollamaToolResponse(toolCall('write-2', 'write_file', { path: 'een.py', content: 'print(1)' })),
+      ollamaToolResponse(toolCall('write-3', 'write_file', { path: 'twee.py', content: 'print(2)' })),
+      ollamaTextResponse('Beide bestanden bestaan.'),
+      ollamaTextResponse('Gecontroleerd: beide bestanden bestaan.'),
+    ];
+    const baseUrl = await serve((body, res) => {
+      received.push(body);
+      sendNdjson(res, replies[round++]);
+    });
+    const paths: string[] = [];
+
+    const result = await runOllamaNative({
+      baseUrl,
+      model: 'tool-model',
+      messages: [{ role: 'user', content: 'Maak twee scripts als Python-scripts.' }],
+      signal: new AbortController().signal,
+      requireToolUse: true,
+      supportsThinking: false,
+      onDelta: () => {},
+      executeTool: async (_name, input) => {
+        paths.push(String(input.path));
+        return { ok: true, output: `created ${input.path}` };
+      },
+    });
+
+    expect(paths).toEqual(['een.py', 'twee.py']);
+    expect(JSON.parse(received[2].messages.at(-1).content)).toMatchObject({
+      ok: false,
+      errorCode: 'NO_PROGRESS_REPEAT',
+      retryable: true,
+      instruction: expect.stringContaining('ander .py-pad'),
+    });
+    expect(result.text).toContain('beide bestanden');
   });
 
   it('geeft na een mislukte exacte edit één gecachte herlezing terug', async () => {

@@ -94,11 +94,17 @@ retourwaarde bevat de volledige tekst + `TokenUsage`.
   `codex login status` zonder app-herstart. De preflight zet daarbij alleen tijdelijk
   `-c service_tier="fast"`: zo kan een verouderde waarde in de gebruikersconfig de detectie niet
   breken. Er wordt bewust geen versie-afhankelijke `--ignore-user-config`-vlag gebruikt.
-- Met PC-tools aan draait Codex native als `codex mcp-server` (`electron/codex-native.ts`); MCP-
-  elicitation wordt naar de app-approvalpopup vertaald en exec/patch-events verschijnen live.
-- Met PC-tools uit gebruikt `codex exec` een lege tijdelijke werkmap, `read-only`, `--ephemeral` en
-  negeert het gebruikersconfig/projectregels. Daardoor kan een lokale Codex-config de appmodus niet
-  stilletjes veranderen in een schrijvende agent.
+- Gewone chat- en agentbeurten lopen stateful via **`codex app-server`**
+  (`electron/codex-app-server.ts`). Een LLMelt-chat houdt daardoor één echte Codex-thread en kan de
+  live gepubliceerde collaboration modes, threaddoelen, reviews en skills gebruiken. De UI leest
+  `collaborationMode/list` en `skills/list`; deze opties worden niet in LLMelt hardcoded.
+- App Server command-/file-approvals worden naar dezelfde app-popup vertaald. `ask`,
+  `auto-project` en `full` blijven dus dezelfde LLMelt-goedkeuringsinstellingen gebruiken. De oude
+  `codex mcp-server`/`codex exec`-routes blijven alleen een compatibiliteitsfallback voor interne
+  aanroepen zonder chat-/projectcontext.
+- Run settings toont alleen acties die LLMelt via App Server in dezelfde beurt kan uitvoeren.
+  Interactieve TUI-only slashcommando's worden niet nagebouwd en openen vanuit dit menu ook geen
+  los CLI-scherm.
 - Loginstatus, CLI-detectie en uitvoerquota zijn afzonderlijke signalen. Een geldige `codex login
   status` en live modelcatalogus betekenen dat de lokale verbinding werkt; een latere melding zoals
   `workspace is out of credits` is een extern account-/workspacequotum en geen installatiefout.
@@ -110,6 +116,9 @@ retourwaarde bevat de volledige tekst + `TokenUsage`.
 - `agy models` blijft de bron van waarheid. De UI splitst zowel oude displaynamen als recente
   slugs (`gemini-3.6-flash-medium`, `claude-opus-4-6-thinking`) alleen voor de presentatie op in
   provider, model en stand; de originele live waarde gaat ongewijzigd terug naar `--model`.
+- Run settings leest `--effort` en `--mode` live uit `agy --help`. Alleen een headless en met de
+  app-goedkeuringen verenigbare modus (momenteel de live gepubliceerde planmodus) wordt als native
+  beurtactie aangeboden; interactieve subcommands worden niet hardcoded.
 - Een officiële `Stop`-hook houdt de beurt maximaal twee herstelrondes open wanneer na toolgebruik
   nog geen eindtekst of PostToolUse-bevestiging bestaat. Als printmodus daarna toch sluit, herstelt
   de runner eerst een echt eindantwoord uit het transcript. Ontbreekt dat ook, dan eindigt de kaart
@@ -225,7 +234,7 @@ mislukte fallback bewaart bovendien `fallbackFrom`, zodat de herkomst diagnostis
 - **Claude CLI:** officiële statusline-payload (`rate_limits.five_hour` en `seven_day`). LLMelt
   ketent een bestaande statusregel en bewaart alleen plan/model/quota.
 - **Antigravity CLI:** dezelfde veilige statusline-bridge. De officiële payload publiceert niet in
-  elke versie machineleesbaar quota; in dat geval toont LLMelt eerlijk “niet beschikbaar” en
+  elke versie machineleesbaar quota; in dat geval toont LLMelt eerlijk “limiet onbekend” en
   schakelt het pas door na een echte limietfout.
 - **Gemini Developer API:** verplicht dezelfde API-key aan een Google Cloud-project koppelen.
   API Keys API en Cloud Resource Manager valideren dat de sleutel echt bij dit project hoort.

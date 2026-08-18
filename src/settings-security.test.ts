@@ -32,12 +32,30 @@ describe('settings-security', () => {
     expect(() => sanitizeRendererSettingValue('profile.avatarDataUrl', 'data:text/html;base64,AA==')).toThrow(/data-URL/i);
   });
 
+  it('publiceert geen oude globale Codex-modelcapabilities meer', () => {
+    const values: Record<string, unknown> = {
+      'codex.executable': 'codex.exe',
+      'codex.reasoningEffort': 'high',
+      'codex.serviceTier': 'fast',
+      'codex.timeoutSeconds': 180,
+    };
+    const snapshot = buildRendererSettingsSnapshot((key) => values[key]);
+
+    expect(snapshot.codex).toEqual({ executable: 'codex.exe', timeoutSeconds: 180 });
+  });
+
   it('staat de expliciete titelmodi toe en weigert onbekende waarden', () => {
     expect(sanitizeRendererSettingValue('chat.autoTitleMode', 'ollama')).toBe('ollama');
     expect(sanitizeRendererSettingValue('chat.autoTitleMode', 'simple')).toBe('simple');
     expect(() => sanitizeRendererSettingValue('chat.autoTitleMode', 'gpt')).toThrow(/ongeldig/i);
     expect(() => sanitizeRendererSettingValue('chat.autoTitleMode', 'auto')).toThrow(/ongeldig/i);
     expect(() => sanitizeRendererSettingValue('chat.autoTitleMode', 'prompt-kopiëren')).toThrow(/ongeldig/i);
+  });
+
+  it('normaliseert de renderer-taal tot Nederlands of Engels', () => {
+    expect(sanitizeRendererSettingValue('ui.language', 'en')).toBe('en');
+    expect(sanitizeRendererSettingValue('ui.language', 'nl')).toBe('nl');
+    expect(sanitizeRendererSettingValue('ui.language', 'fr')).toBe('nl');
   });
 
   it('migreert oude GPT- en automatische titelinstellingen in de renderer naar Ollama', () => {

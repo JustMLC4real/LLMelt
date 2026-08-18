@@ -19,7 +19,7 @@ function agentLog(label: string, data?: unknown) {
   } catch { /* best-effort */ }
 }
 import { getDb } from './database';
-import { notifyChatsChanged } from './app-events';
+import { appEvents, notifyChatsChanged } from './app-events';
 import { getStore } from './settings-store';
 import type { NativeToolActivity } from './native-tools';
 import {
@@ -61,6 +61,12 @@ import {
 } from '../src/components/agent-commands';
 import { makeToolSummaryErrorContent } from '../src/components/command-run-utils';
 import { changedLineDiff } from '../src/components/line-diff';
+import {
+  fileCreatedDetail,
+  fileEditedDetail,
+  fileReadDetail,
+  fileUnchangedDetail,
+} from './file-tool-language';
 import { autoModePromptPreview, mergeAutoModeState, validateAutoModeConfig } from '../src/components/auto-mode-utils';
 import {
   type AdapterChatResult,
@@ -80,6 +86,8 @@ import {
 import { chatgptScraper } from './chatgpt-scraper';
 import { getMcpServerManager } from './mcp-server';
 import { registerTerminalIpcHandlers } from './pty-terminal';
+import { configuredExecutable, listNativeProviderCommands } from './provider-native-commands';
+import { codexAppServer } from './codex-app-server';
 import { agentShellSpawnSpec, terminateProcessTree } from './process-utils';
 import {
   interactiveCliInstallPowerShell,
@@ -99,11 +107,12 @@ import {
 } from './python-runtime';
 import { boundedString, buildRendererSettingsSnapshot, sanitizeRendererSettingValue } from './settings-security';
 import { assertRealPathInsideRoot, canAutoApproveAgentAction, isRealPathInsideRoot } from './path-security';
-import { normalizeFallbackSwitchState } from './fallback-policy';
+import { credentialPreflightFallbackReason, normalizeFallbackSwitchState } from './fallback-policy';
 import { linkedTimeoutSignal, shouldPersistProviderFailure } from './request-lifecycle';
-import { finalNativeAssistantText } from './native-tool-loop-utils';
-import { NATIVE_TOOL_RESPONSE_INSTRUCTIONS } from './native-response-instructions';
-import { AGENT_TOOL_INSTRUCTIONS, agentToolEnvironmentInstructions } from './agent-tool-instructions';
+import { finalNativeAssistantText, nativeToolLedgerSignature } from './native-tool-loop-utils';
+import { nativeToolResponseInstructions } from './native-response-instructions';
+import { agentToolEnvironmentInstructions, agentToolInstructions } from './agent-tool-instructions';
+import { localizedText, normalizeUiLanguage } from '../src/i18n/language';
 import { normalizePowerShell5ConditionalChain } from './windows-command-normalization';
 import {
   conciseOllamaStartupDiagnostic,
@@ -112,8 +121,10 @@ import {
 } from './ollama-runtime-start';
 import { isChatGptSubscriptionModel, providerPreflightSurface } from './provider-routing';
 import { providerLimitUpdateBindings } from './sqlite-bindings';
-import { blockingQuotaForModel, makeUnavailableQuota } from './provider-quota';
+import { blockingQuotaForModel, makeUnknownQuota } from './provider-quota';
 import { collectProviderQuotaSnapshots } from './quota-collectors';
+import { hasRecordableUsage, mergeUsageSources, normalizeUsageSource, usageSourceFromRows } from '../src/providers/token-usage';
+import { normalizeLegacyModelId } from '../src/providers/model-ref-normalization';
 import {
   configureGeminiQuota,
   disconnectGeminiQuotaOAuth,
@@ -189,6 +200,7 @@ import type {
   ServiceTier,
   TokenDashboard,
   TokenUsage,
+  UiLanguage,
   ValidationResult,
 } from '../src/providers/types';
 
@@ -205,12 +217,11 @@ const MAX_EXTRACTED_TEXT_CHARS = 2_000_000;
 const MAX_COMMAND_OUTPUT_CHARS = 100_000;
 const RENDERER_SETTING_KEYS = new Set([
   'profile.avatarDataUrl',
+  'ui.language',
   'onboarding.completedAt',
   'onboarding.services',
   'ollama.url',
   'codex.executable',
-  'codex.serviceTier',
-  'codex.reasoningEffort',
   'codex.timeoutSeconds',
   'claude.executable',
   'antigravity.executable',
@@ -222,8 +233,8 @@ const RENDERER_SETTING_KEYS = new Set([
 ]);
 
 let cachedModels: AIModel[] = [];
-let providerCredentialStatusesInFlight: Promise<Record<ProviderType, CredentialStatus>> | null = null;
-let providerCredentialStatusesCache: { expiresAt: number; value: Record<ProviderType, CredentialStatus> } | null = null;
+let providerCredentialStatusesInFlight: { language: UiLanguage; promise: Promise<Record<ProviderType, CredentialStatus>> } | null = null;
+let providerCredentialStatusesCache: { language: UiLanguage; expiresAt: number; value: Record<ProviderType, CredentialStatus> } | null = null;
 let providerQuotaRefreshInFlight: Promise<import('../src/providers/types').ProviderQuotaSnapshot[]> | null = null;
 
 function invalidateProviderStatusCaches() {
@@ -294,6 +305,7 @@ type AgentToolRunContext = {
   attempt?: number;
   agentMode?: AgentApprovalMode;
   silentApproval?: boolean;
+  language?: UiLanguage;
   onFileMutationApproved?: (
     call: Extract<AgentToolCall, { type: 'file-create' | 'file-edit' }>,
     root: string,
@@ -320,7 +332,15 @@ const PROVIDER_STATUS: Record<ProviderType, { category: CredentialStatus['catego
   remote: { category: 'local', valid: 'SSH ingesteld', invalid: 'SSH niet ingesteld', canChat: true },
 };
 
-const REASONING_EFFORTS: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
+const PROVIDER_STATUS_EN: Record<ProviderType, { valid: string; invalid: string }> = {
+  openai: { valid: 'OpenAI API connected', invalid: 'OpenAI API key required' },
+  anthropic: { valid: 'Connected', invalid: 'API key or Claude CLI required' },
+  google: { valid: 'Gemini API connected', invalid: 'Gemini API key required' },
+  ollama: { valid: 'Ollama online', invalid: 'Ollama offline' },
+  codex: { valid: 'CLI found and signed in', invalid: 'CLI authentication required' },
+  antigravity: { valid: 'Antigravity CLI', invalid: 'CLI not found' },
+  remote: { valid: 'SSH configured', invalid: 'SSH not configured' },
+};
 
 export function registerIpcHandlers(ipcMain: IpcMain) {
   void cleanupStalePendingAttachments().catch((error) => {
@@ -350,6 +370,32 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
   ipcMain.handle('providers:getHealth', async () => getProviderHealth());
   ipcMain.handle('providers:getAccountStatuses', async () => getProviderAccountStatuses());
   ipcMain.handle('providers:openAccountSurface', async (_event, provider: ProviderAccountId) => openAccountSurface(provider));
+  ipcMain.handle('providers:listNativeCommands', async (_event, input: { chatId?: string; modelRef: ModelRef; language?: UiLanguage }) => {
+    const language = normalizeUiLanguage(input?.language);
+    const chat = input?.chatId ? getChatById(String(input.chatId)) : null;
+    const cwd = chat ? await getEffectiveProjectPath(chat) : ensureDefaultWorkspacePath();
+    return listNativeProviderCommands(input.modelRef, cwd, language);
+  });
+  ipcMain.handle('providers:setNativeGoal', async (_event, input: { chatId: string; modelRef: ModelRef; objective: string; language?: UiLanguage }) => {
+    if (input?.modelRef?.provider !== 'codex') throw new Error('Native goals zijn alleen beschikbaar via Codex App Server.');
+    const chat = getChatById(String(input.chatId || ''));
+    if (!chat) throw new Error('Chat niet gevonden.');
+    const cwd = await getEffectiveProjectPath(chat);
+    if (!cwd) throw new Error('Projectmap niet gevonden.');
+    const executable = await configuredExecutable('codex');
+    if (!executable) throw new Error('Codex CLI niet gevonden.');
+    const agent = await getAgentConfig(chat);
+    const assembled = await assemblePromptContext(chat, undefined);
+    return codexAppServer.setGoal({
+      executable,
+      chatId: chat.id,
+      model: String(input.modelRef.modelId || ''),
+      cwd,
+      objective: boundedString(input.objective, 8_000, 'Doel'),
+      systemPrompt: assembled.systemPrompt,
+      agentMode: agent.mode,
+    });
+  });
   ipcMain.handle('chat:getTitleOllamaStatus', async () => getOllamaTitleSetupStatus());
   ipcMain.handle('chat:installTitleOllama', async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -357,11 +403,12 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
   });
   ipcMain.handle('ollama:listInstalled', async (): Promise<OllamaModelManagerStatus> => {
     const baseUrl = await ollamaTitleBaseUrl();
+    const language = await resolvedUiLanguage();
     try {
       return {
         online: true,
         baseUrl,
-        models: await listInstalledOllamaModels(baseUrl),
+        models: await listInstalledOllamaModels(baseUrl, fetch, language),
       };
     } catch (error) {
       return {
@@ -373,17 +420,20 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
     }
   });
   ipcMain.handle('ollama:searchLibrary', async (_event, query: string) => {
-    assertString(query, 'zoekopdracht');
-    return searchOllamaLibrary(query);
+    const language = await resolvedUiLanguage();
+    assertString(query, localizedText(language, 'zoekopdracht', 'search query'));
+    return searchOllamaLibrary(query, fetch, language);
   });
   ipcMain.handle('ollama:listLibraryTags', async (_event, libraryPath: string) => {
-    assertString(libraryPath, 'modelbibliotheekpad');
-    return listOllamaLibraryTags(libraryPath);
+    const language = await resolvedUiLanguage();
+    assertString(libraryPath, localizedText(language, 'modelbibliotheekpad', 'model library path'));
+    return listOllamaLibraryTags(libraryPath, fetch, language);
   });
   ipcMain.handle('ollama:pullModel', async (event, requestedModel: string) => {
-    const model = assertOllamaModelName(requestedModel);
+    const language = await resolvedUiLanguage();
+    const model = assertOllamaModelName(requestedModel, language);
     if (ollamaModelPullControllers.has(model.toLocaleLowerCase())) {
-      throw new Error(`${model} wordt al gedownload.`);
+      throw new Error(localizedText(language, `${model} wordt al gedownload.`, `${model} is already being downloaded.`));
     }
     const win = BrowserWindow.fromWebContents(event.sender);
     const controller = new AbortController();
@@ -392,13 +442,13 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
       const baseUrl = await ollamaTitleBaseUrl();
       await pullOllamaModel(baseUrl, model, controller.signal, (progress) => {
         sendOllamaModelPullProgress(win, progress);
-      });
+      }, fetch, undefined, language);
       invalidateOllamaProviderModels();
-      return listInstalledOllamaModels(baseUrl);
+      return listInstalledOllamaModels(baseUrl, fetch, language);
     } catch (error) {
       const cancelled = controller.signal.aborted;
       const message = cancelled
-        ? `${model} downloaden is geannuleerd.`
+        ? localizedText(language, `${model} downloaden is geannuleerd.`, `Downloading ${model} was cancelled.`)
         : error instanceof Error ? error.message : String(error);
       sendOllamaModelPullProgress(win, {
         model,
@@ -411,26 +461,32 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
     }
   });
   ipcMain.handle('ollama:cancelPull', async (_event, requestedModel: string) => {
-    const model = assertOllamaModelName(requestedModel);
+    const language = await resolvedUiLanguage();
+    const model = assertOllamaModelName(requestedModel, language);
     const controller = ollamaModelPullControllers.get(model.toLocaleLowerCase());
     if (!controller) return false;
     controller.abort();
     return true;
   });
   ipcMain.handle('ollama:deleteModel', async (_event, requestedModel: string) => {
-    const model = assertOllamaModelName(requestedModel);
+    const language = await resolvedUiLanguage();
+    const model = assertOllamaModelName(requestedModel, language);
     if (ollamaModelPullControllers.has(model.toLocaleLowerCase())) {
-      throw new Error('Annuleer de download voordat je dit model verwijdert.');
+      throw new Error(localizedText(
+        language,
+        'Annuleer de download voordat je dit model verwijdert.',
+        'Cancel the download before removing this model.',
+      ));
     }
     const baseUrl = await ollamaTitleBaseUrl();
-    await deleteOllamaModel(baseUrl, model);
+    await deleteOllamaModel(baseUrl, model, fetch, language);
     const store = await getStore();
     const titleModel = String(store.get('chat.autoTitleOllamaModel') || '').replace(/^ollama:/, '');
     if (titleModel.toLocaleLowerCase() === model.toLocaleLowerCase()) {
       store.delete('chat.autoTitleOllamaModel');
     }
     invalidateOllamaProviderModels();
-    return listInstalledOllamaModels(baseUrl);
+    return listInstalledOllamaModels(baseUrl, fetch, language);
   });
   ipcMain.handle('ollama:openLibrary', async (_event, query?: string) => {
     const url = new URL('/search', 'https://ollama.com');
@@ -454,7 +510,8 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
   ipcMain.handle('auth:saveCredential', async (_event, provider: ProviderType, secret: string, method = 'apikey') => {
     assertProvider(provider);
     assertString(secret, 'secret');
-    const validation = await adapters[provider].validateCredential(secret, { probeGeneration: true });
+    const language = await resolvedUiLanguage();
+    const validation = await adapters[provider].validateCredential(secret, { probeGeneration: true, language });
     if (validation.status === 'valid') {
       await saveCredential(provider, secret, method as any);
       if (provider === 'google') invalidateGeminiQuotaValidation();
@@ -465,8 +522,9 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
   ipcMain.handle('auth:setApiKey', async (_event, provider: ProviderType, key: string) => {
     assertProvider(provider);
     assertString(key, 'key');
-    const validation = await adapters[provider].validateCredential(key);
-    if (validation.status !== 'valid') throw new Error(validation.error || 'API-key is niet geldig.');
+    const language = await resolvedUiLanguage();
+    const validation = await adapters[provider].validateCredential(key, { language });
+    if (validation.status !== 'valid') throw new Error(validation.error || localizedText(language, 'API-key is niet geldig.', 'The API key is invalid.'));
     await saveCredential(provider, key, 'apikey');
     if (provider === 'google') invalidateGeminiQuotaValidation();
     providerCredentialStatusesCache = null;
@@ -482,38 +540,29 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
   ipcMain.handle('auth:testCredential', async (_event, provider: ProviderType, secret?: string) => {
     assertProvider(provider);
     providerCredentialStatusesCache = null;
-    const result = await adapters[provider].validateCredential(secret, { probeGeneration: true });
+    const language = await resolvedUiLanguage();
+    const result = await adapters[provider].validateCredential(secret, { probeGeneration: true, language });
     providerCredentialStatusesCache = null;
     return result;
   });
   ipcMain.handle('auth:testConnection', async (_event, provider: ProviderType) => {
     assertProvider(provider);
     providerCredentialStatusesCache = null;
-    const result = await adapters[provider].validateCredential(undefined, { probeGeneration: true });
+    const language = await resolvedUiLanguage();
+    const result = await adapters[provider].validateCredential(undefined, { probeGeneration: true, language });
     providerCredentialStatusesCache = null;
     return result.status === 'valid';
   });
   ipcMain.handle('auth:getStatus', async () => getProviderCredentialStatuses());
   ipcMain.handle('auth:getAuthStatus', async () => getProviderCredentialStatuses());
   ipcMain.handle('auth:browserLogin', async (_event, provider: ProviderType) => {
+    const language = await resolvedUiLanguage();
     if (provider === 'openai') {
-      try {
-        await chatgptScraper.openLoginWindow();
-        return { success: true };
-      } catch (error: any) {
-        return { success: false, error: error.message };
-      }
+      return loginChatGptBrowser(language);
     }
-    return { success: false, error: 'Browser login is alleen beschikbaar voor ChatGPT.' };
+    return { success: false, error: localizedText(language, 'Browserlogin is alleen beschikbaar voor ChatGPT.', 'Browser sign-in is only available for ChatGPT.') };
   });
-  ipcMain.handle('auth:chatgptBrowserLogin', async () => {
-    try {
-      await chatgptScraper.openLoginWindow();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
+  ipcMain.handle('auth:chatgptBrowserLogin', async () => loginChatGptBrowser(await resolvedUiLanguage()));
   ipcMain.handle('auth:chatgptBrowserLogout', async () => {
     await chatgptScraper.clearSession();
     return { success: true };
@@ -528,7 +577,7 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
     return chatgptScraper.resetEngine();
   });
   ipcMain.handle('auth:chatgptOpenWindow', async () => {
-    return chatgptScraper.openChatGptWindow();
+    return chatgptScraper.openChatGptWindow(await resolvedUiLanguage());
   });
   ipcMain.handle('auth:claudeCliLogin', async (event) => {
     const result = await openOrInstallInteractiveCli(
@@ -568,7 +617,7 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
       activeRequestChatIds.delete(request.requestId);
       // De eerste titelpoging loopt parallel met het antwoord. Na de hoofdbeurt
       // krijgt een tijdelijk onbereikbaar lokaal Ollama-model nog één poging.
-      void retryChatTitleAfterTurn(win, request.chatId, request.input).catch(() => { });
+      void retryChatTitleAfterTurn(win, request.chatId, request.input, normalizeUiLanguage(request.language, 'nl')).catch(() => { });
     }
   });
   ipcMain.handle('chat:cancel', async (_event, requestId?: string) => cancelRequest(requestId));
@@ -583,16 +632,16 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
   ipcMain.handle('tokens:getQuotas', async () => getStoredQuotaSnapshots());
   ipcMain.handle('tokens:refreshQuotas', async () => refreshProviderQuotas());
 
-  ipcMain.handle('geminiQuota:getStatus', async (_event, validate = false) => getGeminiQuotaAuthStatus(!!validate));
-  ipcMain.handle('geminiQuota:configure', async (_event, projectId: string, oauthClientId: string) => configureGeminiQuota(projectId, oauthClientId));
+  ipcMain.handle('geminiQuota:getStatus', async (_event, validate = false) => getGeminiQuotaAuthStatus(!!validate, await resolvedUiLanguage()));
+  ipcMain.handle('geminiQuota:configure', async (_event, projectId: string, oauthClientId: string) => configureGeminiQuota(projectId, oauthClientId, await resolvedUiLanguage()));
   ipcMain.handle('geminiQuota:connect', async () => {
-    const status = await startGeminiQuotaOAuth();
+    const status = await startGeminiQuotaOAuth(await resolvedUiLanguage());
     invalidateProviderStatusCaches();
     await refreshProviderQuotas().catch(() => []);
     return status;
   });
   ipcMain.handle('geminiQuota:disconnect', async () => {
-    const status = await disconnectGeminiQuotaOAuth();
+    const status = await disconnectGeminiQuotaOAuth(await resolvedUiLanguage());
     invalidateProviderStatusCaches();
     return status;
   });
@@ -623,14 +672,16 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
     validateAutoModeConfig(config);
     assertProvider(config.prompterModelRef.provider);
     assertProvider(config.responderModelRef.provider);
+    const language = await resolvedUiLanguage(config.language);
     if (autoModeRunId || autoModeState.status === 'running' || autoModeState.status === 'paused') {
-      throw new Error('Auto Mode draait al. Stop de huidige run voordat je opnieuw start.');
+      throw new Error(localizedText(language, 'Auto Mode draait al. Stop de huidige run voordat je opnieuw start.', 'Auto Mode is already running. Stop the current run before starting again.'));
     }
     const win = BrowserWindow.fromWebContents(event.sender);
     const cleanConfig: AutoModeConfig = {
       ...config,
       prompterModelRef: normalizeModelRef(config.prompterModelRef),
       responderModelRef: normalizeModelRef(config.responderModelRef),
+      language,
     };
     const runId = crypto.randomUUID();
     autoModeRunId = runId;
@@ -644,7 +695,7 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
       totalTokens: 0,
       maxIterations: cleanConfig.maxIterations,
       tokenBudget: cleanConfig.tokenBudget,
-      detail: 'Auto Mode gestart.',
+      detail: localizedText(language, 'Auto Mode gestart.', 'Auto Mode started.'),
       lastPromptPreview: '',
       error: undefined,
     };
@@ -657,6 +708,7 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
         cleanConfig.chatId,
         cleanConfig.goal,
         cleanConfig.prompterModelRef,
+        language,
       ).catch(() => { });
     }
     runAutoModeLoop(win, cleanConfig, runId)
@@ -665,7 +717,7 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
         publishAutoModeState(win, {
           status: 'stopped',
           phase: 'error',
-          detail: 'Auto Mode is gestopt door een fout.',
+          detail: localizedText(language, 'Auto Mode is gestopt door een fout.', 'Auto Mode stopped because of an error.'),
           error: error?.message || String(error),
         });
       })
@@ -675,26 +727,29 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
     return autoModeState;
   });
   ipcMain.handle('auto:pause', async (event) => {
+    const language = await resolvedUiLanguage();
     if (autoModeState.status === 'running') {
       publishAutoModeState(BrowserWindow.fromWebContents(event.sender), {
         status: 'paused',
         phase: 'paused',
-        detail: 'Auto Mode is gepauzeerd.',
+        detail: localizedText(language, 'Auto Mode is gepauzeerd.', 'Auto Mode is paused.'),
       });
     }
     return autoModeState;
   });
   ipcMain.handle('auto:resume', async (event) => {
+    const language = await resolvedUiLanguage();
     if (autoModeState.status === 'paused') {
       publishAutoModeState(BrowserWindow.fromWebContents(event.sender), {
         status: 'running',
         phase: 'starting',
-        detail: 'Auto Mode wordt hervat.',
+        detail: localizedText(language, 'Auto Mode wordt hervat.', 'Auto Mode is resuming.'),
       });
     }
     return autoModeState;
   });
   ipcMain.handle('auto:stop', async (event) => {
+    const language = await resolvedUiLanguage();
     autoModeStopRequested = true;
     for (const requestId of autoModeRequestIds) activeRequests.get(requestId)?.abort();
     autoModeRequestIds.clear();
@@ -702,7 +757,7 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
     publishAutoModeState(BrowserWindow.fromWebContents(event.sender), {
       status: 'stopped',
       phase: 'stopped',
-      detail: 'Auto Mode is gestopt.',
+      detail: localizedText(language, 'Auto Mode is gestopt.', 'Auto Mode is stopped.'),
       error: undefined,
     });
     return autoModeState;
@@ -785,7 +840,13 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
       });
       return true;
     }
-    store.set(key, sanitizeRendererSettingValue(key, value));
+    const sanitized = sanitizeRendererSettingValue(key, value);
+    store.set(key, sanitized);
+    if (key === 'ui.language') {
+      invalidateProviderStatusCaches();
+      invalidateGeminiQuotaValidation();
+      appEvents.emit('ui-language-changed', normalizeUiLanguage(sanitized, 'nl'));
+    }
     return true;
   });
   ipcMain.handle('settings:getAll', async () => {
@@ -931,11 +992,17 @@ function registerDbHandlers(ipcMain: IpcMain) {
 
 // ── Automatische gesprekstitels ──────────────────────────────────────────────
 const DEFAULT_CHAT_TITLES = new Set(['Nieuw gesprek', 'New chat']);
-const TITLE_SYSTEM_INSTRUCTION = [
+const TITLE_SYSTEM_INSTRUCTION_NL = [
   'Je maakt Nederlandse gesprekstitels.',
   'Zet de vraag of opdracht om in een natuurlijke onderwerpstitel van 3 tot 6 woorden.',
   'Neem het eerste bericht niet letterlijk over.',
   'Antwoord uitsluitend met de titel: geen uitleg, label, aanhalingstekens of eindpunt.',
+].join(' ');
+const TITLE_SYSTEM_INSTRUCTION_EN = [
+  'You create English conversation titles.',
+  'Turn the question or request into a natural topic title of 3 to 6 words.',
+  'Do not copy the first message literally.',
+  'Reply with the title only: no explanation, label, quotation marks, or final period.',
 ].join(' ');
 const titleGenerationInFlight = new Map<string, Promise<void>>();
 let ollamaTitleSetupInFlight: Promise<OllamaTitleSetupStatus> | null = null;
@@ -997,7 +1064,7 @@ async function getOllamaTitleSetupStatus(): Promise<OllamaTitleSetupStatus> {
   );
 }
 
-async function titleViaOllama(firstUser: string): Promise<string> {
+async function titleViaOllama(firstUser: string, language: UiLanguage = 'nl'): Promise<string> {
   const store = await getStore();
   const catalog = await readOllamaTitleCatalog();
   const baseUrl = catalog.baseUrl;
@@ -1009,20 +1076,29 @@ async function titleViaOllama(firstUser: string): Promise<string> {
 
   const requestTitle = async (retryFrom?: string) => {
     const firstMessage = firstUser.slice(0, 600);
-    const userPrompt = retryFrom
-      ? [
+    const userPrompt = language === 'en'
+      ? (retryFrom ? [
+        'Provide exactly a title matching the pattern "Conversation about [2 to 4 content words]".',
+        'Use only the main topic and properties from the message; omit question and command words.',
+        `Rejected title: ${retryFrom}`,
+        `Message: ${firstMessage}`,
+      ] : [
+        'Provide exactly a title matching the pattern "Conversation about [2 to 4 content words]".',
+        'Use only the main topic and properties from the message; omit question and command words.',
+        `Message: ${firstMessage}`,
+      ]).join('\n')
+      : (retryFrom ? [
         'Geef exact een titel in het patroon "Gesprek over [2 tot 4 inhoudswoorden]".',
         'Neem alleen het belangrijkste onderwerp en eigenschappen uit het bericht over;',
         'laat vraag- en opdrachtwoorden weg.',
         `Afgekeurde titel: ${retryFrom}`,
         `Bericht: ${firstMessage}`,
-      ].join('\n')
-      : [
+      ] : [
         'Geef exact een titel in het patroon "Gesprek over [2 tot 4 inhoudswoorden]".',
         'Neem alleen het belangrijkste onderwerp en eigenschappen uit het bericht over;',
         'laat vraag- en opdrachtwoorden weg.',
         `Bericht: ${firstMessage}`,
-      ].join('\n');
+      ]).join('\n');
     const request = fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1030,7 +1106,7 @@ async function titleViaOllama(firstUser: string): Promise<string> {
       body: JSON.stringify({
         model,
         messages: [
-          { role: 'system', content: TITLE_SYSTEM_INSTRUCTION },
+          { role: 'system', content: localizedText(language, TITLE_SYSTEM_INSTRUCTION_NL, TITLE_SYSTEM_INSTRUCTION_EN) },
           { role: 'user', content: userPrompt },
         ],
         stream: false,
@@ -1041,8 +1117,8 @@ async function titleViaOllama(firstUser: string): Promise<string> {
         },
       }),
     });
-    const response = await withHardTimeout(request, 61_000, 'Ollama-titel duurde te lang.');
-    if (!response.ok) throw new Error(`Ollama-titel mislukt (${response.status}).`);
+    const response = await withHardTimeout(request, 61_000, localizedText(language, 'Ollama-titel duurde te lang.', 'Ollama title generation took too long.'));
+    if (!response.ok) throw new Error(localizedText(language, `Ollama-titel mislukt (${response.status}).`, `Ollama title generation failed (${response.status}).`));
     const data = await response.json() as { message?: { content?: string }; response?: string };
     return String(data.message?.content || data.response || '');
   };
@@ -1052,8 +1128,9 @@ async function titleViaOllama(firstUser: string): Promise<string> {
   if (isUsableGeneratedChatTitle(cleaned, firstUser)) return cleaned;
   const retry = sanitizeGeneratedChatTitle(await requestTitle(cleaned || first));
   if (isUsableGeneratedChatTitle(retry, firstUser)) return retry;
-  return retry && isGeneratedTitleDistinct(`Gesprek over ${retry}`, firstUser)
-    ? `Gesprek over ${retry}`.slice(0, 60).trim()
+  const prefix = localizedText(language, 'Gesprek over', 'Conversation about');
+  return retry && isGeneratedTitleDistinct(`${prefix} ${retry}`, firstUser)
+    ? `${prefix} ${retry}`.slice(0, 60).trim()
     : '';
 }
 
@@ -1245,16 +1322,22 @@ function assertRuntimeSetupId(value: unknown): asserts value is RuntimeSetupId {
 
 async function installOllamaTitleSetup(win: BrowserWindow | null): Promise<OllamaTitleSetupStatus> {
   if (ollamaTitleSetupInFlight) return ollamaTitleSetupInFlight;
+  const language = await resolvedUiLanguage();
 
-  const task = runOllamaTitleSetup(win)
+  const task = runOllamaTitleSetup(win, language)
     .catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
+      const detail = error instanceof Error ? error.message : String(error);
+      const message = localizedText(
+        language,
+        `Installatie voor lokale gesprekstitels is mislukt (${detail})`,
+        `Local chat-title setup failed (${detail})`,
+      );
       sendOllamaTitleSetupProgress(win, {
         phase: 'error',
         status: message,
         model: DEFAULT_OLLAMA_TITLE_MODEL,
       });
-      throw error;
+      throw new Error(message);
     })
     .finally(() => {
       if (ollamaTitleSetupInFlight === task) ollamaTitleSetupInFlight = null;
@@ -1263,17 +1346,17 @@ async function installOllamaTitleSetup(win: BrowserWindow | null): Promise<Ollam
   return task;
 }
 
-async function runOllamaTitleSetup(win: BrowserWindow | null): Promise<OllamaTitleSetupStatus> {
+async function runOllamaTitleSetup(win: BrowserWindow | null, language: UiLanguage): Promise<OllamaTitleSetupStatus> {
   sendOllamaTitleSetupProgress(win, {
     phase: 'checking',
-    status: 'Ollama en het titelmodel controleren...',
+    status: localizedText(language, 'Ollama en het titelmodel controleren...', 'Checking Ollama and the title model...'),
     model: DEFAULT_OLLAMA_TITLE_MODEL,
   });
   let status = await getOllamaTitleSetupStatus();
   if (status.ready) {
     sendOllamaTitleSetupProgress(win, {
       phase: 'ready',
-      status: `Ollama en ${status.model} zijn klaar voor gesprekstitels.`,
+      status: localizedText(language, `Ollama en ${status.model} zijn klaar voor gesprekstitels.`, `Ollama and ${status.model} are ready for chat titles.`),
       model: status.model,
       percent: 100,
     });
@@ -1283,34 +1366,44 @@ async function runOllamaTitleSetup(win: BrowserWindow | null): Promise<OllamaTit
   let baseUrl = await ollamaTitleBaseUrl();
   if (!status.runtimeAvailable) {
     if (!isLocalOllamaUrl(baseUrl)) {
-      throw new Error('De ingestelde Ollama-URL is niet bereikbaar. Start die server of gebruik de lokale Ollama-URL.');
+      throw new Error(localizedText(
+        language,
+        'De ingestelde Ollama-URL is niet bereikbaar. Start die server of gebruik de lokale Ollama-URL.',
+        'The configured Ollama URL is unreachable. Start that server or use the local Ollama URL.',
+      ));
     }
     let executable = await findOllamaExecutable();
     if (!executable) {
-      await installOfficialOllamaRuntime(win, status.model);
+      await installOfficialOllamaRuntime(win, status.model, language);
       executable = await findOllamaExecutable();
     }
-    baseUrl = await ensureOllamaRuntimeStarted(win, status.model, executable);
+    baseUrl = await ensureOllamaRuntimeStarted(win, status.model, executable, language);
     status = await getOllamaTitleSetupStatus();
     if (!status.runtimeAvailable) {
-      throw new Error('Ollama is geïnstalleerd, maar de lokale server kon niet worden gestart.');
+      throw new Error(localizedText(language, 'Ollama is geïnstalleerd, maar de lokale server kon niet worden gestart.', 'Ollama is installed, but the local server could not be started.'));
     }
   }
 
   const store = await getStore();
   store.set('ollama.url', baseUrl);
   if (!status.modelAvailable) {
-    await pullOllamaTitleModel(win, baseUrl, status.model);
+    await pullOllamaTitleModel(win, baseUrl, status.model, language);
     store.set('chat.autoTitleOllamaModel', status.model);
   }
 
   invalidateOllamaProviderModels();
   status = await getOllamaTitleSetupStatus();
-  if (!status.ready) throw new Error(`Ollama-model ${status.model} is na het downloaden niet beschikbaar.`);
+  if (!status.ready) {
+    throw new Error(localizedText(
+      language,
+      `Ollama-model ${status.model} is na het downloaden niet beschikbaar.`,
+      `Ollama model ${status.model} is unavailable after downloading.`,
+    ));
+  }
 
   sendOllamaTitleSetupProgress(win, {
     phase: 'ready',
-    status: `Ollama en ${status.model} zijn klaar voor gesprekstitels.`,
+    status: localizedText(language, `Ollama en ${status.model} zijn klaar voor gesprekstitels.`, `Ollama and ${status.model} are ready for chat titles.`),
     model: status.model,
     percent: 100,
   });
@@ -1326,10 +1419,14 @@ function isLocalOllamaUrl(value: string) {
   }
 }
 
-async function installOfficialOllamaRuntime(win: BrowserWindow | null, model: string) {
+async function installOfficialOllamaRuntime(win: BrowserWindow | null, model: string, language: UiLanguage) {
   if (process.platform !== 'win32') {
     await shell.openExternal('https://ollama.com/download');
-    throw new Error('De officiële Ollama-downloadpagina is geopend. Installeer Ollama en probeer daarna opnieuw.');
+    throw new Error(localizedText(
+      language,
+      'De officiële Ollama-downloadpagina is geopend. Installeer Ollama en probeer daarna opnieuw.',
+      'The official Ollama download page is open. Install Ollama, then try again.',
+    ));
   }
 
   const installerPath = path.join(
@@ -1345,8 +1442,7 @@ async function installOfficialOllamaRuntime(win: BrowserWindow | null, model: st
         onProgress: (progress) => {
           sendOllamaTitleSetupProgress(win, {
             phase: 'downloading-runtime',
-            status: `Ollama voor Windows downloaden${progress.percent === undefined ? '...' : `... ${progress.percent}%`
-              }`,
+            status: `${localizedText(language, 'Ollama voor Windows downloaden', 'Downloading Ollama for Windows')}${progress.percent === undefined ? '...' : `... ${progress.percent}%`}`,
             model,
             percent: progress.percent,
             transferred: progress.transferred,
@@ -1359,7 +1455,7 @@ async function installOfficialOllamaRuntime(win: BrowserWindow | null, model: st
 
     sendOllamaTitleSetupProgress(win, {
       phase: 'verifying-runtime',
-      status: 'Digitale handtekening van de Ollama-installer controleren...',
+      status: localizedText(language, 'Digitale handtekening van de Ollama-installer controleren...', 'Verifying the Ollama installer digital signature...'),
       model,
       percent: 100,
     });
@@ -1373,7 +1469,7 @@ async function installOfficialOllamaRuntime(win: BrowserWindow | null, model: st
 
     sendOllamaTitleSetupProgress(win, {
       phase: 'installing-runtime',
-      status: 'De gecontroleerde Ollama-installer wordt uitgevoerd...',
+      status: localizedText(language, 'De gecontroleerde Ollama-installer wordt uitgevoerd...', 'Running the verified Ollama installer...'),
       model,
       percent: 100,
     });
@@ -1398,24 +1494,27 @@ async function ensureOllamaRuntimeStarted(
   win: BrowserWindow | null,
   model: string,
   detectedExecutable?: string | null,
+  language: UiLanguage = 'nl',
 ) {
   sendOllamaTitleSetupProgress(win, {
     phase: 'starting-runtime',
-    status: 'De lokale Ollama-server wordt gestart...',
+    status: localizedText(language, 'De lokale Ollama-server wordt gestart...', 'Starting the local Ollama server...'),
     model,
   });
   const startedByInstaller = await waitForOllamaRuntime(15_000);
   if (startedByInstaller) return startedByInstaller;
 
   const executable = detectedExecutable || await findOllamaExecutable();
-  if (!executable) throw new Error('Ollama is geïnstalleerd, maar ollama.exe is niet gevonden.');
+  if (!executable) {
+    throw new Error(localizedText(language, 'Ollama is geïnstalleerd, maar ollama.exe is niet gevonden.', 'Ollama is installed, but ollama.exe was not found.'));
+  }
 
   const diagnostics: string[] = [];
   for (const candidate of ollamaWindowsStartCandidates(executable)) {
     if (candidate.requiresExistingFile && !fs.existsSync(candidate.file)) continue;
     sendOllamaTitleSetupProgress(win, {
       phase: 'starting-runtime',
-      status: `${candidate.label} starten...`,
+      status: localizedText(language, `${candidate.label} starten...`, `Starting ${candidate.label}...`),
       model,
     });
     let started: Awaited<ReturnType<typeof startOllamaRuntimeCandidate>> | null = null;
@@ -1443,8 +1542,11 @@ async function ensureOllamaRuntimeStarted(
   diagnostics.push(readOllamaServerLogTail());
   const detail = conciseOllamaStartupDiagnostic(...diagnostics);
   throw new Error(
-    `De lokale Ollama-server reageert niet na het starten.${detail ? `\nLaatste Ollama-melding:\n${detail}` : ''
-    }`,
+    localizedText(
+      language,
+      `De lokale Ollama-server reageert niet na het starten.${detail ? `\nLaatste Ollama-melding:\n${detail}` : ''}`,
+      `The local Ollama server did not respond after starting.${detail ? `\nLatest Ollama detail:\n${detail}` : ''}`,
+    ),
   );
 }
 
@@ -1519,6 +1621,7 @@ async function pullOllamaTitleModel(
   win: BrowserWindow | null,
   baseUrl: string,
   model: string,
+  language: UiLanguage,
 ) {
   try {
     await pullOllamaModel(
@@ -1536,15 +1639,21 @@ async function pullOllamaTitleModel(
           bytesPerSecond: progress.bytesPerSecond,
         });
       },
+      fetch,
+      undefined,
+      language,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/\b401\b|unauthori[sz]ed/i.test(message)) {
-      const clockGuidance = await diagnoseOllamaClockSkew();
+      const clockGuidance = await diagnoseOllamaClockSkew(fetch, Date.now(), language);
       if (clockGuidance) {
         throw new Error(
-          `Ollama Registry weigerde het publieke model ${model} (401). `
-          + `Hiervoor is geen Ollama API-key nodig. ${clockGuidance}`,
+          localizedText(
+            language,
+            `Ollama Registry weigerde het publieke model ${model} (401). Hiervoor is geen Ollama API-key nodig. ${clockGuidance}`,
+            `Ollama Registry rejected the public model ${model} (401). No Ollama API key is required. ${clockGuidance}`,
+          ),
         );
       }
     }
@@ -1616,7 +1725,9 @@ async function generateChatTitleAttempt(
   chatId: string,
   firstUserText?: string,
   answerModelRef?: ModelRef,
+  explicitLanguage?: UiLanguage,
 ) {
+  const language = await resolvedUiLanguage(explicitLanguage);
   const chat = getDb().prepare('SELECT id, title FROM chats WHERE id = ?').get(chatId) as { id: string; title: string } | undefined;
   if (!chat) return;
 
@@ -1639,7 +1750,7 @@ async function generateChatTitleAttempt(
     showedSpinner = mode === 'ollama';
     if (showedSpinner) win?.webContents.send('chat:titleGenerating', { chatId });
     try {
-      if (mode === 'ollama') title = await titleViaOllama(firstUser);
+      if (mode === 'ollama') title = await titleViaOllama(firstUser, language);
       else if (mode === 'simple') title = simpleChatTitleFrom(firstUser);
     } catch { /* een latere retry na de hoofdbeurt krijgt nog een kans */ }
     title = sanitizeGeneratedChatTitle(title);
@@ -1669,11 +1780,12 @@ function generateChatTitleIfNeeded(
   chatId: string,
   firstUserText?: string,
   answerModelRef?: ModelRef,
+  language?: UiLanguage,
 ): Promise<void> {
   const existing = titleGenerationInFlight.get(chatId);
   if (existing) return existing;
 
-  const task = generateChatTitleAttempt(win, chatId, firstUserText, answerModelRef)
+  const task = generateChatTitleAttempt(win, chatId, firstUserText, answerModelRef, language)
     .finally(() => {
       if (titleGenerationInFlight.get(chatId) === task) titleGenerationInFlight.delete(chatId);
     });
@@ -1685,10 +1797,11 @@ async function retryChatTitleAfterTurn(
   win: BrowserWindow | null,
   chatId: string,
   firstUserText?: string,
+  language?: UiLanguage,
 ) {
   const pending = titleGenerationInFlight.get(chatId);
   if (pending) await pending.catch(() => undefined);
-  await generateChatTitleIfNeeded(win, chatId, firstUserText);
+  await generateChatTitleIfNeeded(win, chatId, firstUserText, undefined, language);
 }
 
 function isClaudeCliModelRef(modelRef: ModelRef) {
@@ -1716,8 +1829,17 @@ function assertRendererSettingKey(key: string) {
   if (!RENDERER_SETTING_KEYS.has(String(key || ''))) throw new Error(`Instelling is niet beschikbaar voor de renderer: ${key}`);
 }
 
+async function resolvedUiLanguage(explicit?: unknown): Promise<UiLanguage> {
+  if (explicit !== undefined && explicit !== null && String(explicit).trim()) {
+    return normalizeUiLanguage(explicit);
+  }
+  const store = await getStore();
+  return normalizeUiLanguage(store.get('ui.language'), 'nl');
+}
+
 async function sendUserMessageAndRunAssistant(win: BrowserWindow | null, request: ChatRequest) {
   const chat = requireChat(request.chatId);
+  const language = await resolvedUiLanguage(request.language);
   const requestedModelRef = normalizeModelRef(request.modelRef);
   const now = new Date().toISOString();
   const attachmentRows = getAttachments(request.attachmentIds || [], request.chatId);
@@ -1739,7 +1861,7 @@ async function sendUserMessageAndRunAssistant(win: BrowserWindow | null, request
   insertMessage(userMessage);
   // Start meteen naast de eerste providerbeurt. Bij ChatGPT gebruikt automatisch
   // Ollama indien beschikbaar, zodat de ene websessielaan het antwoord niet ophoudt.
-  void generateChatTitleIfNeeded(win, request.chatId, userMessage.content, requestedModelRef).catch(() => { });
+  void generateChatTitleIfNeeded(win, request.chatId, userMessage.content, requestedModelRef, language).catch(() => { });
   if (attachmentRows.length) {
     for (const attachment of attachmentRows) {
       getDb().prepare('UPDATE attachments SET chatId = ?, messageId = ? WHERE id = ?').run(request.chatId, userMessage.id, attachment.id);
@@ -1755,8 +1877,12 @@ async function sendUserMessageAndRunAssistant(win: BrowserWindow | null, request
     requestId: request.requestId,
     type: 'status',
     status: attachmentRows.length
-      ? `${attachmentRows.length} bijlage${attachmentRows.length === 1 ? '' : 'n'} verwerkt`
-      : 'Bericht ontvangen',
+      ? localizedText(
+        language,
+        `${attachmentRows.length} bijlage${attachmentRows.length === 1 ? '' : 'n'} verwerkt`,
+        `${attachmentRows.length} attachment${attachmentRows.length === 1 ? '' : 's'} processed`,
+      )
+      : localizedText(language, 'Bericht ontvangen', 'Message received'),
   });
 
   // Deterministic command router: if the user EXPLICITLY asked to run a command on
@@ -1775,6 +1901,7 @@ async function sendUserMessageAndRunAssistant(win: BrowserWindow | null, request
       requestId: request.requestId,
       anchorMessageId: userMessage.id,
       agentMode: agentCfg.mode,
+      language,
     };
     const res = await runAgentCommand(win, directCmd.command, {
       cwd: await getEffectiveProjectPath(chat),
@@ -1785,7 +1912,7 @@ async function sendUserMessageAndRunAssistant(win: BrowserWindow | null, request
       toolContext,
     });
     const body = res.denied
-      ? '[geweigerd door gebruiker]'
+      ? localizedText(language, '[geweigerd door gebruiker]', '[denied by user]')
       : [res.stdout, res.stderr].filter(Boolean).join('\n') || `[exit ${res.code}]`;
     const shownCommand = res.run?.command || directCmd.command;
     const toolMessage: Message = {
@@ -1815,6 +1942,7 @@ async function sendUserMessageAndRunAssistant(win: BrowserWindow | null, request
     chat,
     modelRef: requestedModelRef,
     explicitSystemPrompt: request.systemPrompt,
+    language,
   });
 
   return { ok: true, userMessage, assistantMessage };
@@ -1827,6 +1955,7 @@ async function runAssistantForExistingChat(
     chat: Chat;
     modelRef: ModelRef;
     explicitSystemPrompt?: string;
+    language: UiLanguage;
   },
 ) {
   const controller = new AbortController();
@@ -1851,35 +1980,43 @@ async function runAssistantForExistingChat(
     // Native function declarations worden alleen meegestuurd als de vraag echt een
     // lokale bestands- of commandoactie verlangt. Zo kan een tool-capabel lokaal
     // model normale vragen nooit omzetten in echo/read_file-rondes.
-    const nativeTurn = nativeToolIntent;
+    const nativeCommandTurn = options.modelRef.provider === 'codex'
+      && !!options.modelRef.runConfig?.nativeProviderCommand;
+    const nativeTurn = nativeToolIntent || nativeCommandTurn;
     const tagToolModel = shouldUseTagToolProtocol({
       toolsEnabled: agent.toolsEnabled,
       modelToolCapable: nativeToolCapable,
     });
     const commandEnvironment = nativeTurn
-      ? agentToolEnvironmentInstructions(agent.defaultShell)
+      ? agentToolEnvironmentInstructions(agent.defaultShell, process.platform, options.language)
       : '';
-    const systemPrompt = tagToolModel
-      ? `${assembled.systemPrompt || ''}\n${AGENT_TOOL_INSTRUCTIONS}\n${NATIVE_TOOL_RESPONSE_INSTRUCTIONS}\n${commandEnvironment}`
+    const systemPrompt = options.modelRef.provider === 'codex'
+      ? assembled.systemPrompt
+      : tagToolModel
+      ? `${assembled.systemPrompt || ''}\n${agentToolInstructions(options.language)}\n${nativeToolResponseInstructions(options.language)}\n${commandEnvironment}`
       : nativeTurn
-        ? `${assembled.systemPrompt || ''}\n${NATIVE_TOOL_RESPONSE_INSTRUCTIONS}\n${commandEnvironment}`
+        ? `${assembled.systemPrompt || ''}\n${nativeToolResponseInstructions(options.language)}\n${commandEnvironment}`
         : assembled.systemPrompt;
     const guardToolIntent = tagToolModel
       && options.modelRef.provider !== 'codex'
       && detectToolIntentRequest(latestUserInput, messages);
     if (guardToolIntent) {
-      sendStreamEvent(win, { requestId: options.requestId, type: 'status', status: 'Model plant toolstappen' });
+      sendStreamEvent(win, { requestId: options.requestId, type: 'status', status: localizedText(options.language, 'Model plant toolstappen', 'Model is planning tool steps') });
     }
 
     // Gedeelde approval-brug voor tools van native providers.
-    const nativeProjectPath = nativeTurn ? await getEffectiveProjectPath(options.chat) : undefined;
+    // Codex App Server heeft ook voor gewone chatbeurten een vaste cwd nodig om
+    // dezelfde native thread (en dus goal/review/mode) te hervatten.
+    const nativeProjectPath = nativeTurn || options.modelRef.provider === 'codex'
+      ? await getEffectiveProjectPath(options.chat)
+      : undefined;
     const approvedNativeSnapshots = new Map<string, string | null | undefined>();
     const nativeToolContext: AgentToolRunContext | undefined = nativeTurn
-      ? { chatId: options.chat.id, requestId: options.requestId, agentMode: agent.mode }
+      ? { chatId: options.chat.id, requestId: options.requestId, agentMode: agent.mode, language: options.language }
       : undefined;
     const requestPermission = nativeTurn && nativeProjectPath
       ? async (toolName: string, input: Record<string, unknown>) => {
-        const desc = describeNativeTool(toolName, input);
+        const desc = describeNativeTool(toolName, input, options.language);
         // silent: de popup + modus-logica blijven, maar GEEN activiteit-feed — die zou
         // (zonder vast anker) aan een vorige commando-groep plakken en 'm laten re-highlighten.
         const approved = await requestAgentApproval(win, desc.command, nativeProjectPath, {
@@ -1895,7 +2032,7 @@ async function runAssistantForExistingChat(
             rememberApprovedNativeSnapshot(approvedNativeSnapshots, nativeProjectPath, requestedPath);
           }
         }
-        return { allow: approved, message: approved ? undefined : 'Geweigerd door gebruiker.' };
+        return { allow: approved, message: approved ? undefined : localizedText(options.language, 'Geweigerd door gebruiker.', 'Denied by the user.') };
       }
       : undefined;
     // ── Native providers: chronologische, geïnterleavede beurt ──────────────────
@@ -1911,7 +2048,7 @@ async function runAssistantForExistingChat(
     const nextSegTs = () => new Date(segBase + segSeq++).toISOString();
     const nativeAnchorId = crypto.randomUUID();
     const nativeAnchorCreatedAt = nextSegTs();
-    const nativeIntentText = 'Ik voer de gevraagde toolstappen uit.';
+    const nativeIntentText = localizedText(options.language, 'Ik voer de gevraagde toolstappen uit.', 'I am carrying out the requested tool steps.');
     const nativeTextSegments = [''];
     let nativeToolSeen = false;
     let nativeAnchorStarted = false;
@@ -2007,7 +2144,7 @@ async function runAssistantForExistingChat(
           const startedAt = prev?.startedAt || nowIso;
           const anchorId = prev?.anchorId ?? nativeAnchorId;
           const cmd = prev?.command || command;
-          let output = activity.output || activity.detail || (activity.phase === 'denied' ? 'Geweigerd door gebruiker.' : '');
+          let output = activity.output || activity.detail || (activity.phase === 'denied' ? localizedText(options.language, 'Geweigerd door gebruiker.', 'Denied by the user.') : '');
           const ok = activity.phase === 'result' && !!activity.ok;
           const finalToolName = prev?.toolName || activity.toolName;
           let finalToolMeta = prev
@@ -2015,7 +2152,7 @@ async function runAssistantForExistingChat(
             : toolMeta;
           if (ok && prev?.toolKind?.startsWith('file-') && prev.toolPath) {
             const afterContent = nativeFileSnapshot(nativeProjectPath, prev.toolPath);
-            const review = nativeFileReviewOutput(nativeProjectPath, prev.toolKind, prev.toolPath, prev.beforeContent, afterContent);
+            const review = nativeFileReviewOutput(nativeProjectPath, prev.toolKind, prev.toolPath, prev.beforeContent, afterContent, options.language);
             if (review) {
               output = review.output;
               finalToolMeta = { toolKind: review.kind, toolPath: review.path };
@@ -2044,7 +2181,7 @@ async function runAssistantForExistingChat(
     const executeNativeTool = nativeTurn && nativeProjectPath
       ? async (toolName: string, input: Record<string, unknown>, toolUseId?: string) => {
         try {
-          const call = nativeToolCallFrom(toolName, input);
+          const call = nativeToolCallFrom(toolName, input, options.language);
           const result = await executeAgentToolCall(win, call, nativeProjectPath, {
             ...nativeToolContext!,
             silentApproval: true,
@@ -2059,8 +2196,8 @@ async function runAssistantForExistingChat(
               });
             },
           });
-          const denied = result.run?.status === 'denied' || /\[geweigerd/i.test(result.text);
-          const failed = result.run?.status === 'failed' || /\[(?:error|invalid|geen wijziging)/i.test(result.text);
+          const denied = result.run?.status === 'denied' || /\[(?:geweigerd|denied)/i.test(result.text);
+          const failed = result.run?.status === 'failed' || /\[(?:error|invalid|geen wijziging|no change)/i.test(result.text);
           return { ok: !denied && !failed, output: result.text, denied };
         } catch (error) {
           return { ok: false, output: error instanceof Error ? error.message : String(error) };
@@ -2070,6 +2207,7 @@ async function runAssistantForExistingChat(
 
     const result = await executeWithFallback(win, {
       requestId: options.requestId,
+      chatId: options.chat.id,
       initialModelRef: options.modelRef,
       messages,
       systemPrompt,
@@ -2084,6 +2222,7 @@ async function runAssistantForExistingChat(
       executeTool: executeNativeTool,
       onToolActivity: onNativeToolActivity,
       onNativeDelta: nativeTurn ? onNativeDelta : undefined,
+      language: options.language,
     });
 
     let finalResult = result;
@@ -2098,25 +2237,27 @@ async function runAssistantForExistingChat(
 
     if (shouldRepair) {
       agentLog('toolCompliance', { event: 'repair-start', model: `${result.modelRef.provider}:${result.modelRef.modelId}`, replyHead: finalReply.slice(0, 180) });
-      sendStreamEvent(win, { requestId: options.requestId, type: 'status', status: 'Model maakt een echte tool-opdracht...' });
+      sendStreamEvent(win, { requestId: options.requestId, type: 'status', status: localizedText(options.language, 'Model maakt een echte tool-opdracht...', 'Model is creating a real tool request...') });
       const complianceContext: AgentToolRunContext = {
         chatId: options.chat.id,
         requestId: options.requestId,
         attempt: 1,
         agentMode: agent.mode,
+        language: options.language,
       };
       const complianceActivityId = `${options.requestId}-tool-compliance`;
       sendToolActivity(win, complianceContext, {
         activityId: complianceActivityId,
         phase: 'planning',
-        label: 'Model maakt een echte tool-opdracht',
-        detail: 'Het eerste antwoord was gewone tekst; de app vraagt nu strict file/command-tags.',
+        label: localizedText(options.language, 'Model maakt een echte tool-opdracht', 'Model is creating a real tool request'),
+        detail: localizedText(options.language, 'Het eerste antwoord was gewone tekst; de app vraagt nu strict file/command-tags.', 'The first answer was ordinary text; the app is now requesting strict file/command tags.'),
         tone: 'running',
       });
       try {
-        const repairPrompt = buildToolRepairPrompt({ userInput: latestUserInput, badReply: finalReply });
+        const repairPrompt = buildToolRepairPrompt({ userInput: latestUserInput, badReply: finalReply }, options.language);
         const repairResult = await executeWithFallback(win, {
           requestId: options.requestId,
+          chatId: options.chat.id,
           initialModelRef: result.modelRef,
           messages: [
             ...messages,
@@ -2127,6 +2268,7 @@ async function runAssistantForExistingChat(
           attachments: [],
           signal: controller.signal,
           suppressDeltas: true,
+          language: options.language,
         });
         const repairTools = parseAgentToolCalls(repairResult.text, { includeShellFences: false });
         if (isNoToolsReply(repairResult.text) || !repairTools.length) {
@@ -2134,11 +2276,11 @@ async function runAssistantForExistingChat(
           sendToolActivity(win, complianceContext, {
             activityId: complianceActivityId,
             phase: 'stopped',
-            label: 'Model gaf geen tool-opdracht',
-            detail: 'De herstelpoging bevatte geen geldige file/command-tags.',
+            label: localizedText(options.language, 'Model gaf geen tool-opdracht', 'Model did not provide a tool request'),
+            detail: localizedText(options.language, 'De herstelpoging bevatte geen geldige file/command-tags.', 'The repair attempt did not contain valid file/command tags.'),
             tone: 'failed',
           });
-          return finishAssistantErrorTurn(win, options, result.modelRef, 'Uitvoering kon niet worden gestart: het model gaf geen geldige tool-opdracht.');
+          return finishAssistantErrorTurn(win, options, result.modelRef, localizedText(options.language, 'Uitvoering kon niet worden gestart: het model gaf geen geldige tool-opdracht.', 'Execution could not be started: the model did not provide a valid tool request.'));
         }
         finalReply = repairResult.text;
         finalResult = {
@@ -2150,21 +2292,21 @@ async function runAssistantForExistingChat(
         sendToolActivity(win, complianceContext, {
           activityId: complianceActivityId,
           phase: 'done',
-          label: 'Tool-opdracht ontvangen',
-          detail: `${repairTools.length} geldige toolactie(s) gevonden.`,
+          label: localizedText(options.language, 'Tool-opdracht ontvangen', 'Tool request received'),
+          detail: localizedText(options.language, `${repairTools.length} geldige toolactie(s) gevonden.`, `${repairTools.length} valid tool action(s) found.`),
           tone: 'ok',
         });
       } catch (error) {
-        const classified = classifyProviderError(error);
+        const classified = classifyProviderError(error, options.language);
         agentLog('toolCompliance', { event: 'repair-error', message: classified.message });
         sendToolActivity(win, complianceContext, {
           activityId: complianceActivityId,
           phase: 'stopped',
-          label: 'Modelherstel mislukt',
+          label: localizedText(options.language, 'Modelherstel mislukt', 'Model repair failed'),
           detail: classified.message,
           tone: 'failed',
         });
-        return finishAssistantErrorTurn(win, options, result.modelRef, `Uitvoering kon niet worden gestart: ${classified.message}`);
+        return finishAssistantErrorTurn(win, options, result.modelRef, localizedText(options.language, `Uitvoering kon niet worden gestart: ${classified.message}`, `Execution could not be started: ${classified.message}`));
       }
     }
 
@@ -2174,7 +2316,7 @@ async function runAssistantForExistingChat(
     // ervoor. De frontend groepeert alles tot één beurt.
     if (nativeTurn) {
       const finalSegment = nativeToolSeen
-        ? compactToolSummaryForDisplay(finalNativeAssistantText(nativeTextSegments, finalReply))
+        ? compactToolSummaryForDisplay(finalNativeAssistantText(nativeTextSegments, finalReply), 1_800, options.language)
         : finalNativeAssistantText(nativeTextSegments, finalReply);
       const anchorMessage: Message | null = nativeToolSeen ? {
         id: nativeAnchorId,
@@ -2292,7 +2434,7 @@ async function runAssistantForExistingChat(
       await runAgentToolLoop(win, options.chat, finalResult.modelRef, finalReply, controller.signal, {
         requestId: options.requestId,
         anchorMessageId: assistantMessage.id,
-      });
+      }, options.language);
     }
 
     // De beurt is pas klaar ná de tool-loop en eventuele resultaatcontrole/samenvatting. Een
@@ -2302,7 +2444,7 @@ async function runAssistantForExistingChat(
 
     return assistantMessage;
   } catch (error) {
-    const classified = classifyProviderError(error);
+    const classified = classifyProviderError(error, options.language);
     const failedRef: ModelRef = (error as any)?.modelRef || options.modelRef;
     const usage: TokenUsage = {
       inputTokens: 0,
@@ -2335,7 +2477,7 @@ async function runAssistantForExistingChat(
       role: 'assistant',
       content: failedRef.provider === 'openai' && failedRef.modelId.startsWith('chatgpt:')
         ? classified.message
-        : `Provider error (${classified.reason}): ${classified.message}`,
+        : localizedText(options.language, `Providerfout (${classified.reason}): ${classified.message}`, `Provider error (${classified.reason}): ${classified.message}`),
       modelId: failedRef.modelId,
       provider: failedRef.provider,
       inputTokens: 0,
@@ -2388,6 +2530,7 @@ function sumUsage(first: TokenUsage, second: TokenUsage): TokenUsage {
     contextUsedPercent: contextWindowSize ? Math.round((totalTokens / contextWindowSize) * 100) : 0,
     cachedTokens: cachedTokens || undefined,
     reasoningTokens: reasoningTokens || undefined,
+    source: mergeUsageSources(first.source, second.source),
   };
 }
 
@@ -2434,6 +2577,7 @@ async function executeWithFallback(
   win: BrowserWindow | null,
   options: {
     requestId: string;
+    chatId?: string;
     initialModelRef: ModelRef;
     messages: ChatMessage[];
     systemPrompt?: string;
@@ -2451,6 +2595,7 @@ async function executeWithFallback(
     // Als gezet: de native provider beheert tekst-delta's als segment-berichten i.p.v.
     // de zwevende streaming-bubbel — zodat tekst en tools chronologisch interleaven.
     onNativeDelta?: (delta: string) => void;
+    language: UiLanguage;
   },
 ) {
   const candidates = await fallbackCandidates(options.initialModelRef);
@@ -2465,22 +2610,26 @@ async function executeWithFallback(
     lastModelRef = modelRef;
     const blockingQuota = blockingQuotaForModel(modelRef, knownQuotas, fallbackLimitGroupKey(modelRef));
     if (blockingQuota) {
-      const message = `${blockingQuota.bucket.label} is opgebruikt${blockingQuota.bucket.resetAt ? ` tot ${blockingQuota.bucket.resetAt}` : ''}.`;
+      const message = localizedText(
+        options.language,
+        `${blockingQuota.bucket.label} is opgebruikt${blockingQuota.bucket.resetAt ? ` tot ${blockingQuota.bucket.resetAt}` : ''}.`,
+        `${blockingQuota.bucket.label} is exhausted${blockingQuota.bucket.resetAt ? ` until ${blockingQuota.bucket.resetAt}` : ''}.`,
+      );
       lastError = new ProviderRuntimeError(message, 'rate_limit');
       if (index === candidates.length - 1) break;
       const next = candidates[index + 1];
       fallbackFrom = `${modelRef.provider}:${modelRef.modelId}`;
-      emitFallbackSwitch(win, options.requestId, modelRef, next, 'rate_limit', message, true);
+      emitFallbackSwitch(win, options.requestId, modelRef, next, 'rate_limit', message, true, options.language);
       continue;
     }
     try {
       assertProvider(modelRef.provider);
       const adapter = adapters[modelRef.provider];
-      const preflight = await preflightModel(modelRef);
+      const preflight = await preflightModel(modelRef, options.language);
       if (!preflight.ok) {
         throw new ProviderRuntimeError(preflight.message, preflight.reason);
       }
-      const prepared = prepareMessagesForContext(options.messages, options.systemPrompt, modelRef);
+      const prepared = prepareMessagesForContext(options.messages, options.systemPrompt, modelRef, options.language);
       const hydratedMessages = await hydrateMessageAttachments(prepared.messages);
       const targetModel = cachedModels.find((model) => model.provider === modelRef.provider && model.id === modelRef.modelId);
       const droppedAttachments = options.attachments.filter((attachment) => (
@@ -2490,18 +2639,35 @@ async function executeWithFallback(
       const hydratedAttachments = await hydrateAttachments(acceptedAttachments);
       const nativeCapabilitiesAvailable = !options.nativeTools || isNativeToolModel(modelRef);
       const fallbackWarning = [
-        droppedAttachments.length ? `${droppedAttachments.length} niet-ondersteunde bijlage(n) zijn niet naar dit fallbackmodel gestuurd.` : '',
-        !nativeCapabilitiesAvailable ? 'Dit fallbackmodel heeft geen native lokale tools; voer geen bestands- of commandoacties voor alsof ze gelukt zijn.' : '',
+        droppedAttachments.length ? localizedText(
+          options.language,
+          `${droppedAttachments.length} niet-ondersteunde bijlage(n) zijn niet naar dit fallbackmodel gestuurd.`,
+          `${droppedAttachments.length} unsupported attachment(s) were not sent to this fallback model.`,
+        ) : '',
+        !nativeCapabilitiesAvailable ? localizedText(
+          options.language,
+          'Dit fallbackmodel heeft geen native lokale tools; voer geen bestands- of commandoacties voor alsof ze gelukt zijn.',
+          'This fallback model has no native local tools; do not claim file or command actions succeeded.',
+        ) : '',
       ].filter(Boolean).join(' ');
-      const resumeInstructions = index > 0 ? executionLedgerResumePrompt(options.requestId) : '';
+      const resumeInstructions = index > 0 ? executionLedgerResumePrompt(options.requestId, options.language) : '';
       if (fallbackWarning) sendStreamEvent(win, { requestId: options.requestId, type: 'status', status: fallbackWarning });
       if (prepared.omitted > 0) {
-        sendStreamEvent(win, { requestId: options.requestId, type: 'status', status: `${prepared.omitted} oudere berichten buiten de context gelaten.` });
+        sendStreamEvent(win, {
+          requestId: options.requestId,
+          type: 'status',
+          status: localizedText(options.language, `${prepared.omitted} oudere berichten buiten de context gelaten.`, `${prepared.omitted} older messages omitted from the context.`),
+        });
       }
       const result = await adapter.sendChat({
+        chatId: options.chatId,
         modelRef,
         messages: hydratedMessages,
-        systemPrompt: appendRuntimeMetadata([options.systemPrompt, fallbackWarning, resumeInstructions].filter(Boolean).join('\n\n'), modelRef),
+        systemPrompt: appendRuntimeMetadata(
+          [options.systemPrompt, fallbackWarning, resumeInstructions].filter(Boolean).join('\n\n'),
+          modelRef,
+          options.language,
+        ),
         attachments: hydratedAttachments,
         signal: options.signal,
         onDelta: (delta) => {
@@ -2521,24 +2687,25 @@ async function executeWithFallback(
         requireToolUse: options.requireToolUse && nativeCapabilitiesAvailable,
         requestPermission: options.requestPermission
           ? async (toolName, input) => {
-            const duplicate = duplicateTurnAction(options.requestId, toolName, input);
-            if (duplicate?.status === 'completed') return { allow: false, message: 'Deze exacte actie is in deze beurt al voltooid en wordt niet opnieuw uitgevoerd.' };
-            if (duplicate?.status === 'uncertain') return { allow: false, message: 'De uitkomst van deze exacte actie is onzeker. Controleer de toestand eerst met een leesactie.' };
+            const duplicate = duplicateTurnAction(options.requestId, toolName, input, options.cwd);
+            if (duplicate?.status === 'completed') return { allow: false, message: localizedText(options.language, 'Deze exacte actie is in deze beurt al voltooid en wordt niet opnieuw uitgevoerd.', 'This exact action already completed during this turn and will not be run again.') };
+            if (duplicate?.status === 'uncertain') return { allow: false, message: localizedText(options.language, 'De uitkomst van deze exacte actie is onzeker. Controleer de toestand eerst met een leesactie.', 'The outcome of this exact action is uncertain. Check the current state with a read action first.') };
             return options.requestPermission!(toolName, input);
           }
           : undefined,
         executeTool: options.executeTool
           ? async (toolName, input, toolUseId) => {
-            const duplicate = duplicateTurnAction(options.requestId, toolName, input);
-            if (duplicate?.status === 'completed') return { ok: false, denied: true, output: 'Deze exacte actie is al voltooid; niet opnieuw uitgevoerd.' };
-            if (duplicate?.status === 'uncertain') return { ok: false, denied: true, output: 'Onzekere eerdere actie; controleer de toestand eerst met read_file of een ander read-only commando.' };
+            const duplicate = duplicateTurnAction(options.requestId, toolName, input, options.cwd);
+            if (duplicate?.status === 'completed') return { ok: false, denied: true, output: localizedText(options.language, 'Deze exacte actie is al voltooid; niet opnieuw uitgevoerd.', 'This exact action already completed; it was not run again.') };
+            if (duplicate?.status === 'uncertain') return { ok: false, denied: true, output: localizedText(options.language, 'Onzekere eerdere actie; controleer de toestand eerst met read_file of een ander read-only commando.', 'Earlier action is uncertain; check the current state first with read_file or another read-only command.') };
             return options.executeTool!(toolName, input, toolUseId);
           }
           : undefined,
         onToolActivity: (activity) => {
-          recordTurnExecutionActivity(options.requestId, activity);
+          recordTurnExecutionActivity(options.requestId, activity, options.cwd);
           options.onToolActivity?.(activity);
         },
+        language: options.language,
       });
 
       const resultModelRef = normalizeModelRef({
@@ -2554,7 +2721,7 @@ async function executeWithFallback(
     } catch (error) {
       markPendingTurnActionsUncertain(options.requestId, modelRef.provider);
       lastError = error;
-      const classified = classifyProviderError(error);
+      const classified = classifyProviderError(error, options.language);
       agentLog('fallback', { failedModel: `${modelRef.provider}:${modelRef.modelId}`, reason: classified.reason, message: (classified.message || '').slice(0, 400) });
       if (classified.rateLimit) recordRateLimit(classified.rateLimit);
       if (classified.reason === 'rate_limit') recordRuntimeQuotaFailure(modelRef, classified);
@@ -2563,7 +2730,7 @@ async function executeWithFallback(
 
       const next = candidates[index + 1];
       fallbackFrom = `${modelRef.provider}:${modelRef.modelId}`;
-      emitFallbackSwitch(win, options.requestId, modelRef, next, classified.reason, classified.message, false);
+      emitFallbackSwitch(win, options.requestId, modelRef, next, classified.reason, classified.message, false, options.language);
     }
   }
 
@@ -2573,7 +2740,7 @@ async function executeWithFallback(
     (lastError as any).modelRef = lastModelRef;
     (lastError as any).fallbackFrom = fallbackFrom;
   }
-  throw lastError || new Error('No provider candidate could handle this request.');
+  throw lastError || new Error(localizedText(options.language, 'Geen providerkandidaat kon dit verzoek verwerken.', 'No provider candidate could handle this request.'));
 }
 
 async function fallbackCandidates(initial: ModelRef) {
@@ -2659,11 +2826,12 @@ async function getProviderHealth() {
   return Object.fromEntries(entries);
 }
 
-async function getProviderCredentialStatuses(): Promise<Record<ProviderType, CredentialStatus>> {
-  if (providerCredentialStatusesCache?.expiresAt && providerCredentialStatusesCache.expiresAt > Date.now()) {
+async function getProviderCredentialStatuses(explicitLanguage?: UiLanguage): Promise<Record<ProviderType, CredentialStatus>> {
+  const language = await resolvedUiLanguage(explicitLanguage);
+  if (providerCredentialStatusesCache?.language === language && providerCredentialStatusesCache.expiresAt > Date.now()) {
     return providerCredentialStatusesCache.value;
   }
-  if (providerCredentialStatusesInFlight) return providerCredentialStatusesInFlight;
+  if (providerCredentialStatusesInFlight?.language === language) return providerCredentialStatusesInFlight.promise;
 
   const request = (async () => {
     const base = await getCredentialStatuses();
@@ -2679,9 +2847,9 @@ async function getProviderCredentialStatuses(): Promise<Record<ProviderType, Cre
     if (antigravityExecutable) await ensureStatuslineBridge('antigravity').catch(() => {});
     const entries = await Promise.all(PROVIDERS.map(async (provider) => {
       const meta = PROVIDER_STATUS[provider];
-      const validation = await adapters[provider].validateCredential().catch((error: any) => ({
+      const validation = await adapters[provider].validateCredential(undefined, { language }).catch((error: any) => ({
         id: crypto.randomUUID(),
-        keyMasked: base[provider]?.label || 'missing',
+        keyMasked: base[provider]?.label || localizedText(language, 'ontbreekt', 'missing'),
         provider,
         status: 'invalid' as const,
         error: error?.message || String(error),
@@ -2689,7 +2857,7 @@ async function getProviderCredentialStatuses(): Promise<Record<ProviderType, Cre
       let valid = validation.status === 'valid';
       let quotaSetupError: string | undefined;
       if (provider === 'google' && valid) {
-        const quotaStatus = await getGeminiQuotaAuthStatus(true);
+        const quotaStatus = await getGeminiQuotaAuthStatus(true, language);
         valid = quotaStatus.connected;
         quotaSetupError = quotaStatus.error;
       }
@@ -2702,22 +2870,22 @@ async function getProviderCredentialStatuses(): Promise<Record<ProviderType, Cre
           authenticated: valid,
           label: validation.keyMasked || base[provider]?.label,
           error: quotaSetupError || validation.error || base[provider]?.error,
-          statusLabel: valid ? meta.valid : meta.invalid,
+          statusLabel: localizedText(language, valid ? meta.valid : meta.invalid, valid ? PROVIDER_STATUS_EN[provider].valid : PROVIDER_STATUS_EN[provider].invalid),
           category: meta.category,
           canChat,
         },
       ];
     }));
     const value = Object.fromEntries(entries) as Record<ProviderType, CredentialStatus>;
-    providerCredentialStatusesCache = { expiresAt: Date.now() + 15_000, value };
+    providerCredentialStatusesCache = { language, expiresAt: Date.now() + 15_000, value };
     return value;
   })();
 
-  providerCredentialStatusesInFlight = request;
+  providerCredentialStatusesInFlight = { language, promise: request };
   try {
     return await request;
   } finally {
-    if (providerCredentialStatusesInFlight === request) {
+    if (providerCredentialStatusesInFlight?.promise === request) {
       providerCredentialStatusesInFlight = null;
     }
   }
@@ -2752,14 +2920,22 @@ async function openOrInstallInteractiveCli(
   kind: InteractiveCliKind,
   win: BrowserWindow | null = null,
 ): Promise<InteractiveCliOpenResult> {
+  const language = await resolvedUiLanguage();
   if (process.platform !== 'win32') {
-    return { success: false, error: 'Automatisch installeren en openen wordt momenteel alleen op Windows ondersteund.' };
+    return {
+      success: false,
+      error: localizedText(
+        language,
+        'Automatisch installeren en openen wordt momenteel alleen op Windows ondersteund.',
+        'Automatic installation and sign-in are currently supported on Windows only.',
+      ),
+    };
   }
 
   const active = interactiveCliSetupInFlight.get(kind);
   if (active) return active;
 
-  const task = runInteractiveCliSetup(kind, win)
+  const task = runInteractiveCliSetup(kind, win, language)
     .finally(() => {
       if (interactiveCliSetupInFlight.get(kind) === task) {
         interactiveCliSetupInFlight.delete(kind);
@@ -2772,13 +2948,14 @@ async function openOrInstallInteractiveCli(
 async function runInteractiveCliSetup(
   kind: InteractiveCliKind,
   win: BrowserWindow | null,
+  language: UiLanguage,
 ): Promise<InteractiveCliOpenResult> {
   const name = interactiveCliName(kind);
   try {
     sendRuntimeSetupProgress(win, {
       runtime: kind,
       phase: 'checking',
-      status: `${name} controleren...`,
+      status: localizedText(language, `${name} controleren...`, `Checking ${name}...`),
     });
 
     let executable = await findExecutablePath(await configuredCliCandidates(kind));
@@ -2787,15 +2964,15 @@ async function runInteractiveCliSetup(
       sendRuntimeSetupProgress(win, {
         runtime: kind,
         phase: 'downloading',
-        status: `Officiële ${name}-installer ophalen...`,
+        status: localizedText(language, `Officiële ${name}-installer ophalen...`, `Fetching the official ${name} installer...`),
       });
       await runSetupProcess('powershell.exe', [
         '-NoLogo',
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
-        '-Command', interactiveCliInstallPowerShell(kind),
+        '-Command', interactiveCliInstallPowerShell(kind, language),
       ], 30 * 60_000, (output) => {
-        const parsed = parseInteractiveCliInstallerProgress(kind, output);
+        const parsed = parseInteractiveCliInstallerProgress(kind, output, language);
         if (!parsed) return;
         sendRuntimeSetupProgress(win, {
           runtime: kind,
@@ -2806,7 +2983,7 @@ async function runInteractiveCliSetup(
       sendRuntimeSetupProgress(win, {
         runtime: kind,
         phase: 'checking',
-        status: `${name}-installatie controleren...`,
+        status: localizedText(language, `${name}-installatie controleren...`, `Verifying ${name} installation...`),
       });
       const deadline = Date.now() + 20_000;
       while (!executable && Date.now() < deadline) {
@@ -2815,8 +2992,11 @@ async function runInteractiveCliSetup(
       }
       if (!executable) {
         throw new Error(
-          `${name} meldde dat de installatie klaar is, maar het uitvoerbare bestand is niet gevonden. `
-          + 'Controleer de installeruitvoer en kies daarna “Controleer opnieuw”.',
+          localizedText(
+            language,
+            `${name} meldde dat de installatie klaar is, maar het uitvoerbare bestand is niet gevonden. Controleer de installeruitvoer en kies daarna “Controleer opnieuw”.`,
+            `${name} reported a completed installation, but its executable was not found. Check the installer output, then choose “Check again”.`,
+          ),
         );
       }
     }
@@ -2824,14 +3004,18 @@ async function runInteractiveCliSetup(
     sendRuntimeSetupProgress(win, {
       runtime: kind,
       phase: 'configuring',
-      status: `${name}-loginvenster openen...`,
+      status: localizedText(language, `${name}-loginvenster openen...`, `Opening ${name} sign-in window...`),
       percent: installedNow ? 100 : undefined,
     });
-    const terminalProcessId = await openInteractiveCliLogin(kind, executable);
+    const terminalProcessId = await openInteractiveCliLogin(kind, executable, ensureDefaultWorkspacePath(), language);
     sendRuntimeSetupProgress(win, {
       runtime: kind,
       phase: 'awaiting-login',
-      status: `${name}-loginvenster is geopend. Rond de login af en keer daarna terug naar LLMelt.`,
+      status: localizedText(
+        language,
+        `${name}-loginvenster is geopend. Rond de login af en keer daarna terug naar LLMelt.`,
+        `${name} sign-in window is open. Complete sign-in, then return to LLMelt.`,
+      ),
     });
 
     return {
@@ -2839,10 +3023,17 @@ async function runInteractiveCliSetup(
       action: installedNow ? 'install' : 'open',
       executablePath: executable,
       terminalProcessId,
-      message: `${name} is ${installedNow ? 'geïnstalleerd en ' : ''}geopend. Rond de login af in het terminalvenster.`,
+      message: installedNow
+        ? localizedText(language, `${name} is geïnstalleerd en geopend. Rond de login af in het terminalvenster.`, `${name} was installed and opened. Complete sign-in in the terminal window.`)
+        : localizedText(language, `${name} is geopend. Rond de login af in het terminalvenster.`, `${name} is open. Complete sign-in in the terminal window.`),
     };
   } catch (error: any) {
-    const message = error?.message || String(error);
+    const detail = error?.message || String(error);
+    const message = localizedText(
+      language,
+      `${name}-configuratie is mislukt (${detail})`,
+      `${name} setup failed (${detail})`,
+    );
     sendRuntimeSetupProgress(win, {
       runtime: kind,
       phase: 'error',
@@ -2852,15 +3043,20 @@ async function runInteractiveCliSetup(
   }
 }
 
-function openInteractiveCliLogin(kind: InteractiveCliKind, executablePath: string) {
+function openInteractiveCliLogin(
+  kind: InteractiveCliKind,
+  executablePath: string,
+  workingDirectory: string,
+  language: UiLanguage,
+) {
   return new Promise<number>((resolve, reject) => {
     const child = spawn('powershell.exe', [
       '-NoLogo',
       '-NoProfile',
       '-ExecutionPolicy', 'Bypass',
-      '-Command', interactiveCliTerminalLauncherPowerShell(kind, executablePath, os.homedir()),
+      '-Command', interactiveCliTerminalLauncherPowerShell(kind, executablePath, workingDirectory, language),
     ], {
-      cwd: os.homedir(),
+      cwd: workingDirectory,
       windowsHide: true,
       env: agentCommandEnvironment(),
     });
@@ -2876,7 +3072,11 @@ function openInteractiveCliLogin(kind: InteractiveCliKind, executablePath: strin
     };
     const timeout = setTimeout(() => {
       terminateProcessTree(child);
-      finish(new Error(`${interactiveCliName(kind)}-loginvenster kon niet binnen 15 seconden worden geopend.`));
+      finish(new Error(localizedText(
+        language,
+        `${interactiveCliName(kind)}-loginvenster kon niet binnen 15 seconden worden geopend.`,
+        `${interactiveCliName(kind)} sign-in window could not be opened within 15 seconds.`,
+      )));
     }, 15_000);
 
     child.stdout?.on('data', (data) => {
@@ -2893,7 +3093,11 @@ function openInteractiveCliLogin(kind: InteractiveCliKind, executablePath: strin
         finish(new Error(
           stderr.trim()
           || stdout.trim()
-          || `${interactiveCliName(kind)}-loginvenster kon niet worden geopend.`,
+          || localizedText(
+            language,
+            `${interactiveCliName(kind)}-loginvenster kon niet worden geopend.`,
+            `${interactiveCliName(kind)} sign-in window could not be opened.`,
+          ),
         ));
         return;
       }
@@ -3057,50 +3261,45 @@ async function openAccountSurface(provider: ProviderAccountId) {
   return { ok: true };
 }
 
-async function preflightModel(modelRef: ModelRef): Promise<{ ok: boolean; reason: FallbackReason; message: string }> {
+async function preflightModel(modelRef: ModelRef, language: UiLanguage = 'nl'): Promise<{ ok: boolean; reason: FallbackReason; message: string }> {
   // Een chatgpt:* model gebruikt de ChatGPT-websessie en heeft geen OpenAI-API-key.
   // De generieke OpenAI-validator hier gebruiken blokkeerde geldige abonnementssessies
   // met een misleidende "Key is verlopen"-melding voordat de scraper kon starten.
   if (providerPreflightSurface(modelRef) === 'chatgpt-session') {
     const active = await chatgptScraper.isSessionActive();
     return active
-      ? { ok: true, reason: 'provider_error', message: 'ChatGPT-websessie is beschikbaar.' }
+      ? { ok: true, reason: 'provider_error', message: localizedText(language, 'ChatGPT-websessie is beschikbaar.', 'The ChatGPT web session is available.') }
       : {
         ok: false,
         reason: 'auth_failed',
-        message: 'ChatGPT-websessie is niet ingelogd. Open Instellingen -> ChatGPT Subscription -> Inloggen.',
+        message: localizedText(language, 'ChatGPT-websessie is niet ingelogd. Open Instellingen -> ChatGPT Subscription -> Inloggen.', 'The ChatGPT web session is not signed in. Open Settings -> ChatGPT Subscription -> Sign in.'),
       };
   }
 
   if (modelRef.provider === 'google') {
-    const quotaStatus = await getGeminiQuotaAuthStatus(true);
+    const quotaStatus = await getGeminiQuotaAuthStatus(true, language);
     if (!quotaStatus.connected) {
       return {
         ok: false,
         reason: 'auth_failed',
-        message: quotaStatus.error || 'Koppel voor Gemini zowel de API-key als Google Cloud-quota in Instellingen.',
+        message: quotaStatus.error || localizedText(language, 'Koppel voor Gemini zowel de API-key als Google Cloud-quota in Instellingen.', 'Connect both the API key and Google Cloud quota for Gemini in Settings.'),
       };
     }
   }
 
-  const validation = await adapters[modelRef.provider].validateCredential().catch((error: any) => ({
+  const validation = await adapters[modelRef.provider].validateCredential(undefined, { language }).catch((error: any) => ({
     status: 'invalid' as const,
     error: error?.message || String(error),
   }));
   if (validation.status === 'valid') {
-    return { ok: true, reason: 'provider_error', message: 'Provider is ready.' };
+    return { ok: true, reason: 'provider_error', message: localizedText(language, 'Provider is gereed.', 'Provider is ready.') };
   }
 
-  const reason: FallbackReason =
-    modelRef.provider === 'openai' || modelRef.provider === 'anthropic' || modelRef.provider === 'google' || modelRef.provider === 'remote'
-      ? 'auth_failed'
-      : modelRef.provider === 'ollama'
-        ? 'network'
-        : 'provider_error';
+  const reason = credentialPreflightFallbackReason(modelRef.provider);
   return {
     ok: false,
     reason,
-    message: validation.error || `${modelRef.provider} is not ready.`,
+    message: validation.error || localizedText(language, `${modelRef.provider} is niet gereed.`, `${modelRef.provider} is not ready.`),
   };
 }
 
@@ -3209,36 +3408,11 @@ function normalizeModelRef(modelRef: ModelRef): ModelRef {
   };
 }
 
-function normalizeLegacyModelId(provider: ProviderType, modelId: string): { modelId: string; runConfig?: ModelRunConfig } {
-  if (provider !== 'codex') return { modelId };
-
-  const [baseModelId, legacyMode] = modelId.split('#');
-  if (!legacyMode) {
-    return {
-      modelId: baseModelId,
-      runConfig: { baseModelId, reasoningEffort: 'high' },
-    };
-  }
-
-  const legacyEfforts: Record<string, ReasoningEffort> = {
-    instant: 'low',
-    thinking: 'high',
-    pro: 'xhigh',
-  };
-  return {
-    modelId: baseModelId,
-    runConfig: {
-      baseModelId,
-      reasoningEffort: legacyEfforts[legacyMode] || 'high',
-    },
-  };
-}
-
 function normalizeRunConfig(provider: ProviderType, value?: ModelRunConfig): ModelRunConfig | undefined {
   const runConfig: ModelRunConfig = {};
   if (value?.baseModelId) runConfig.baseModelId = String(value.baseModelId);
   const effort = normalizeReasoningEffort(value?.reasoningEffort);
-  if (effort || provider === 'codex') runConfig.reasoningEffort = effort || 'high';
+  if (effort) runConfig.reasoningEffort = effort;
   const serviceTier = normalizeServiceTier(value?.serviceTier);
   if (serviceTier) runConfig.serviceTier = serviceTier;
   const timeoutSeconds = Number(value?.timeoutSeconds || 0);
@@ -3253,11 +3427,15 @@ function normalizeRunConfig(provider: ProviderType, value?: ModelRunConfig): Mod
 }
 
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
-  return REASONING_EFFORTS.includes(value as ReasoningEffort) ? (value as ReasoningEffort) : undefined;
+  if (typeof value !== 'string') return undefined;
+  const effort = value.trim();
+  return /^[a-z][a-z0-9._-]*$/i.test(effort) ? effort : undefined;
 }
 
 function normalizeServiceTier(value: unknown): ServiceTier | undefined {
-  return value === 'flex' || value === 'fast' ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  const tier = value.trim();
+  return /^[a-z][a-z0-9._-]*$/i.test(tier) ? tier : undefined;
 }
 
 function serializeRunConfig(runConfig?: ModelRunConfig) {
@@ -3265,9 +3443,19 @@ function serializeRunConfig(runConfig?: ModelRunConfig) {
   return JSON.stringify(runConfig);
 }
 
-function appendRuntimeMetadata(systemPrompt: string | undefined, modelRef: ModelRef) {
+function appendRuntimeMetadata(systemPrompt: string | undefined, modelRef: ModelRef, language: UiLanguage = 'en') {
   const runConfig = modelRef.runConfig || {};
-  const metadata = [
+  const metadata = (language === 'nl' ? [
+    'Runtimemetadata van de host-app:',
+    `Provider: ${modelRef.provider}`,
+    `Model-ID: ${modelRef.modelId}`,
+    runConfig.reasoningEffort ? `Redeneerinspanning: ${runConfig.reasoningEffort}` : '',
+    runConfig.serviceTier ? `Serviceniveau: ${runConfig.serviceTier}` : '',
+    runConfig.commandPresetId ? `App-opdrachtpreset: ${runConfig.commandPresetId}` : '',
+    runConfig.commandGoal ? `Actief doel: ${runConfig.commandGoal}` : '',
+    runConfig.commandInstruction ? `Actieve app-opdracht: ${runConfig.commandInstruction}` : '',
+    'Als de gebruiker vraagt welk model of welke redeneerinstelling is gekozen, antwoord dan op basis van deze metadata en verzin geen verborgen interne varianten.',
+  ] : [
     'Runtime metadata from the host app:',
     `Provider: ${modelRef.provider}`,
     `Model ID: ${modelRef.modelId}`,
@@ -3277,7 +3465,7 @@ function appendRuntimeMetadata(systemPrompt: string | undefined, modelRef: Model
     runConfig.commandGoal ? `Active goal: ${runConfig.commandGoal}` : '',
     runConfig.commandInstruction ? `App command instruction: ${runConfig.commandInstruction}` : '',
     'If the user asks what model or reasoning setting is selected, answer from this metadata and do not invent hidden internal variants.',
-  ].filter(Boolean).join('\n');
+  ]).filter(Boolean).join('\n');
 
   return systemPrompt ? `${metadata}\n\n${systemPrompt}` : metadata;
 }
@@ -3492,7 +3680,7 @@ function getChatMessages(chatId: string): ChatMessage[] {
     });
 }
 
-function prepareMessagesForContext(messages: ChatMessage[], systemPrompt: string | undefined, modelRef: ModelRef) {
+function prepareMessagesForContext(messages: ChatMessage[], systemPrompt: string | undefined, modelRef: ModelRef, language: UiLanguage = 'nl') {
   const model = cachedModels.find((candidate) => candidate.provider === modelRef.provider && candidate.id === modelRef.modelId);
   const contextWindow = Math.max(8_192, Number(model?.contextWindow || 128_000));
   const outputReserve = Math.max(2_048, Number(model?.maxOutputTokens || 8_192));
@@ -3505,7 +3693,7 @@ function prepareMessagesForContext(messages: ChatMessage[], systemPrompt: string
     const message = messages[index];
     const tokens = estimateMessageTokens(message);
     if (!selected.length && tokens > budget) {
-      throw new ProviderRuntimeError('Het nieuwste bericht met bijlagen past niet in het contextvenster van dit model.', 'context_exceeded');
+      throw new ProviderRuntimeError(localizedText(language, 'Het nieuwste bericht met bijlagen past niet in het contextvenster van dit model.', 'The latest message with attachments does not fit in this model\'s context window.'), 'context_exceeded');
     }
     if (used + tokens > budget) break;
     selected.unshift(message);
@@ -3555,8 +3743,11 @@ function requireChat(chatId: string) {
 }
 
 function recordUsage(chatId: string, messageId: string, modelRef: ModelRef, usage: TokenUsage) {
+  // Een lege placeholder betekent dat de provider geen usage heeft geleverd;
+  // sla die niet op alsof er werkelijk nul tokens zijn verbruikt.
+  if (!hasRecordableUsage(usage)) return;
   getDb()
-    .prepare('INSERT INTO usage_events (id, chatId, messageId, provider, modelId, inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens, createdAt) VALUES (@id, @chatId, @messageId, @provider, @modelId, @inputTokens, @outputTokens, @totalTokens, @cachedTokens, @reasoningTokens, @createdAt)')
+    .prepare('INSERT INTO usage_events (id, chatId, messageId, provider, modelId, inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens, usageSource, createdAt) VALUES (@id, @chatId, @messageId, @provider, @modelId, @inputTokens, @outputTokens, @totalTokens, @cachedTokens, @reasoningTokens, @usageSource, @createdAt)')
     .run({
       id: crypto.randomUUID(),
       chatId,
@@ -3568,6 +3759,7 @@ function recordUsage(chatId: string, messageId: string, modelRef: ModelRef, usag
       totalTokens: usage.totalTokens || 0,
       cachedTokens: usage.cachedTokens || 0,
       reasoningTokens: usage.reasoningTokens || 0,
+      usageSource: normalizeUsageSource(usage.source),
       createdAt: new Date().toISOString(),
     });
 }
@@ -3626,7 +3818,7 @@ async function getTokenDashboard(chatId?: string): Promise<TokenDashboard> {
     .prepare(`SELECT * FROM usage_events ${chatId ? 'WHERE chatId = ?' : ''} ORDER BY createdAt DESC LIMIT 200`)
     .all(...(chatId ? [chatId] : [])) as any[];
   const aggregateRows = db
-    .prepare(`SELECT provider, modelId, SUM(inputTokens) inputTokens, SUM(outputTokens) outputTokens, SUM(totalTokens) totalTokens, SUM(cachedTokens) cachedTokens, SUM(reasoningTokens) reasoningTokens FROM usage_events ${chatId ? 'WHERE chatId = ?' : ''} GROUP BY provider, modelId`)
+    .prepare(`SELECT provider, modelId, SUM(inputTokens) inputTokens, SUM(outputTokens) outputTokens, SUM(totalTokens) totalTokens, SUM(cachedTokens) cachedTokens, SUM(reasoningTokens) reasoningTokens, GROUP_CONCAT(DISTINCT usageSource) usageSources FROM usage_events ${chatId ? 'WHERE chatId = ?' : ''} GROUP BY provider, modelId`)
     .all(...(chatId ? [chatId] : [])) as any[];
 
   const usageByModel: TokenDashboard['usageByModel'] = {};
@@ -3643,6 +3835,7 @@ async function getTokenDashboard(chatId?: string): Promise<TokenDashboard> {
       reasoningTokens: 0,
       contextWindowSize: discoveredModel?.contextWindow || 128000,
       contextUsedPercent: 0,
+      source: usageSourceFromRows(row.usageSources),
     };
     current.inputTokens += row.inputTokens || 0;
     current.outputTokens += row.outputTokens || 0;
@@ -3658,12 +3851,30 @@ async function getTokenDashboard(chatId?: string): Promise<TokenDashboard> {
 
   const context = chatId ? await getContextUsage(chatId) : { used: 0, total: 0, percent: 0, source: 'unknown' as const };
   return {
-    usageEvents: usageRows,
+    usageEvents: usageRows.map((row) => ({ ...row, source: normalizeUsageSource(row.usageSource) })),
     usageByModel,
     rateLimits: await getStoredRateLimits(),
     quotas: await ensureRecentQuotaSnapshots(),
     context: { chatId, ...context },
   };
+}
+
+async function loginChatGptBrowser(language: UiLanguage = 'nl') {
+  try {
+    await chatgptScraper.openLoginWindow(language);
+    providerCredentialStatusesCache = null;
+    cachedModels = cachedModels.filter((model) => !(model.provider === 'openai' && model.id.startsWith('chatgpt:')));
+    // Geef de renderer één samenhangende post-login-snapshot. Zo hoeft de
+    // onboarding niet op losse, onderling racende statuscalls te gokken.
+    const models = await refreshModels('openai').catch(() => []);
+    const [versions, sessionStatus] = await Promise.all([
+      chatgptScraper.listSessionVersions().catch(() => []),
+      chatgptScraper.getSessionStatus(),
+    ]);
+    return { success: true, models, versions, sessionStatus };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
 }
 
 function isPaidApiFallback(modelRef: ModelRef) {
@@ -3681,6 +3892,7 @@ function emitFallbackSwitch(
   reason: FallbackReason,
   message: string,
   preSkipped: boolean,
+  language: UiLanguage = 'nl',
 ) {
   sendStreamEvent(win, {
     requestId,
@@ -3688,8 +3900,14 @@ function emitFallbackSwitch(
     from,
     to,
     reason,
-    detail: preSkipped ? 'Bekende actieve cooldown preventief overgeslagen.' : message,
-    delta: `\n\n[Doorgeschakeld van ${from.modelId} naar ${to.modelId}: ${reason}]\n\n`,
+    detail: preSkipped
+      ? localizedText(language, 'Bekende actieve cooldown preventief overgeslagen.', 'Known active cooldown skipped preemptively.')
+      : message,
+    delta: localizedText(
+      language,
+      `\n\n[Doorgeschakeld van ${from.modelId} naar ${to.modelId}: ${reason}]\n\n`,
+      `\n\n[Switched from ${from.modelId} to ${to.modelId}: ${reason}]\n\n`,
+    ),
   });
   win?.webContents.send('fallback:switch', { requestId, from, to, reason, message, preSkipped });
 }
@@ -3705,7 +3923,7 @@ function recordRuntimeQuotaFailure(
       ? new Date(Date.now() + classified.rateLimit.retryAfterMs).toISOString()
       : new Date(Date.now() + 60_000).toISOString());
   const group = fallbackLimitGroupKey(modelRef);
-  const unavailable = makeUnavailableQuota(modelRef.provider, providerSurfaceForRef(modelRef), group, classified.message, 'runtime-error');
+  const unavailable = makeUnknownQuota(modelRef.provider, providerSurfaceForRef(modelRef), group, classified.message, 'runtime-error');
   const snapshot = {
     ...unavailable,
     // Een runtime-429 moet naast een periodiek opgehaalde providerstatus kunnen
@@ -3732,8 +3950,8 @@ function providerSurfaceForRef(modelRef: ModelRef): import('../src/providers/typ
 
 type TurnActionStatus = 'requested' | 'approved' | 'completed' | 'failed' | 'denied' | 'uncertain';
 
-function recordTurnExecutionActivity(turnId: string, activity: NativeToolActivity) {
-  const signature = nativeToolSignature(activity.toolName, activity.input);
+function recordTurnExecutionActivity(turnId: string, activity: NativeToolActivity, cwd?: string) {
+  const signature = nativeToolLedgerSignature(activity.toolName, activity.input, cwd);
   const now = new Date().toISOString();
   const status: TurnActionStatus = activity.phase === 'result'
     ? (activity.ok ? 'completed' : 'failed')
@@ -3754,12 +3972,12 @@ function recordTurnExecutionActivity(turnId: string, activity: NativeToolActivit
   });
 }
 
-function duplicateTurnAction(turnId: string, toolName: string, input: Record<string, unknown>) {
+function duplicateTurnAction(turnId: string, toolName: string, input: Record<string, unknown>, cwd?: string) {
   return getDb().prepare(`
     SELECT status, provider, output FROM turn_execution_actions
     WHERE turnId = ? AND signature = ? AND status IN ('completed', 'uncertain')
     ORDER BY updatedAt DESC LIMIT 1
-  `).get(turnId, nativeToolSignature(toolName, input)) as { status: TurnActionStatus; provider: string; output?: string } | undefined;
+  `).get(turnId, nativeToolLedgerSignature(toolName, input, cwd)) as { status: TurnActionStatus; provider: string; output?: string } | undefined;
 }
 
 function markPendingTurnActionsUncertain(turnId: string, provider: ProviderType) {
@@ -3769,7 +3987,7 @@ function markPendingTurnActionsUncertain(turnId: string, provider: ProviderType)
   `).run(new Date().toISOString(), turnId, provider);
 }
 
-function executionLedgerResumePrompt(turnId: string) {
+function executionLedgerResumePrompt(turnId: string, language: UiLanguage = 'nl') {
   const rows = getDb().prepare(`
     SELECT toolName, inputJson, status, output FROM turn_execution_actions
     WHERE turnId = ? AND status IN ('completed', 'uncertain') ORDER BY createdAt
@@ -3777,18 +3995,23 @@ function executionLedgerResumePrompt(turnId: string) {
   if (!rows.length) return '';
   const completed = rows.filter((row) => row.status === 'completed');
   const uncertain = rows.filter((row) => row.status === 'uncertain');
-  return [
-    'VEILIGE HERVATTING VAN DEZELFDE BEURT:',
-    'Voer voltooide exacte acties niet opnieuw uit; de app blokkeert duplicaten ook technisch.',
-    ...completed.map((row) => `- VOLTOOID ${row.toolName} ${row.inputJson}${row.output ? ` -> ${boundedString(row.output, 300, 'Tooluitvoer')}` : ''}`),
-    ...(uncertain.length ? ['Controleer onzekere acties eerst read-only; voer ze niet blind opnieuw uit.'] : []),
-    ...uncertain.map((row) => `- ONZEKER ${row.toolName} ${row.inputJson}`),
-    'Nieuwe muterende acties doorlopen de normale goedkeuring opnieuw.',
-  ].join('\n');
-}
-
-function nativeToolSignature(toolName: string, input: Record<string, unknown>) {
-  return `${toolName.trim().toLowerCase()}:${stableJson(input)}`;
+  return language === 'en'
+    ? [
+      'SAFE RESUMPTION OF THE SAME TURN:',
+      'Do not repeat exact actions that already completed; the app also blocks duplicates technically.',
+      ...completed.map((row) => `- COMPLETED ${row.toolName} ${row.inputJson}${row.output ? ` -> ${boundedString(row.output, 300, 'Tool output')}` : ''}`),
+      ...(uncertain.length ? ['Check uncertain actions read-only first; do not repeat them blindly.'] : []),
+      ...uncertain.map((row) => `- UNCERTAIN ${row.toolName} ${row.inputJson}`),
+      'New mutating actions go through the normal approval flow again.',
+    ].join('\n')
+    : [
+      'VEILIGE HERVATTING VAN DEZELFDE BEURT:',
+      'Voer voltooide exacte acties niet opnieuw uit; de app blokkeert duplicaten ook technisch.',
+      ...completed.map((row) => `- VOLTOOID ${row.toolName} ${row.inputJson}${row.output ? ` -> ${boundedString(row.output, 300, 'Tooluitvoer')}` : ''}`),
+      ...(uncertain.length ? ['Controleer onzekere acties eerst read-only; voer ze niet blind opnieuw uit.'] : []),
+      ...uncertain.map((row) => `- ONZEKER ${row.toolName} ${row.inputJson}`),
+      'Nieuwe muterende acties doorlopen de normale goedkeuring opnieuw.',
+    ].join('\n');
 }
 
 function stableJson(value: unknown): string {
@@ -3913,6 +4136,7 @@ async function getContextUsage(chatId: string, requestedModelRef?: ModelRef) {
       total: 0,
       percent: 0,
       source: 'unknown' as const,
+      windowSource: 'unknown' as const,
     };
   }
   const adapter = adapters[modelRef.provider] || adapters.codex;
@@ -3926,7 +4150,11 @@ async function getContextUsage(chatId: string, requestedModelRef?: ModelRef) {
     used,
     total,
     percent: total ? Math.round((used / total) * 100) : 0,
-    source: antigravityState?.context_window ? 'cli' as const : contextSourceForModel(modelRef.provider, model),
+    // countTokens kan bij providers intern terugvallen op een lokale schatting;
+    // zolang die API geen bronmetadata teruggeeft, claimen we dus niet dat het
+    // gebruikte aantal exact door de provider is gemeten.
+    source: 'estimate' as const,
+    windowSource: antigravityState?.context_window ? 'cli' as const : contextSourceForModel(modelRef.provider, model),
   };
 }
 
@@ -4135,6 +4363,7 @@ function toAttachmentRef(row: AttachmentRecord): AttachmentRef {
 }
 
 async function validateKeyBatch(win: BrowserWindow | null, keys: Array<{ key: string; provider?: ProviderType }>) {
+  const language = await resolvedUiLanguage();
   const unique = Array.from(new Map(keys.filter((item) => item.key).map((item) => [item.key.trim(), item])).values());
   const results: ValidationResult[] = [];
   const concurrency = 3;
@@ -4151,9 +4380,9 @@ async function validateKeyBatch(win: BrowserWindow | null, keys: Array<{ key: st
             keyMasked: maskKey(item.key),
             provider: 'unknown' as const,
             status: 'invalid' as const,
-            error: 'Unknown provider prefix.',
+            error: localizedText(language, 'Onbekend providerprefix.', 'Unknown provider prefix.'),
           }
-          : await adapters[provider].validateCredential(item.key);
+          : await adapters[provider].validateCredential(item.key, { language });
       results.push(result);
       win?.webContents.send('keys:validationResult', result);
       win?.webContents.send('keys:validationEvent', result);
@@ -4197,7 +4426,7 @@ async function setAgentConfig(config: { mode?: AgentApprovalMode; workingDir?: s
 
 // Tool parsing lives in the tested pure module src/components/agent-commands.ts.
 
-function assistantDisplayContentForToolReply(reply: string) {
+function assistantDisplayContentForToolReply(reply: string, language: UiLanguage = 'nl') {
   const toolCalls = parseAgentToolCalls(reply, { includeShellFences: false });
   if (!toolCalls.length) return reply;
 
@@ -4206,12 +4435,14 @@ function assistantDisplayContentForToolReply(reply: string) {
   const edits = toolCalls.filter((call) => call.type === 'file-edit').length;
   const commands = toolCalls.filter((call) => call.type === 'command').length;
   const parts = [
-    reads ? `${reads} bestand${reads === 1 ? '' : 'en'} lezen` : '',
-    creates ? `${creates} bestand${creates === 1 ? '' : 'en'} maken` : '',
-    edits ? `${edits} bestand${edits === 1 ? '' : 'en'} aanpassen` : '',
-    commands ? `${commands} commando${commands === 1 ? '' : "'s"} uitvoeren` : '',
+    reads ? localizedText(language, `${reads} bestand${reads === 1 ? '' : 'en'} lezen`, `read ${reads} file${reads === 1 ? '' : 's'}`) : '',
+    creates ? localizedText(language, `${creates} bestand${creates === 1 ? '' : 'en'} maken`, `create ${creates} file${creates === 1 ? '' : 's'}`) : '',
+    edits ? localizedText(language, `${edits} bestand${edits === 1 ? '' : 'en'} aanpassen`, `edit ${edits} file${edits === 1 ? '' : 's'}`) : '',
+    commands ? localizedText(language, `${commands} commando${commands === 1 ? '' : "'s"} uitvoeren`, `run ${commands} command${commands === 1 ? '' : 's'}`) : '',
   ].filter(Boolean);
-  return parts.length ? `Ik voer de gevraagde toolstappen uit: ${parts.join(', ')}.` : 'Ik voer de gevraagde toolstappen uit.';
+  return parts.length
+    ? localizedText(language, `Ik voer de gevraagde toolstappen uit: ${parts.join(', ')}.`, `I am carrying out the requested tool steps: ${parts.join(', ')}.`)
+    : localizedText(language, 'Ik voer de gevraagde toolstappen uit.', 'I am carrying out the requested tool steps.');
 }
 
 // After an assistant turn, if agent tools are enabled and the reply asked to run
@@ -4224,13 +4455,14 @@ async function runAgentToolLoop(
   firstReply: string,
   signal: AbortSignal,
   context: { requestId: string; anchorMessageId?: string },
+  language: UiLanguage = 'nl',
 ) {
   const agent = await getAgentConfig(chat);
   const agentToolSystemPrompt = (basePrompt?: string) => [
     basePrompt || '',
-    AGENT_TOOL_INSTRUCTIONS,
-    NATIVE_TOOL_RESPONSE_INSTRUCTIONS,
-    agentToolEnvironmentInstructions(agent.defaultShell),
+    agentToolInstructions(language),
+    nativeToolResponseInstructions(language),
+    agentToolEnvironmentInstructions(agent.defaultShell, process.platform, language),
   ].filter(Boolean).join('\n');
   const firstTools = parseAgentToolCalls(firstReply, { includeShellFences: false });
   const summary = { provider: modelRef.provider, toolsEnabled: agent.toolsEnabled, mode: agent.mode, toolCallsDetected: firstTools.length, sample: summarizeToolCall(firstTools[0]), replyHead: firstReply.slice(0, 200) };
@@ -4251,7 +4483,7 @@ async function runAgentToolLoop(
   // Hard safety cap on top of the no-progress/failure guards, so a model that emits a fresh
   // (but still broken) tool round every time can never loop forever.
   const MAX_TOOL_ROUNDS = 4;
-  const stopHint = 'Uitvoering gestopt: het model gaf opnieuw dezelfde ongeldige tool-opdracht.';
+  const stopHint = localizedText(language, 'Uitvoering gestopt: het model gaf opnieuw dezelfde ongeldige tool-opdracht.', 'Execution stopped: the model repeated the same invalid tool request.');
   for (let round = 0; round < MAX_TOOL_ROUNDS && !signal.aborted; round++) {
     if (signal.aborted) break;
     const toolCalls = parseAgentToolCalls(reply, { includeShellFences: false });
@@ -4262,13 +4494,16 @@ async function runAgentToolLoop(
       anchorMessageId: context.anchorMessageId,
       attempt: round + 1,
       agentMode: agent.mode,
+      language,
     };
     const loopActivityId = `${context.requestId}-tool-loop`;
     sendToolActivity(win, loopContext, {
       activityId: loopActivityId,
       phase: 'planning',
-      label: round === 0 ? 'Model plant toolstappen' : 'Model voert volgende toolstap uit',
-      detail: `Poging ${round + 1}: ${toolCalls.length} toolactie(s).`,
+      label: round === 0
+        ? localizedText(language, 'Model plant toolstappen', 'Model is planning tool steps')
+        : localizedText(language, 'Model voert volgende toolstap uit', 'Model is carrying out the next tool step'),
+      detail: localizedText(language, `Poging ${round + 1}: ${toolCalls.length} toolactie(s).`, `Attempt ${round + 1}: ${toolCalls.length} tool action(s).`),
       tone: 'running',
     });
 
@@ -4297,9 +4532,9 @@ async function runAgentToolLoop(
       sendToolActivity(win, loopContext, {
         activityId: loopActivityId,
         phase: 'stopped',
-        label: 'Uitvoering gestopt',
-        detail: 'Het model gaf opnieuw dezelfde ongeldige tool-opdracht.',
-        stopReason: 'Geen progress.',
+        label: localizedText(language, 'Uitvoering gestopt', 'Execution stopped'),
+        detail: localizedText(language, 'Het model gaf opnieuw dezelfde ongeldige tool-opdracht.', 'The model repeated the same invalid tool request.'),
+        stopReason: localizedText(language, 'Geen voortgang.', 'No progress.'),
         tone: 'failed',
       });
       break;
@@ -4314,12 +4549,12 @@ async function runAgentToolLoop(
     for (const call of toolCalls) {
       try {
         if (call.type === 'command') {
-          const commandValidation = validateModelCommand(call.command);
+          const commandValidation = validateModelCommand(call.command, language);
           if (!commandValidation.ok) {
-            toolResults.push({ text: `run ${call.command}\n[error] ${commandValidation.message || 'Ongeldig model-command.'}` });
+            toolResults.push({ text: `run ${call.command}\n[error] ${commandValidation.message || localizedText(language, 'Ongeldig model-command.', 'Invalid model command.')}` });
             continue;
           }
-          const skip = shouldSkipCommandForFailedFileTool(call.command, failedFilePathsThisRound);
+          const skip = shouldSkipCommandForFailedFileTool(call.command, failedFilePathsThisRound, language);
           if (skip.skip) {
             toolResults.push({ text: `run ${call.command}\n[error] ${skip.message}` });
             continue;
@@ -4331,6 +4566,7 @@ async function runAgentToolLoop(
           anchorMessageId: context.anchorMessageId,
           attempt: round + 1,
           agentMode: agent.mode,
+          language,
         });
         toolResults.push(result);
         if (call.type !== 'command' && isFailedFileToolResult(result.text)) {
@@ -4349,7 +4585,7 @@ async function runAgentToolLoop(
     for (const call of commandCalls) executedCommands.add(normalizeAgentCommand(call.command));
     for (const [index, call] of toolCalls.entries()) {
       const toolResult = toolResults[index];
-      if (!toolResult || isFailedFileToolResult(toolResult.text) || /\[geweigerd/i.test(toolResult.text)) continue;
+      if (!toolResult || isFailedFileToolResult(toolResult.text) || /\[(?:geweigerd|denied)/i.test(toolResult.text)) continue;
       if (call.type === 'command') {
         if (toolResult.run?.status === 'completed' && (toolResult.run.exitCode === 0 || toolResult.run.exitCode == null)) {
           successfullyExecutedCommands.push(call.command);
@@ -4381,8 +4617,8 @@ async function runAgentToolLoop(
     sendToolActivity(win, loopContext, {
       activityId: loopActivityId,
       phase: 'sending_output',
-      label: 'Stuurt output terug naar model',
-      detail: `${toolResults.length} toolresultaat/resultaten opgeslagen.`,
+      label: localizedText(language, 'Stuurt output terug naar model', 'Sending output back to model'),
+      detail: localizedText(language, `${toolResults.length} toolresultaat/resultaten opgeslagen.`, `${toolResults.length} tool result(s) saved.`),
       tone: 'running',
     });
 
@@ -4392,7 +4628,7 @@ async function runAgentToolLoop(
         id: crypto.randomUUID(),
         chatId: chat.id,
         role: 'assistant',
-        content: makeToolSummaryErrorContent('Uitvoering gestopt: goedkeuring is geweigerd.'),
+        content: makeToolSummaryErrorContent(localizedText(language, 'Uitvoering gestopt: goedkeuring is geweigerd.', 'Execution stopped: approval was denied.')),
         modelId: modelRef.modelId,
         provider: modelRef.provider,
         inputTokens: 0,
@@ -4405,8 +4641,8 @@ async function runAgentToolLoop(
       sendToolActivity(win, loopContext, {
         activityId: loopActivityId,
         phase: 'stopped',
-        label: 'Uitvoering gestopt',
-        detail: 'Goedkeuring is geweigerd.',
+        label: localizedText(language, 'Uitvoering gestopt', 'Execution stopped'),
+        detail: localizedText(language, 'Goedkeuring is geweigerd.', 'Approval was denied.'),
         stopReason: 'approval denied',
         tone: 'denied',
       });
@@ -4438,8 +4674,8 @@ async function runAgentToolLoop(
         sendToolActivity(win, loopContext, {
           activityId: loopActivityId,
           phase: 'stopped',
-          label: 'Uitvoering gestopt',
-          detail: 'Het model gaf opnieuw dezelfde ongeldige tool-opdracht.',
+          label: localizedText(language, 'Uitvoering gestopt', 'Execution stopped'),
+          detail: localizedText(language, 'Het model gaf opnieuw dezelfde ongeldige tool-opdracht.', 'The model repeated the same invalid tool request.'),
           stopReason: 'repeat failure',
           tone: 'failed',
         });
@@ -4454,18 +4690,18 @@ async function runAgentToolLoop(
         sendToolActivity(win, loopContext, {
           activityId: loopActivityId,
           phase: 'repairing',
-          label: 'Model herstelt fout',
-          detail: 'Echte tool-output is teruggestuurd naar het model.',
+          label: localizedText(language, 'Model herstelt fout', 'Model is repairing an error'),
+          detail: localizedText(language, 'Echte tool-output is teruggestuurd naar het model.', 'Real tool output was sent back to the model.'),
           tone: 'running',
         });
-        followMessages.push({ role: 'user', content: buildToolFailureRepairPrompt(toolResults) });
+        followMessages.push({ role: 'user', content: buildToolFailureRepairPrompt(toolResults, language) });
         agentLog('toolLoop', { event: 'failure-repair-request', round, results: toolResults.map((item) => item.run ? { command: item.run.command, status: item.run.status, exitCode: item.run.exitCode } : { text: item.text.slice(0, 120) }) });
       } else {
         sendToolActivity(win, loopContext, {
           activityId: loopActivityId,
           phase: 'summarizing',
-          label: 'Model controleert resultaat',
-          detail: 'Het model controleert of de volledige opdracht aantoonbaar is afgerond.',
+          label: localizedText(language, 'Model controleert resultaat', 'Model is checking the result'),
+          detail: localizedText(language, 'Het model controleert of de volledige opdracht aantoonbaar is afgerond.', 'The model is checking whether the full task is demonstrably complete.'),
           tone: 'running',
         });
         const missingExecutionPaths = missingRequestedFileExecutions(
@@ -4482,7 +4718,7 @@ async function runAgentToolLoop(
           content: buildToolSuccessSummaryPrompt(toolResults, {
             missingExecutionPaths,
             verifiedAllRequestedExecutions,
-          }),
+          }, language),
         });
         agentLog('toolLoop', { event: 'success-completion-check', round, results: toolResults.map((item) => item.run ? { command: item.run.command, status: item.run.status, exitCode: item.run.exitCode } : { text: item.text.slice(0, 120) }) });
       }
@@ -4495,9 +4731,10 @@ async function runAgentToolLoop(
           : assembled.systemPrompt,
         attachments: [],
         signal,
+        language,
       });
     } catch (error) {
-      const classified = classifyProviderError(error);
+      const classified = classifyProviderError(error, language);
       agentLog('toolLoop-summary-error', { model: `${modelRef.provider}:${modelRef.modelId}`, message: classified.message });
       insertMessage({
         id: crypto.randomUUID(),
@@ -4517,7 +4754,7 @@ async function runAgentToolLoop(
       sendToolActivity(win, loopContext, {
         activityId: loopActivityId,
         phase: 'stopped',
-        label: 'Uitvoering gestopt',
+        label: localizedText(language, 'Uitvoering gestopt', 'Execution stopped'),
         detail: classified.message,
         stopReason: classified.message,
         tone: 'failed',
@@ -4530,8 +4767,8 @@ async function runAgentToolLoop(
       sendToolActivity(win, loopContext, {
         activityId: loopActivityId,
         phase: 'repairing',
-        label: 'Model herstelt tool-opdracht',
-        detail: 'De vorige tool-tag was onvolledig en wordt opnieuw in strict formaat gevraagd.',
+        label: localizedText(language, 'Model herstelt tool-opdracht', 'Model is repairing the tool request'),
+        detail: localizedText(language, 'De vorige tool-tag was onvolledig en wordt opnieuw in strict formaat gevraagd.', 'The previous tool tag was incomplete and is being requested again in strict format.'),
         tone: 'running',
       });
       try {
@@ -4541,17 +4778,18 @@ async function runAgentToolLoop(
           messages: [
             ...followMessages,
             { role: 'assistant', content: result.text },
-            { role: 'user', content: buildToolSyntaxRepairPrompt({ badReply: result.text, completedResults: toolResults }) },
+            { role: 'user', content: buildToolSyntaxRepairPrompt({ badReply: result.text, completedResults: toolResults }, language) },
           ],
           systemPrompt: agent.toolsEnabled
             ? agentToolSystemPrompt(assembled.systemPrompt)
             : assembled.systemPrompt,
           attachments: [],
           signal,
+          language,
         });
         const repairedTools = parseAgentToolCalls(syntaxRepairResult.text, { includeShellFences: false });
         if (isNoToolsReply(syntaxRepairResult.text) || !repairedTools.length || hasUnparsedToolMarkup(syntaxRepairResult.text)) {
-          const message = 'Uitvoering niet afgerond: het model gaf opnieuw geen geldige tool-opdracht.';
+          const message = localizedText(language, 'Uitvoering niet afgerond: het model gaf opnieuw geen geldige tool-opdracht.', 'Execution not completed: the model again provided no valid tool request.');
           insertMessage({
             id: crypto.randomUUID(), chatId: chat.id, role: 'assistant',
             content: makeToolSummaryErrorContent(message), modelId: syntaxRepairResult.modelRef.modelId,
@@ -4561,7 +4799,7 @@ async function runAgentToolLoop(
           });
           win?.webContents.send('chat:refresh', { chatId: chat.id });
           sendToolActivity(win, loopContext, {
-            activityId: loopActivityId, phase: 'stopped', label: 'Uitvoering gestopt',
+            activityId: loopActivityId, phase: 'stopped', label: localizedText(language, 'Uitvoering gestopt', 'Execution stopped'),
             detail: message, stopReason: 'malformed tool markup', tone: 'failed',
           });
           break;
@@ -4573,8 +4811,8 @@ async function runAgentToolLoop(
         };
         nextToolCalls = repairedTools;
       } catch (error) {
-        const classified = classifyProviderError(error);
-        const message = `Tool-opdracht herstellen mislukt: ${classified.message}`;
+        const classified = classifyProviderError(error, language);
+        const message = localizedText(language, `Tool-opdracht herstellen mislukt: ${classified.message}`, `Repairing the tool request failed: ${classified.message}`);
         insertMessage({
           id: crypto.randomUUID(), chatId: chat.id, role: 'assistant',
           content: makeToolSummaryErrorContent(message), modelId: result.modelRef.modelId,
@@ -4584,7 +4822,7 @@ async function runAgentToolLoop(
         });
         win?.webContents.send('chat:refresh', { chatId: chat.id });
         sendToolActivity(win, loopContext, {
-          activityId: loopActivityId, phase: 'stopped', label: 'Uitvoering gestopt',
+          activityId: loopActivityId, phase: 'stopped', label: localizedText(language, 'Uitvoering gestopt', 'Execution stopped'),
           detail: message, stopReason: classified.message, tone: 'failed',
         });
         break;
@@ -4592,8 +4830,8 @@ async function runAgentToolLoop(
     }
     if (failedToolResult && (isNoFixReply(result.text) || !nextToolCalls.length)) {
       const message = isNoFixReply(result.text)
-        ? 'Uitvoering niet afgerond: het model gaf aan geen veilige fix te kunnen maken.'
-        : 'Uitvoering niet afgerond: het model gaf geen geldige fix-opdracht.';
+        ? localizedText(language, 'Uitvoering niet afgerond: het model gaf aan geen veilige fix te kunnen maken.', 'Execution not completed: the model said it could not make a safe fix.')
+        : localizedText(language, 'Uitvoering niet afgerond: het model gaf geen geldige fix-opdracht.', 'Execution not completed: the model did not provide a valid fix request.');
       agentLog('toolLoop', { event: 'failure-repair-missing-tags', round, replyHead: result.text.slice(0, 240) });
       const repairFailureMessage: Message = {
         id: crypto.randomUUID(),
@@ -4616,7 +4854,7 @@ async function runAgentToolLoop(
       sendToolActivity(win, loopContext, {
         activityId: loopActivityId,
         phase: 'stopped',
-        label: 'Uitvoering gestopt',
+        label: localizedText(language, 'Uitvoering gestopt', 'Execution stopped'),
         detail: message,
         stopReason: message,
         tone: 'failed',
@@ -4631,11 +4869,14 @@ async function runAgentToolLoop(
         count: continuation.pendingCount,
         calls: nextToolCalls.map(summarizeToolCall),
       });
+      const continuationMessage = localizedText(language,
+        continuation.message,
+        `Execution stopped after ${MAX_TOOL_ROUNDS} tool rounds with ${continuation.pendingCount} pending tool action(s).`);
       const limitMessage: Message = {
         id: crypto.randomUUID(),
         chatId: chat.id,
         role: 'assistant',
-        content: makeToolSummaryErrorContent(continuation.message),
+        content: makeToolSummaryErrorContent(continuationMessage),
         modelId: result.modelRef.modelId,
         provider: result.modelRef.provider,
         inputTokens: result.usage.inputTokens,
@@ -4652,8 +4893,8 @@ async function runAgentToolLoop(
       sendToolActivity(win, loopContext, {
         activityId: loopActivityId,
         phase: 'stopped',
-        label: 'Veiligheidsgrens bereikt',
-        detail: continuation.message,
+        label: localizedText(language, 'Veiligheidsgrens bereikt', 'Safety limit reached'),
+        detail: continuationMessage,
         stopReason: 'tool round limit',
         tone: 'failed',
       });
@@ -4669,8 +4910,8 @@ async function runAgentToolLoop(
       chatId: chat.id,
       role: 'assistant',
       content: successfulCommandRun
-        ? compactToolSummaryForDisplay(assistantDisplayContentForToolReply(result.text))
-        : assistantDisplayContentForToolReply(result.text),
+        ? compactToolSummaryForDisplay(assistantDisplayContentForToolReply(result.text, language), 1_800, language)
+        : assistantDisplayContentForToolReply(result.text, language),
       modelId: result.modelRef.modelId,
       provider: result.modelRef.provider,
       inputTokens: result.usage.inputTokens,
@@ -4687,8 +4928,8 @@ async function runAgentToolLoop(
     sendToolActivity(win, loopContext, {
       activityId: loopActivityId,
       phase: 'done',
-      label: 'Klaar',
-      detail: 'Tool-output is verwerkt door het model.',
+      label: localizedText(language, 'Klaar', 'Done'),
+      detail: localizedText(language, 'Tool-output is verwerkt door het model.', 'Tool output was processed by the model.'),
       tone: 'ok',
     });
     reply = result.text;
@@ -4701,6 +4942,7 @@ async function executeAgentToolCall(
   projectCwd?: string,
   context?: AgentToolRunContext,
 ): Promise<{ text: string; run?: CommandRun }> {
+  const language = context?.language || 'nl';
   if (call.type === 'command') {
     const res = await runAgentCommand(win, call.command, {
       cwd: projectCwd,
@@ -4712,7 +4954,7 @@ async function executeAgentToolCall(
       silentApproval: context?.silentApproval,
     });
     const body = res.denied
-      ? '[geweigerd door gebruiker]'
+      ? localizedText(language, '[geweigerd door gebruiker]', '[denied by user]')
       : [res.stdout, res.stderr].filter(Boolean).join('\n') || `[exit ${res.code}]`;
     return { text: `$ ${res.run?.command || call.command}\n${body}`, run: res.run };
   }
@@ -4722,24 +4964,26 @@ async function executeAgentToolCall(
   if (call.type === 'file-read') {
     return executeAgentFileRead(win, call, root, context);
   }
-  const normalized = normalizeFileToolPayload(call);
+  const normalized = normalizeFileToolPayload(call, language);
   const normalizedCall = normalized.call;
-  const target = resolveProjectFilePath(root, normalizedCall.path);
+  const target = resolveProjectFilePath(root, normalizedCall.path, language);
   const label = normalizedCall.type === 'file-create' ? `file-create ${normalizedCall.path}` : `file-edit ${normalizedCall.path}`;
   const normalizationNote = normalized.changed && normalized.message ? `[normalized] ${normalized.message}\n` : '';
-  const validation = validateFileToolPayload(normalizedCall);
+  const validation = validateFileToolPayload(normalizedCall, language);
   // Keep the marker: downstream repair/skip logic relies on it and sends this
   // exact tool output back to the model for the next repair turn.
-  if (!validation.ok) return { text: `${label}\n[invalid file payload] ${validation.message || 'Ongeldige file-tool inhoud.'}` };
+  if (!validation.ok) return { text: `${label}\n[invalid file payload] ${validation.message || localizedText(language, 'Ongeldige file-tool inhoud.', 'Invalid file-tool contents.')}` };
   const approved = await requestAgentApproval(win, label, root, {
     kind: normalizedCall.type,
-    label: normalizedCall.type === 'file-create' ? 'Bestand maken' : 'Bestand wijzigen',
+    label: normalizedCall.type === 'file-create'
+      ? localizedText(language, 'Bestand maken', 'Create file')
+      : localizedText(language, 'Bestand wijzigen', 'Edit file'),
     path: normalizedCall.path,
     context,
     activityId: `${context?.requestId || 'file'}-${normalizedCall.type}-${normalizedCall.path}`,
     silent: context?.silentApproval,
   });
-  if (!approved) return { text: `${label}\n[geweigerd door gebruiker]` };
+  if (!approved) return { text: `${label}\n${localizedText(language, '[geweigerd door gebruiker]', '[denied by user]')}` };
   context?.onFileMutationApproved?.(normalizedCall, root);
 
   if (normalizedCall.type === 'file-create') {
@@ -4752,28 +4996,28 @@ async function executeAgentToolCall(
       if (error?.code === 'EEXIST') {
         const current = await fs.promises.readFile(target, 'utf8').catch(() => null);
         if (current === normalizedCall.content) {
-          return { text: `${label}\n${normalizationNote}exists unchanged ${path.relative(root, target)} (${normalizedCall.content.length} chars)${formatFileToolContentPreview(normalizedCall.path, normalizedCall.content)}` };
+          return { text: `${label}\n${normalizationNote}${fileUnchangedDetail(path.relative(root, target), normalizedCall.content.length, language)}${formatFileToolContentPreview(normalizedCall.path, normalizedCall.content, language)}` };
         }
-        return { text: `${label}\n[geen wijziging] Bestand bestaat al. Gebruik overwrite="true" als overschrijven bedoeld is.` };
+        return { text: `${label}\n${localizedText(language, '[geen wijziging] Bestand bestaat al. Gebruik overwrite="true" als overschrijven bedoeld is.', '[no change] File already exists. Use overwrite="true" when overwriting is intended.')}` };
       }
       throw error;
     }
-    return { text: `${label}\n${normalizationNote}created ${path.relative(root, target)} (${normalizedCall.content.length} chars)${formatFileToolContentPreview(normalizedCall.path, normalizedCall.content)}` };
+    return { text: `${label}\n${normalizationNote}${fileCreatedDetail(path.relative(root, target), normalizedCall.content.length, language)}${formatFileToolContentPreview(normalizedCall.path, normalizedCall.content, language)}` };
   }
 
   await assertRealPathInsideRoot(root, target, false);
   const current = await fs.promises.readFile(target, 'utf8');
-  if (!current.includes(normalizedCall.oldText)) return { text: `${label}\n[geen wijziging] old= tekst niet gevonden` };
+  if (!current.includes(normalizedCall.oldText)) return { text: `${label}\n${localizedText(language, '[geen wijziging] old= tekst niet gevonden', '[no change] old= text not found')}` };
   const next = normalizedCall.replaceAll
     ? current.split(normalizedCall.oldText).join(normalizedCall.newText)
     : current.replace(normalizedCall.oldText, normalizedCall.newText);
   await fs.promises.writeFile(target, next, 'utf8');
   return {
-    text: `${label}\n${normalizationNote}edited ${path.relative(root, target)} (${next.length - current.length >= 0 ? '+' : ''}${next.length - current.length} chars)${formatFileToolEditDiff(normalizedCall.oldText, normalizedCall.newText)}${formatFileToolContentPreview(normalizedCall.path, next)}`,
+    text: `${label}\n${normalizationNote}${fileEditedDetail(path.relative(root, target), next.length - current.length, language)}${formatFileToolEditDiff(normalizedCall.oldText, normalizedCall.newText, language)}${formatFileToolContentPreview(normalizedCall.path, next, language)}`,
   };
 }
 
-function formatFileToolContentPreview(filePath: string, content: string) {
+function formatFileToolContentPreview(filePath: string, content: string, language: UiLanguage = 'nl') {
   const ext = path.extname(filePath).toLowerCase();
   const textLike = new Set([
     '.bat', '.cmd', '.ps1', '.py', '.js', '.jsx', '.ts', '.tsx', '.json', '.html', '.css',
@@ -4784,11 +5028,13 @@ function formatFileToolContentPreview(filePath: string, content: string) {
   const normalized = content.replace(/^\uFEFF/, '');
   const maxChars = 8000;
   const truncated = normalized.length > maxChars;
-  const preview = truncated ? `${normalized.slice(0, maxChars)}\n... [afgekapt: ${normalized.length - maxChars} chars extra]` : normalized;
-  return `\n\n--- bestandsinhoud ---\n${preview}`;
+  const preview = truncated
+    ? `${normalized.slice(0, maxChars)}\n... ${localizedText(language, `[afgekapt: ${normalized.length - maxChars} chars extra]`, `[truncated: ${normalized.length - maxChars} extra chars]`)}`
+    : normalized;
+  return `\n\n--- ${localizedText(language, 'bestandsinhoud', 'file contents')} ---\n${preview}`;
 }
 
-function formatFileToolEditDiff(oldText: string, newText: string) {
+function formatFileToolEditDiff(oldText: string, newText: string, language: UiLanguage = 'nl') {
   const oldLines = splitPreviewLines(oldText);
   const newLines = splitPreviewLines(newText);
   const maxLines = 240;
@@ -4798,9 +5044,9 @@ function formatFileToolEditDiff(oldText: string, newText: string) {
   ];
   const truncated = lines.length > maxLines;
   const preview = truncated
-    ? [...lines.slice(0, maxLines), ` ... [afgekapt: ${lines.length - maxLines} diffregels extra]`]
+    ? [...lines.slice(0, maxLines), ` ... ${localizedText(language, `[afgekapt: ${lines.length - maxLines} diffregels extra]`, `[truncated: ${lines.length - maxLines} extra diff lines]`)}`]
     : lines;
-  return preview.length ? `\n\n--- wijziging ---\n${preview.join('\n')}` : '';
+  return preview.length ? `\n\n--- ${localizedText(language, 'wijziging', 'change')} ---\n${preview.join('\n')}` : '';
 }
 
 function splitPreviewLines(text: string) {
@@ -4815,33 +5061,34 @@ async function executeAgentFileRead(
   root: string,
   context?: AgentToolRunContext,
 ): Promise<{ text: string }> {
-  const target = resolveProjectFilePath(root, call.path);
+  const language = context?.language || 'nl';
+  const target = resolveProjectFilePath(root, call.path, language);
   const label = `file-read ${call.path}`;
   const approved = await requestAgentApproval(win, label, root, {
     kind: 'file-read',
-    label: 'Bestand lezen',
+    label: localizedText(language, 'Bestand lezen', 'Read file'),
     path: call.path,
     context,
     activityId: `${context?.requestId || 'file'}-file-read-${call.path}`,
     silent: context?.silentApproval,
   });
-  if (!approved) return { text: `${label}\n[geweigerd door gebruiker]` };
+  if (!approved) return { text: `${label}\n${localizedText(language, '[geweigerd door gebruiker]', '[denied by user]')}` };
 
   await assertRealPathInsideRoot(root, target, false);
   const stat = await fs.promises.stat(target);
-  if (!stat.isFile()) return { text: `${label}\n[error] Pad is geen bestand.` };
+  if (!stat.isFile()) return { text: `${label}\n[error] ${localizedText(language, 'Pad is geen bestand.', 'Path is not a file.')}` };
   if (stat.size > FILE_READ_TOOL_MAX_BYTES) {
-    return { text: `${label}\n[error] Bestand is te groot om direct in de chat te lezen (${formatBytes(stat.size)}). Upload het bestand als bijlage of lees een kleiner bestand.` };
+    return { text: `${label}\n[error] ${localizedText(language, `Bestand is te groot om direct in de chat te lezen (${formatBytes(stat.size)}). Upload het bestand als bijlage of lees een kleiner bestand.`, `File is too large to read directly in chat (${formatBytes(stat.size)}). Upload it as an attachment or read a smaller file.`)}` };
   }
 
   const buffer = await fs.promises.readFile(target);
   if (looksLikeBinary(buffer)) {
-    return { text: `${label}\n[error] Bestand lijkt binair. Upload het bestand als bijlage als je wilt dat het model het verwerkt.` };
+    return { text: `${label}\n[error] ${localizedText(language, 'Bestand lijkt binair. Upload het bestand als bijlage als je wilt dat het model het verwerkt.', 'File appears to be binary. Upload it as an attachment if you want the model to process it.')}` };
   }
 
   const content = buffer.toString('utf8').replace(/^\uFEFF/, '');
   return {
-    text: `${label}\nread ${path.relative(root, target)} (${content.length} chars)${formatFileToolContentPreview(call.path, content)}`,
+    text: `${label}\n${fileReadDetail(path.relative(root, target), content.length, language)}${formatFileToolContentPreview(call.path, content, language)}`,
   };
 }
 
@@ -4870,6 +5117,7 @@ async function executePostToolFollowup(
     attachments: AttachmentRecord[];
     signal: AbortSignal;
     suppressDeltas?: boolean;
+    language: UiLanguage;
   },
 ) {
   const chatgptSubscription = isChatGptSubscriptionModel(options.initialModelRef);
@@ -4887,13 +5135,13 @@ async function executePostToolFollowup(
     });
   } catch (error) {
     if (timedOut) {
-      throw new ProviderRuntimeError('Samenvatting overgeslagen: ChatGPT web-engine reageerde niet snel genoeg. De tool-uitvoer staat hierboven.', 'provider_error');
+      throw new ProviderRuntimeError(localizedText(options.language, 'Samenvatting overgeslagen: ChatGPT web-engine reageerde niet snel genoeg. De tool-uitvoer staat hierboven.', 'Summary skipped: the ChatGPT web engine did not respond quickly enough. The tool output is shown above.'), 'provider_error');
     }
     const message = (error as any)?.message || String(error);
     if (!chatgptSubscription || !/composer|web-engine|geen antwoord|stream/i.test(message)) throw error;
 
     agentLog('chatgpt-summary-skipped', message.slice(0, 400));
-    throw new ProviderRuntimeError(`Samenvatting overgeslagen: ${message}`, 'provider_error');
+    throw new ProviderRuntimeError(localizedText(options.language, `Samenvatting overgeslagen: ${message}`, `Summary skipped: ${message}`), 'provider_error');
   } finally {
     timeout?.dispose();
   }
@@ -4917,6 +5165,7 @@ async function requestAgentApproval(
   } = {},
 ) {
   const config = await getAgentConfig(options.context);
+  const language = options.context?.language || 'nl';
   // Een vrij shellcommando kan vanuit de juiste cwd alsnog absolute paden buiten
   // het project benaderen. Auto-project geldt daarom alleen voor bestandstools
   // waarvan het canonieke doelpad aantoonbaar binnen de root blijft.
@@ -4929,11 +5178,17 @@ async function requestAgentApproval(
     // Auto-approve modes show no popup by design — but surface it in the activity feed so the
     // user can SEE why nothing was asked (transparency: the chosen mode is in effect).
     if (win && !win.isDestroyed() && options.context && !options.silent) {
-      const modeLabel = config.mode === 'full' ? 'Volledige toegang' : 'Auto in werkmap';
+      const modeLabel = config.mode === 'full'
+        ? localizedText(language, 'Volledige toegang', 'Full access')
+        : localizedText(language, 'Auto in werkmap', 'Auto in workspace');
       sendToolActivity(win, options.context, {
         activityId: options.activityId || `approval-${crypto.randomUUID()}`,
         phase: 'approval_approved',
-        label: `Automatisch goedgekeurd (${modeLabel}): ${options.label || approvalLabelForKind(options.kind || 'command')}`,
+        label: localizedText(
+          language,
+          `Automatisch goedgekeurd (${modeLabel}): ${options.label || approvalLabelForKind(options.kind || 'command', language)}`,
+          `Automatically approved (${modeLabel}): ${options.label || approvalLabelForKind(options.kind || 'command', language)}`,
+        ),
         detail: command,
         approvalStatus: 'approved',
         tone: 'ok',
@@ -4944,14 +5199,14 @@ async function requestAgentApproval(
   if (!win || win.isDestroyed()) return false;
   const id = crypto.randomUUID();
   const kind = options.kind || 'command';
-  const label = options.label || approvalLabelForKind(kind);
+  const label = options.label || approvalLabelForKind(kind, language);
   const activityId = options.activityId || `approval-${id}`;
   agentLog('toolApproval', `requesting approval ${id} (hasWin=${!!win})`);
   if (!options.silent) {
     sendToolActivity(win, options.context, {
       activityId,
       phase: 'approval_pending',
-      label: `Wacht op goedkeuring: ${label}`,
+      label: localizedText(language, `Wacht op goedkeuring: ${label}`, `Waiting for approval: ${label}`),
       detail: command,
       approvalStatus: 'pending',
       tone: 'running',
@@ -4987,11 +5242,13 @@ async function requestAgentApproval(
             activityId,
             phase: approved ? 'approval_approved' : 'approval_denied',
             label: approved
-              ? `Goedgekeurd: ${label}`
+              ? localizedText(language, `Goedgekeurd: ${label}`, `Approved: ${label}`)
               : reason === 'cancelled'
-                ? `Gestopt: ${label}`
-                : `Geweigerd: ${label}`,
-            detail: reason === 'cancelled' ? 'De beurt is gestopt voordat toestemming werd gegeven.' : command,
+                ? localizedText(language, `Gestopt: ${label}`, `Stopped: ${label}`)
+                : localizedText(language, `Geweigerd: ${label}`, `Denied: ${label}`),
+            detail: reason === 'cancelled'
+              ? localizedText(language, 'De beurt is gestopt voordat toestemming werd gegeven.', 'The turn was stopped before permission was granted.')
+              : command,
             approvalStatus: approved ? 'approved' : 'denied',
             tone: approved ? 'ok' : 'denied',
           });
@@ -5007,11 +5264,11 @@ async function requestAgentApproval(
   });
 }
 
-function approvalLabelForKind(kind: AgentApprovalKind) {
-  if (kind === 'file-read') return 'Bestand lezen';
-  if (kind === 'file-create') return 'Bestand maken';
-  if (kind === 'file-edit') return 'Bestand wijzigen';
-  return 'Commando uitvoeren';
+function approvalLabelForKind(kind: AgentApprovalKind, language: UiLanguage = 'nl') {
+  if (kind === 'file-read') return localizedText(language, 'Bestand lezen', 'Read file');
+  if (kind === 'file-create') return localizedText(language, 'Bestand maken', 'Create file');
+  if (kind === 'file-edit') return localizedText(language, 'Bestand wijzigen', 'Edit file');
+  return localizedText(language, 'Commando uitvoeren', 'Run command');
 }
 
 // Vertaal provider-eigen toolnamen naar de app-approval (kind + label + pad), zodat
@@ -5019,6 +5276,7 @@ function approvalLabelForKind(kind: AgentApprovalKind) {
 function describeNativeTool(
   toolName: string,
   input: Record<string, unknown>,
+  language: UiLanguage = 'nl',
 ): { kind: AgentApprovalKind; label: string; command: string; path?: string; paths?: string[] } {
   const filePaths = Array.isArray(input.file_paths)
     ? input.file_paths.filter((value): value is string => typeof value === 'string' && !!value.trim())
@@ -5033,10 +5291,32 @@ function describeNativeTool(
   const normalizedName = toolName.toLowerCase();
   const allFilePaths = filePaths.length ? filePaths : filePath ? [filePath] : [];
   const fileCommand = allFilePaths.length ? allFilePaths.join('\n') : fallback;
-  if (['write', 'write_file', 'write_to_file'].includes(normalizedName)) return { kind: 'file-create', label: 'Bestand maken/overschrijven', command: fileCommand || 'nieuw bestand', path: allFilePaths[0], paths: allFilePaths };
-  if (['edit', 'multiedit', 'notebookedit', 'edit_file', 'replace_file_content', 'multi_replace_file_content'].includes(normalizedName)) return { kind: 'file-edit', label: 'Bestand wijzigen', command: fileCommand || 'bestand', path: allFilePaths[0], paths: allFilePaths };
-  if (['read', 'glob', 'grep', 'read_file', 'view_file', 'list_dir', 'search'].includes(normalizedName)) return { kind: 'file-read', label: 'Lezen/zoeken', command: fileCommand || String(input.pattern || input.query || ''), path: allFilePaths[0], paths: allFilePaths };
-  if (['bash', 'powershell', 'run_command', 'run_shell_command', 'command'].includes(normalizedName)) return { kind: 'command', label: 'Commando uitvoeren', command: typeof input.command === 'string' ? input.command : typeof input.CommandLine === 'string' ? input.CommandLine : toolName };
+  if (['write', 'write_file', 'write_to_file'].includes(normalizedName)) return {
+    kind: 'file-create',
+    label: localizedText(language, 'Bestand maken/overschrijven', 'Create/overwrite file'),
+    command: fileCommand || localizedText(language, 'nieuw bestand', 'new file'),
+    path: allFilePaths[0],
+    paths: allFilePaths,
+  };
+  if (['edit', 'multiedit', 'notebookedit', 'edit_file', 'replace_file_content', 'multi_replace_file_content'].includes(normalizedName)) return {
+    kind: 'file-edit',
+    label: localizedText(language, 'Bestand wijzigen', 'Edit file'),
+    command: fileCommand || localizedText(language, 'bestand', 'file'),
+    path: allFilePaths[0],
+    paths: allFilePaths,
+  };
+  if (['read', 'glob', 'grep', 'read_file', 'view_file', 'list_dir', 'search'].includes(normalizedName)) return {
+    kind: 'file-read',
+    label: localizedText(language, 'Lezen/zoeken', 'Read/search'),
+    command: fileCommand || String(input.pattern || input.query || ''),
+    path: allFilePaths[0],
+    paths: allFilePaths,
+  };
+  if (['bash', 'powershell', 'run_command', 'run_shell_command', 'command'].includes(normalizedName)) return {
+    kind: 'command',
+    label: localizedText(language, 'Commando uitvoeren', 'Run command'),
+    command: typeof input.command === 'string' ? input.command : typeof input.CommandLine === 'string' ? input.CommandLine : toolName,
+  };
   return { kind: 'command', label: toolName, command: typeof input.command === 'string' ? input.command : JSON.stringify(input).slice(0, 200) };
 }
 
@@ -5124,6 +5404,7 @@ function nativeFileReviewOutput(
   requestedPath: string,
   before: string | null | undefined,
   after: string | null | undefined,
+  language: UiLanguage = 'nl',
 ): { kind: 'file-read' | 'file-create' | 'file-edit'; path: string; output: string } | null {
   if (typeof after !== 'string') return null;
   const absolute = path.isAbsolute(requestedPath) ? path.resolve(requestedPath) : path.resolve(root, requestedPath);
@@ -5134,29 +5415,30 @@ function nativeFileReviewOutput(
     return {
       kind: 'file-read',
       path: displayPath,
-      output: `file-read ${displayPath}\nread ${displayPath} (${after.length} chars)${formatFileToolContentPreview(displayPath, after)}`,
+      output: `file-read ${displayPath}\n${fileReadDetail(displayPath, after.length, language)}${formatFileToolContentPreview(displayPath, after, language)}`,
     };
   }
   if (before === undefined) return null;
 
   const kind = before === null ? 'file-create' : 'file-edit';
   const original = before || '';
-  const diff = changedLineDiff(original, after);
+  const diff = changedLineDiff(original, after, 240, language);
   if (!diff.length) {
     return {
       kind,
       path: displayPath,
-      output: `${kind} ${displayPath}\nexists unchanged ${displayPath} (${after.length} chars)`,
+      output: `${kind} ${displayPath}\n${fileUnchangedDetail(displayPath, after.length, language)}`,
     };
   }
   const delta = after.length - original.length;
-  const verb = kind === 'file-create' ? 'created' : 'edited';
-  const size = kind === 'file-create' ? `${after.length} chars` : `${delta >= 0 ? '+' : ''}${delta} chars`;
+  const detail = kind === 'file-create'
+    ? fileCreatedDetail(displayPath, after.length, language)
+    : fileEditedDetail(displayPath, delta, language);
   const diffText = diff.map((line) => `${line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}${line.text}`).join('\n');
   return {
     kind,
     path: displayPath,
-    output: `${kind} ${displayPath}\n${verb} ${displayPath} (${size})\n\n--- wijziging ---\n${diffText}`,
+    output: `${kind} ${displayPath}\n${detail}\n\n--- ${localizedText(language, 'wijziging', 'change')} ---\n${diffText}`,
   };
 }
 
@@ -5177,15 +5459,15 @@ function unquoteNativeValue(value: string): string {
   return trimmed;
 }
 
-function nativeToolCallFrom(toolName: string, input: Record<string, unknown>): AgentToolCall {
+function nativeToolCallFrom(toolName: string, input: Record<string, unknown>, language: UiLanguage = 'nl'): AgentToolCall {
   const name = toolName.toLowerCase();
   const filePath = firstNativeString(input, ['path', 'file_path', 'TargetFile', 'AbsolutePath']);
   if (['read_file', 'read', 'view_file'].includes(name)) {
-    if (!filePath) throw new Error('Native read_file mist een pad.');
+    if (!filePath) throw new Error(localizedText(language, 'Native read_file mist een pad.', 'Native read_file is missing a path.'));
     return { type: 'file-read', path: filePath };
   }
   if (['write_file', 'write', 'write_to_file'].includes(name)) {
-    if (!filePath) throw new Error('Native write_file mist een pad.');
+    if (!filePath) throw new Error(localizedText(language, 'Native write_file mist een pad.', 'Native write_file is missing a path.'));
     return {
       type: 'file-create',
       path: filePath,
@@ -5194,7 +5476,7 @@ function nativeToolCallFrom(toolName: string, input: Record<string, unknown>): A
     };
   }
   if (['edit_file', 'edit', 'replace_file_content'].includes(name)) {
-    if (!filePath) throw new Error('Native edit_file mist een pad.');
+    if (!filePath) throw new Error(localizedText(language, 'Native edit_file mist een pad.', 'Native edit_file is missing a path.'));
     return {
       type: 'file-edit',
       path: filePath,
@@ -5205,12 +5487,12 @@ function nativeToolCallFrom(toolName: string, input: Record<string, unknown>): A
   }
   if (['run_command', 'run_shell_command', 'bash', 'powershell', 'command'].includes(name)) {
     const command = firstNativeString(input, ['command', 'CommandLine']);
-    if (!command) throw new Error('Native run_command mist een commando.');
+    if (!command) throw new Error(localizedText(language, 'Native run_command mist een commando.', 'Native run_command is missing a command.'));
     const shellValue = firstNativeString(input, ['shell']).toLowerCase();
     const shell = AGENT_SHELLS.includes(shellValue as AgentShell) ? shellValue as AgentShell : undefined;
     return { type: 'command', command, shell };
   }
-  throw new Error(`Onbekende native tool: ${toolName}`);
+  throw new Error(localizedText(language, `Onbekende native tool: ${toolName}`, `Unknown native tool: ${toolName}`));
 }
 
 function firstNativeString(input: Record<string, unknown>, keys: string[]): string {
@@ -5231,12 +5513,12 @@ function nativeBoolean(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
-function resolveProjectFilePath(root: string, requestedPath: string) {
+function resolveProjectFilePath(root: string, requestedPath: string, language: UiLanguage = 'nl') {
   const rootPath = path.resolve(root);
   const target = path.resolve(rootPath, requestedPath);
   const rel = path.relative(rootPath, target);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error(`Bestand valt buiten de projectmap/werkmap: ${requestedPath}`);
+    throw new Error(localizedText(language, `Bestand valt buiten de projectmap/werkmap: ${requestedPath}`, `File is outside the project/workspace folder: ${requestedPath}`));
   }
   return target;
 }
@@ -5248,7 +5530,7 @@ function summarizeToolCall(call?: AgentToolCall) {
 }
 
 function hasDeniedToolResult(results: Array<{ text: string; run?: CommandRun }>) {
-  return results.some((result) => result.run?.status === 'denied' || /\[geweigerd|geweigerd door gebruiker/i.test(result.text || ''));
+  return results.some((result) => result.run?.status === 'denied' || /\[(?:geweigerd|denied)|(?:geweigerd door gebruiker|denied by user)/i.test(result.text || ''));
 }
 
 function sendToolActivity(
@@ -5321,7 +5603,8 @@ async function runAgentCommand(
   command: string,
   options: { cwd?: string; shell?: AgentShell; source?: CommandRun['source']; anchorMessageId?: string; callbacks?: AgentCommandCallbacks; toolContext?: AgentToolRunContext; silentApproval?: boolean } = {},
 ): Promise<AgentCommandResult> {
-  if (!command.trim()) return { ok: false, error: 'Leeg commando.', stdout: '', stderr: '', code: null, cwd: process.cwd(), shell: 'powershell' };
+  const language = options.toolContext?.language || 'nl';
+  if (!command.trim()) return { ok: false, error: localizedText(language, 'Leeg commando.', 'Empty command.'), stdout: '', stderr: '', code: null, cwd: process.cwd(), shell: 'powershell' };
   const config = await getAgentConfig(options.toolContext);
   const requestedCwd = options.cwd || config.workingDir;
   const cwd = requestedCwd && fs.existsSync(requestedCwd) ? requestedCwd : process.cwd();
@@ -5350,14 +5633,14 @@ async function runAgentCommand(
   if (config.mode === 'ask') {
     const approved = await requestAgentApproval(win, runnableCommand, cwd, {
       kind: 'command',
-      label: 'Commando uitvoeren',
+      label: localizedText(language, 'Commando uitvoeren', 'Run command'),
       shell,
       context: options.toolContext,
       activityId: baseRun.id,
       silent: options.silentApproval,
     });
     if (!approved) {
-      const run = finishCommandRun(baseRun, 'denied', '', 'Geweigerd door gebruiker.', null, startedMs);
+      const run = finishCommandRun(baseRun, 'denied', '', localizedText(language, 'Geweigerd door gebruiker.', 'Denied by the user.'), null, startedMs);
       options.callbacks?.onFinish?.(run);
       return { ok: false, error: run.stderr, denied: true, stdout: '', stderr: run.stderr, code: null, cwd, shell, run };
     }
@@ -5389,7 +5672,7 @@ async function runAgentCommand(
     };
     const timeout = setTimeout(() => {
       terminateProcessTree(child);
-      finish('failed', null, `\n[timeout] Command gestopt na ${Math.round(AGENT_COMMAND_TIMEOUT_MS / 1000)}s.`);
+      finish('failed', null, `\n[timeout] ${localizedText(language, `Commando gestopt na ${Math.round(AGENT_COMMAND_TIMEOUT_MS / 1000)}s.`, `Command stopped after ${Math.round(AGENT_COMMAND_TIMEOUT_MS / 1000)}s.`)}`);
     }, AGENT_COMMAND_TIMEOUT_MS);
     child.stdin?.end();
     child.stdout?.on('data', (data) => {
@@ -5401,7 +5684,7 @@ async function runAgentCommand(
       if (accepted) options.callbacks?.onOutput?.(baseRun.id, 'stdout', accepted);
       if (accepted.length < text.length) {
         stdoutTruncated = true;
-        const marker = '\n[uitvoer afgekapt na 100.000 tekens]\n';
+        const marker = localizedText(language, '\n[uitvoer afgekapt na 100.000 tekens]\n', '\n[output truncated after 100,000 characters]\n');
         options.callbacks?.onOutput?.(baseRun.id, 'stdout', marker);
       }
     });
@@ -5414,7 +5697,7 @@ async function runAgentCommand(
       if (accepted) options.callbacks?.onOutput?.(baseRun.id, 'stderr', accepted);
       if (accepted.length < text.length) {
         stderrTruncated = true;
-        const marker = '\n[uitvoer afgekapt na 100.000 tekens]\n';
+        const marker = localizedText(language, '\n[uitvoer afgekapt na 100.000 tekens]\n', '\n[output truncated after 100,000 characters]\n');
         options.callbacks?.onOutput?.(baseRun.id, 'stderr', marker);
       }
     });
@@ -5474,13 +5757,14 @@ async function waitWhileAutoModePaused(runId: string) {
 
 async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig, runId: string) {
   const unlimitedIterations = config.maxIterations <= 0;
-  let completionDetail = 'Auto Mode is klaar.';
+  const language = normalizeUiLanguage(config.language, 'nl');
+  let completionDetail = localizedText(language, 'Auto Mode is klaar.', 'Auto Mode is complete.');
 
   while (autoModeRunId === runId && !autoModeStopRequested && (unlimitedIterations || autoModeState.iteration < config.maxIterations)) {
     await waitWhileAutoModePaused(runId);
     if (autoModeRunId !== runId || autoModeStopRequested || autoModeState.status !== 'running') break;
     if (config.tokenBudget && autoModeState.totalTokens >= config.tokenBudget) {
-      completionDetail = 'Auto Mode is klaar: het tokenbudget is bereikt.';
+      completionDetail = localizedText(language, 'Auto Mode is klaar: het tokenbudget is bereikt.', 'Auto Mode is complete: the token budget was reached.');
       break;
     }
 
@@ -5495,14 +5779,18 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
     autoModeRequestIds.add(prompterRequestId);
     publishAutoModeState(win, {
       phase: 'prompter',
-      detail: `Prompter maakt prompt ${iterationLabel}.`,
+      detail: localizedText(language, `Prompter maakt prompt ${iterationLabel}.`, `Prompter is creating prompt ${iterationLabel}.`),
       lastPromptPreview: '',
       error: undefined,
     });
     const goal = (config.goal || '').trim();
     const prompterSystemPrompt = goal
-      ? `You are driving this conversation toward the user's goal: "${goal}". Based on the conversation so far, write the single next user message that makes the most progress toward that goal. Be concrete and build on previous answers. Return ONLY the prompt text, no preamble.`
-      : 'Generate the next useful user prompt for this conversation. Return only the prompt text.';
+      ? localizedText(
+        language,
+        `Je stuurt dit gesprek naar het doel van de gebruiker: "${goal}". Schrijf op basis van het gesprek precies het volgende gebruikersbericht dat de meeste voortgang naar dat doel maakt. Wees concreet en bouw voort op eerdere antwoorden. Geef ALLEEN de prompttekst terug, zonder inleiding.`,
+        `You are driving this conversation toward the user's goal: "${goal}". Based on the conversation so far, write the single next user message that makes the most progress toward that goal. Be concrete and build on previous answers. Return ONLY the prompt text, no preamble.`,
+      )
+      : localizedText(language, 'Genereer de volgende nuttige gebruikersprompt voor dit gesprek. Geef alleen de prompttekst terug.', 'Generate the next useful user prompt for this conversation. Return only the prompt text.');
     let promptResult: AdapterChatResult;
     let promptDraft = '';
     let lastPreviewUpdate = 0;
@@ -5520,6 +5808,7 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
           lastPreviewUpdate = now;
           publishAutoModeState(win, { lastPromptPreview: autoModePromptPreview(promptDraft) });
         },
+        language,
       });
     } finally {
       activeRequests.delete(prompterRequestId);
@@ -5528,7 +5817,7 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
 
     if (autoModeRunId !== runId || autoModeStopRequested) return;
     const promptText = promptResult.text.trim();
-    if (!promptText) throw new Error('De prompter gaf een lege prompt terug. Kies een ander promptermodel of probeer opnieuw.');
+    if (!promptText) throw new Error(localizedText(language, 'De prompter gaf een lege prompt terug. Kies een ander promptermodel of probeer opnieuw.', 'The prompter returned an empty prompt. Choose another prompter model or try again.'));
     const promptPreview = autoModePromptPreview(promptText);
 
     const userMessage = insertMessage({
@@ -5553,6 +5842,7 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
       config.chatId,
       userMessage.content,
       config.responderModelRef,
+      language,
     ).catch(() => { });
     win?.webContents.send('chat:refresh', { chatId: config.chatId });
     recordUsage(config.chatId, userMessage.id, config.prompterModelRef, promptResult.usage);
@@ -5562,7 +5852,7 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
     if (autoModeRunId !== runId || autoModeStopRequested || autoModeState.status !== 'running') return;
     publishAutoModeState(win, {
       phase: 'responder',
-      detail: `Antwoordmodel reageert op prompt ${iterationLabel}.`,
+      detail: localizedText(language, `Antwoordmodel reageert op prompt ${iterationLabel}.`, `Responder model is answering prompt ${iterationLabel}.`),
       lastPromptPreview: promptPreview,
     });
 
@@ -5573,11 +5863,12 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
       requestId: responderRequestId,
       chat,
       modelRef: config.responderModelRef,
+      language,
     }).finally(() => {
       autoModeRequestIds.delete(responderRequestId);
       activeRequestChatIds.delete(responderRequestId);
     });
-    void retryChatTitleAfterTurn(win, config.chatId, userMessage.content).catch(() => { });
+    void retryChatTitleAfterTurn(win, config.chatId, userMessage.content, language).catch(() => { });
     win?.webContents.send('chat:refresh', { chatId: config.chatId });
     if (autoModeRunId !== runId || autoModeStopRequested) return;
 
@@ -5593,8 +5884,12 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
       totalTokens,
       phase: hasNextIteration && budgetAvailable ? 'waiting' : 'completed',
       detail: hasNextIteration && budgetAvailable
-        ? `Iteratie ${iteration}${unlimitedIterations ? '' : `/${config.maxIterations}`} klaar. Volgende prompt over ${Math.max(1, Math.round((config.delayMs || 2000) / 1000))} sec.`
-        : `Iteratie ${iteration}${unlimitedIterations ? '' : `/${config.maxIterations}`} klaar.`,
+        ? localizedText(
+          language,
+          `Iteratie ${iteration}${unlimitedIterations ? '' : `/${config.maxIterations}`} klaar. Volgende prompt over ${Math.max(1, Math.round((config.delayMs || 2000) / 1000))} sec.`,
+          `Iteration ${iteration}${unlimitedIterations ? '' : `/${config.maxIterations}`} complete. Next prompt in ${Math.max(1, Math.round((config.delayMs || 2000) / 1000))} sec.`,
+        )
+        : localizedText(language, `Iteratie ${iteration}${unlimitedIterations ? '' : `/${config.maxIterations}`} klaar.`, `Iteration ${iteration}${unlimitedIterations ? '' : `/${config.maxIterations}`} complete.`),
     });
     if (hasNextIteration && budgetAvailable) await delay(config.delayMs || 2000);
   }
@@ -5604,7 +5899,7 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
   publishAutoModeState(win, {
     status: autoModeStopRequested ? 'stopped' : 'idle',
     phase: autoModeStopRequested ? 'stopped' : 'completed',
-    detail: autoModeStopRequested ? 'Auto Mode is gestopt.' : completionDetail,
+    detail: autoModeStopRequested ? localizedText(language, 'Auto Mode is gestopt.', 'Auto Mode is stopped.') : completionDetail,
   });
 }
 

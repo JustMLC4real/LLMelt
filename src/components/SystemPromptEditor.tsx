@@ -29,7 +29,7 @@ const SystemPromptEditor: React.FC<{ active?: boolean }> = ({ active = true }) =
     <div className="system-prompt-editor">
       <div className="panel-header-row mb-2">
         <span className="font-semibold text-sm">{t('chat.systemPrompt')}</span>
-        <button className="btn-icon" onClick={() => setShowSystemPromptEditor(false)} title="Inklappen" aria-label="Systeemprompt inklappen">
+        <button className="btn-icon" onClick={() => setShowSystemPromptEditor(false)} title={t('systemPromptEditor.collapse')} aria-label={t('systemPromptEditor.collapse')}>
           <X size={14} />
         </button>
       </div>

@@ -3,7 +3,8 @@ import { spawn } from 'child_process';
 import type { AIModel, ProviderQuotaSnapshot, RateLimitSnapshot } from '../src/providers/types';
 import {
   makeLocalUnlimitedQuota,
-  makeUnavailableQuota,
+  makeUnknownQuota,
+  LIVE_QUOTA_MAX_AGE_MS,
   parseAntigravityStatuslinePayload,
   parseClaudeStatuslinePayload,
   parseCodexRateLimitsResponse,
@@ -20,6 +21,8 @@ export interface QuotaCollectorOptions {
   legacyRateLimits?: RateLimitSnapshot[];
 }
 
+export const STATUSLINE_QUOTA_MAX_AGE_MS = LIVE_QUOTA_MAX_AGE_MS;
+
 export async function collectProviderQuotaSnapshots(options: QuotaCollectorOptions) {
   const snapshots: ProviderQuotaSnapshot[] = [];
   const [codexResult, statuslineResult, geminiResult] = await Promise.allSettled([
@@ -30,7 +33,7 @@ export async function collectProviderQuotaSnapshots(options: QuotaCollectorOptio
     collectGeminiQuotaSnapshots(),
   ]);
   if (codexResult.status === 'fulfilled' && codexResult.value.length) snapshots.push(...codexResult.value);
-  else snapshots.push(makeUnavailableQuota(
+  else snapshots.push(makeUnknownQuota(
     'codex', 'cli', 'codex:account',
     quotaErrorNote(codexResult, 'Codex publiceerde geen machineleesbaar accountquotum.'),
     'codex-app-server',
@@ -38,19 +41,17 @@ export async function collectProviderQuotaSnapshots(options: QuotaCollectorOptio
   if (statuslineResult.status === 'fulfilled') snapshots.push(...statuslineResult.value);
   else {
     const note = quotaErrorNote(statuslineResult, 'Statusregel-quota kon niet worden gelezen.');
-    snapshots.push(makeUnavailableQuota('anthropic', 'cli', 'anthropic:account', note, 'claude-statusline'));
-    snapshots.push(makeUnavailableQuota('antigravity', 'cli', 'antigravity:account', note, 'antigravity-statusline'));
+    snapshots.push(makeUnknownQuota('anthropic', 'cli', 'anthropic:account', note, 'claude-statusline'));
+    snapshots.push(makeUnknownQuota('antigravity', 'cli', 'antigravity:account', note, 'antigravity-statusline'));
   }
   if (geminiResult.status === 'fulfilled' && geminiResult.value.length) snapshots.push(...geminiResult.value);
-  else snapshots.push(makeUnavailableQuota(
+  else snapshots.push(makeUnknownQuota(
     'google', 'api', 'google:project',
     quotaErrorNote(geminiResult, 'Verplichte Google Cloud-quota is nog niet gekoppeld.'),
     'google-service-usage',
   ));
-  const modelIds = new Set((options.models || []).filter((model) => model.provider === 'ollama').map((model) => model.id));
-  if (!modelIds.size) snapshots.push(makeLocalUnlimitedQuota());
-  else for (const modelId of modelIds) snapshots.push(makeLocalUnlimitedQuota(modelId));
-  snapshots.push(chatGptUnavailable());
+  snapshots.push(...localOllamaQuotaSnapshots(options.models || []));
+  snapshots.push(chatGptQuotaUnknown());
   snapshots.push(...legacyLimitsToQuotas(options.legacyRateLimits || []));
   return dedupeSnapshots(snapshots);
 }
@@ -109,12 +110,15 @@ export async function collectCodexQuota(executable: string): Promise<ProviderQuo
   }
 }
 
-async function collectStatuslineQuotas(extraAntigravityPath?: string | null) {
+export async function collectStatuslineQuotas(
+  extraAntigravityPath?: string | null,
+  extraClaudePath?: string | null,
+) {
   const snapshots: ProviderQuotaSnapshot[] = [];
-  const claude = readRecentJson(statuslineStatePath('claude'));
+  const claude = readRecentJson(extraClaudePath || statuslineStatePath('claude'));
   const parsedClaude = claude ? parseClaudeStatuslinePayload(claude, claude.observedAt) : null;
   if (parsedClaude) snapshots.push(parsedClaude);
-  else snapshots.push(makeUnavailableQuota(
+  else snapshots.push(makeUnknownQuota(
     'anthropic', 'cli', 'anthropic:account',
     'Claude heeft nog geen actuele statusregel-data geleverd. Start eenmaal een Claude CLI-beurt.',
     'claude-statusline',
@@ -122,7 +126,7 @@ async function collectStatuslineQuotas(extraAntigravityPath?: string | null) {
   const antigravity = readRecentJson(extraAntigravityPath || statuslineStatePath('antigravity'));
   const parsedAntigravity = antigravity ? parseAntigravityStatuslinePayload(antigravity, antigravity.observedAt) : [];
   if (parsedAntigravity.length) snapshots.push(...parsedAntigravity);
-  else snapshots.push(makeUnavailableQuota(
+  else snapshots.push(makeUnknownQuota(
     'antigravity', 'cli', 'antigravity:account',
     'Antigravity heeft nog geen actuele statusregel-data geleverd. Start eenmaal een Antigravity CLI-beurt.',
     'antigravity-statusline',
@@ -136,19 +140,33 @@ function quotaErrorNote(result: PromiseSettledResult<unknown>, fallback: string)
   return message.trim().slice(0, 500) || fallback;
 }
 
-function readRecentJson(filePath: string) {
+export function readRecentJson(filePath: string, now = Date.now()) {
   try {
     const value = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     const observed = new Date(value?.observedAt || 0).getTime();
-    if (!Number.isFinite(observed) || Date.now() - observed > 24 * 3600_000) return null;
+    if (!Number.isFinite(observed) || now - observed >= STATUSLINE_QUOTA_MAX_AGE_MS) return null;
     return value;
   } catch {
     return null;
   }
 }
 
-function chatGptUnavailable(): ProviderQuotaSnapshot {
-  return makeUnavailableQuota(
+export function localOllamaQuotaSnapshots(models: AIModel[]): ProviderQuotaSnapshot[] {
+  const modelIds = new Set(models.filter((model) => model.provider === 'ollama').map((model) => model.id));
+  if (!modelIds.size) {
+    return [makeUnknownQuota(
+      'ollama',
+      'local',
+      'ollama:local',
+      'Er is geen lokaal Ollama-model ontdekt; lokaal quotum en beschikbaarheid zijn onbekend.',
+      'local',
+    )];
+  }
+  return [...modelIds].map((modelId) => makeLocalUnlimitedQuota(modelId));
+}
+
+function chatGptQuotaUnknown(): ProviderQuotaSnapshot {
+  return makeUnknownQuota(
     'openai', 'subscription-web', 'openai:account',
     'ChatGPT publiceert geen machineleesbaar abonnementsquotum. LLMelt schakelt door na een echte limietfout.',
   );

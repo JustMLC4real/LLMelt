@@ -20,4 +20,12 @@ describe('changedLineDiff', () => {
       { type: 'add', text: 'regel 2' },
     ]);
   });
+
+  it('lokaliseert de begrenzing van een lange diff', () => {
+    const before = ['oud 1', 'oud 2', 'oud 3'].join('\n');
+    const after = ['nieuw 1', 'nieuw 2', 'nieuw 3'].join('\n');
+
+    expect(changedLineDiff(before, after, 1, 'nl').at(-1)?.text).toContain('gewijzigde regels afgekapt');
+    expect(changedLineDiff(before, after, 1, 'en').at(-1)?.text).toContain('changed lines truncated');
+  });
 });

@@ -194,29 +194,35 @@ export function fileToolPathFromResult(text: string): string | null {
   return match ? normalizeToolPath(match[1]) : null;
 }
 
-export function shouldSkipCommandForFailedFileTool(command: string, failedFilePaths: Set<string>): CommandDependencySkip {
+export function shouldSkipCommandForFailedFileTool(command: string, failedFilePaths: Set<string>, language: UiLanguage = 'nl'): CommandDependencySkip {
   const referenced = commandReferencedPaths(command);
   const hit = referenced.find((item) => failedFilePaths.has(item));
   if (!hit) return { skip: false };
   return {
     skip: true,
     path: hit,
-    message: `Command overgeslagen omdat de file-tool voor ${hit} faalde; eerst het bestand herstellen/schrijven.`,
+    message: language === 'en'
+      ? `Command skipped because the file tool for ${hit} failed; repair or write the file first.`
+      : `Command overgeslagen omdat de file-tool voor ${hit} faalde; eerst het bestand herstellen/schrijven.`,
   };
 }
 
-export function validateModelCommand(command: string): FileToolPayloadValidation {
+export function validateModelCommand(command: string, language: UiLanguage = 'nl'): FileToolPayloadValidation {
   const text = command || '';
   if (/@['"][\s\S]*?['"]@\s*\|\s*(?:Set-Content|Out-File)|(?:Set-Content|Out-File)\b|(?:^|\s)(?:cat|type)\s*>|(?:^|\s)>{1,2}\s*[^&|;\r\n]+\.(?:py|js|jsx|ts|tsx|json|html|css|bat|cmd|ps1|sh)\b/i.test(text)) {
     return {
       ok: false,
-      message: 'Model-commands mogen geen bestanden schrijven via shell redirection, here-strings, Set-Content of Out-File. Gebruik file-create/file-edit en daarna een apart run-command.',
+      message: language === 'en'
+        ? 'Model commands must not write files through shell redirection, here-strings, Set-Content, or Out-File. Use file-create/file-edit followed by a separate run-command.'
+        : 'Model-commands mogen geen bestanden schrijven via shell redirection, here-strings, Set-Content of Out-File. Gebruik file-create/file-edit en daarna een apart run-command.',
     };
   }
   return { ok: true };
 }
 
-export function buildToolFailureRepairPrompt(results: ToolRepairResult[]): string {
+export function buildToolFailureRepairPrompt(results: ToolRepairResult[], language: UiLanguage = 'nl'): string {
+  const resultLabel = language === 'en' ? 'tool result' : 'toolresultaat';
+  const genericStatus = language === 'en' ? 'file/tool result' : 'bestand-/toolresultaat';
   const report = results
     .map((result, index) => {
       const run = result.run;
@@ -228,13 +234,34 @@ export function buildToolFailureRepairPrompt(results: ToolRepairResult[]): strin
           `status=${run.status || '(unknown)'}`,
           `exitCode=${run.exitCode ?? 'null'}`,
         ].join(' ')
-        : 'file/tool result';
+        : genericStatus;
       return [
-        `--- tool result ${index + 1} (${status}) ---`,
+        `--- ${resultLabel} ${index + 1} (${status}) ---`,
         clipForRepairPrompt(result.text || ''),
       ].join('\n');
     })
     .join('\n\n');
+
+  if (language === 'en') return [
+    'The previous LLMelt tool run did NOT finish successfully.',
+    'You may only claim success after a real tool run with exit code 0.',
+    '',
+    'Now return ONLY strict tool tags to fix the error and run again.',
+    'Use <file-edit> or <file-create overwrite="true"> for the fix, followed by <run-command> to test again.',
+    'No explanation and no invented output.',
+    '',
+    'Allowed tags:',
+    '<file-read path="relative/path.ext"></file-read>',
+    '<file-create path="relative/path.ext" overwrite="true">content for ordinary text</file-create>',
+    '<file-create path="relative/script.py" overwrite="true" source="next-fence"></file-create> followed by one fenced source-code block',
+    '<file-edit path="relative/path.ext" old="exact old text">new content</file-edit>',
+    '<run-command>command</run-command>',
+    '',
+    'If you cannot repair this safely, answer exactly: NO_FIX',
+    '',
+    'Real tool output:',
+    report,
+  ].join('\n');
 
   return [
     'De vorige LLMelt tool-run is NIET afgerond met succes.',
@@ -261,7 +288,10 @@ export function buildToolFailureRepairPrompt(results: ToolRepairResult[]): strin
 export function buildToolSuccessSummaryPrompt(
   results: ToolRepairResult[],
   audit: { missingExecutionPaths?: string[]; verifiedAllRequestedExecutions?: boolean } = {},
+  language: UiLanguage = 'nl',
 ): string {
+  const resultLabel = language === 'en' ? 'tool result' : 'toolresultaat';
+  const genericStatus = language === 'en' ? 'file/tool result' : 'bestand-/toolresultaat';
   const hasSuccessfulRun = results.some((result) => (
     result.run?.status === 'completed'
     && (result.run.exitCode === 0 || result.run.exitCode == null)
@@ -277,13 +307,41 @@ export function buildToolSuccessSummaryPrompt(
           `status=${run.status || '(unknown)'}`,
           `exitCode=${run.exitCode ?? 'null'}`,
         ].join(' ')
-        : 'file/tool result';
+        : genericStatus;
       return [
-        `--- tool result ${index + 1} (${status}) ---`,
+        `--- ${resultLabel} ${index + 1} (${status}) ---`,
         clipForRepairPrompt(result.text || ''),
       ].join('\n');
     })
     .join('\n\n');
+
+  if (language === 'en') return [
+    hasSuccessfulRun
+      ? 'The LLMelt tool batch contains a real successful command run with exit code 0.'
+      : 'The LLMelt tool batch was processed, but it contains no proven successful command run.',
+    ...(audit.missingExecutionPaths?.length ? [
+      `HOST EVIDENCE CHECK: these created/changed executable files have not appeared in a successful command run yet: ${audit.missingExecutionPaths.join(', ')}.`,
+      'Do NOT summarize yet. Return strict <run-command> tags to actually run or test every listed file.',
+    ] : []),
+    ...(audit.verifiedAllRequestedExecutions ? [
+      'HOST EVIDENCE CHECK: every explicitly requested created/changed executable file has a successful command run.',
+      'Do not perform another or equivalent tool action. Return only the short final summary now.',
+    ] : []),
+    'First verify the COMPLETE original user request against all real tool output in the conversation.',
+    'If any requested file action, run, test, or check is missing or not proven by real output:',
+    '- return ONLY the still-missing strict tool tag(s);',
+    '- do not repeat an action that already succeeded;',
+    '- for source code use an empty source="next-fence" file marker immediately followed by one fenced source-code block.',
+    'If the complete request is demonstrably finished, give a short ordinary summary:',
+    'at most 120 words and at most 6 short bullets.',
+    'Mention only the outcome, relevant file names, and any remaining warnings.',
+    'Do NOT paste full code, file contents, diffs, or terminal output; those already appear in expandable tool cards.',
+    'Do not repeat the user request or narrate each already-visible step.',
+    'Do not return new tool tags in the summary and do not say you will still execute something.',
+    '',
+    'Real tool output:',
+    report,
+  ].join('\n');
 
   return [
     hasSuccessfulRun
@@ -353,51 +411,56 @@ export function requestRequiresEveryFileExecution(userInput: string) {
 }
 
 /** Toolkaarten bevatten code en output al volledig; voorkom een tweede enorme kopie in de chat. */
-export function compactToolSummaryForDisplay(value: string, maxChars = 1_800) {
+export function compactToolSummaryForDisplay(value: string, maxChars = 1_800, language: UiLanguage = 'nl') {
   const withoutLargeFences = String(value || '').replace(/```([^\r\n`]*)\r?\n([\s\S]*?)```/g, (block, language, body) => {
     if (body.length <= 500) return block;
     const label = String(language || '').trim();
-    return `_Volledige ${label ? `${label}-code` : 'code'} staat in de bestandskaart hierboven._`;
+    return language === 'en'
+      ? `_The complete ${label ? `${label} code` : 'code'} is in the file card above._`
+      : `_Volledige ${label ? `${label}-code` : 'code'} staat in de bestandskaart hierboven._`;
   });
   if (withoutLargeFences.length <= maxChars) return withoutLargeFences.trim();
   const head = withoutLargeFences.slice(0, maxChars);
   const boundary = Math.max(head.lastIndexOf('\n'), head.lastIndexOf('. '));
   const clipped = head.slice(0, boundary >= maxChars * 0.6 ? boundary + 1 : maxChars).trimEnd();
-  return `${clipped}\n\n_[Samenvatting ingekort; volledige details staan in de toolkaarten.]_`;
+  return `${clipped}\n\n_${language === 'en' ? '[Summary shortened; full details are in the tool cards.]' : '[Samenvatting ingekort; volledige details staan in de toolkaarten.]'}_`;
 }
 
-export function validateFileToolPayload(call: Extract<AgentToolCall, { type: 'file-create' | 'file-edit' }>): FileToolPayloadValidation {
+export function validateFileToolPayload(call: Extract<AgentToolCall, { type: 'file-create' | 'file-edit' }>, language: UiLanguage = 'nl'): FileToolPayloadValidation {
   const filePath = call.path || '';
   const ext = extensionOf(filePath);
   const content = call.type === 'file-create' ? call.content : call.newText;
   if (!isSourceLikeExtension(ext)) return { ok: true };
 
   if (!isMarkdownExtension(ext) && /(^|\r?\n)\s*```/.test(content)) {
-    return { ok: false, message: 'Source-bestand bevat Markdown code fences (```); geef alleen rauwe bestandsinhoud in de file-tool.' };
+    return { ok: false, message: language === 'en' ? 'Source file contains Markdown code fences (```); provide only raw file contents in the file tool.' : 'Source-bestand bevat Markdown code fences (```); geef alleen rauwe bestandsinhoud in de file-tool.' };
   }
 
   if (ext === '.py') {
     if (content.charCodeAt(0) === 0xfeff) {
-      return { ok: false, message: 'Python-bestand begint met een BOM; schrijf UTF-8 zonder BOM.' };
+      return { ok: false, message: language === 'en' ? 'Python file starts with a BOM; write UTF-8 without BOM.' : 'Python-bestand begint met een BOM; schrijf UTF-8 zonder BOM.' };
     }
     if (/\bif\s+name\s*==\s*["']main["']\s*:/i.test(content)) {
-      return { ok: false, message: 'Python main guard is kapot: gebruik if __name__ == "__main__":' };
+      return { ok: false, message: language === 'en' ? 'Python main guard is invalid: use if __name__ == "__main__":' : 'Python main guard is kapot: gebruik if __name__ == "__main__":' };
     }
-    const invalidBlock = findInvalidPythonBlock(content);
+    const invalidBlock = findInvalidPythonBlock(content, language);
     if (invalidBlock) return { ok: false, message: invalidBlock };
   }
 
   return { ok: true };
 }
 
-export function normalizeFileToolPayload(call: Extract<AgentToolCall, { type: 'file-create' | 'file-edit' }>): FileToolPayloadNormalization {
+export function normalizeFileToolPayload(
+  call: Extract<AgentToolCall, { type: 'file-create' | 'file-edit' }>,
+  language: UiLanguage = 'nl',
+): FileToolPayloadNormalization {
   const ext = extensionOf(call.path || '');
   if (!isSourceLikeExtension(ext) || isMarkdownExtension(ext)) {
     return { call, changed: false };
   }
 
   const content = call.type === 'file-create' ? call.content : call.newText;
-  const normalized = normalizeSourcePayloadContent(content, ext);
+  const normalized = normalizeSourcePayloadContent(content, ext, language);
   if (normalized.content === content) {
     return { call, changed: false };
   }
@@ -629,7 +692,30 @@ export function hasUnparsedToolMarkup(reply: string): boolean {
     || /<\/(?:run-command|file-read|file-create|file-edit)[^>\r\n]*(?:>|$)/i.test(remaining);
 }
 
-export function buildToolRepairPrompt(check: { userInput: string; badReply: string }): string {
+export function buildToolRepairPrompt(check: { userInput: string; badReply: string }, language: UiLanguage = 'nl'): string {
+  if (language === 'en') return [
+    'Your previous response claimed or implied local execution but contained no valid LLMelt tool tags.',
+    'Now return ONLY the required strict tags. No explanation and no invented output.',
+    '',
+    'Allowed tags:',
+    '<file-read path="relative/path.ext"></file-read>',
+    '<file-create path="relative/path.ext">content for ordinary text</file-create>',
+    '<file-create path="relative/script.py" source="next-fence"></file-create> followed by one fenced source-code block',
+    '<file-edit path="relative/path.ext" old="exact old text">new content</file-edit>',
+    '<run-command>command</run-command>',
+    '',
+    'If the user asks to see, read, or open an existing local/project file, use file-read.',
+    'If the user asks to create/write/build something, use at least one file-create or file-edit tag.',
+    'If the user asks to run/test/execute it, also add a run-command tag.',
+    '',
+    'If no local tool action is actually needed, answer exactly: NO_TOOLS',
+    '',
+    'Original user request:',
+    check.userInput.trim(),
+    '',
+    'Your previous response:',
+    check.badReply.trim(),
+  ].join('\n');
   return [
     'Je vorige antwoord claimde of suggereerde lokale uitvoering, maar gaf geen geldige LLMelt tool-tags.',
     'Geef nu ALLEEN de benodigde strict tags terug. Geen uitleg en geen output verzinnen.',
@@ -655,10 +741,29 @@ export function buildToolRepairPrompt(check: { userInput: string; badReply: stri
   ].join('\n');
 }
 
-export function buildToolSyntaxRepairPrompt(check: { badReply: string; completedResults?: ToolRepairResult[] }): string {
+export function buildToolSyntaxRepairPrompt(check: { badReply: string; completedResults?: ToolRepairResult[] }, language: UiLanguage = 'nl'): string {
+  const completedLabel = language === 'en' ? 'completed action' : 'afgeronde actie';
   const completed = (check.completedResults || [])
-    .map((result, index) => `--- afgeronde actie ${index + 1} ---\n${clipForRepairPrompt(result.text || '')}`)
+    .map((result, index) => `--- ${completedLabel} ${index + 1} ---\n${clipForRepairPrompt(result.text || '')}`)
     .join('\n\n');
+  if (language === 'en') return [
+    'Your previous response contained an incomplete or malformed LLMelt tool tag.',
+    'Return ONLY the same still-intended tool action(s) again using exactly valid tags.',
+    'Do not repeat actions listed below as completed. No explanation.',
+    '',
+    'Allowed tags:',
+    '<file-read path="relative/path.ext"></file-read>',
+    '<file-create path="relative/path.ext" overwrite="true">content for ordinary text</file-create>',
+    '<file-create path="relative/script.py" overwrite="true" source="next-fence"></file-create> followed by one fenced source-code block',
+    '<file-edit path="relative/path.ext" old="exact old text">new content</file-edit>',
+    '<run-command>command</run-command>',
+    '',
+    'If no unfinished tool action was intended, answer exactly: NO_TOOLS',
+    ...(completed ? ['', 'Already completed:', completed] : []),
+    '',
+    'Malformed model output:',
+    check.badReply.trim(),
+  ].join('\n');
   return [
     'Je vorige antwoord bevatte een onvolledige of kapotte LLMelt tool-tag.',
     'Geef ALLEEN dezelfde nog bedoelde toolactie(s) opnieuw met exact geldige tags.',
@@ -801,7 +906,7 @@ function isSourceLikeExtension(ext: string): boolean {
   ]).has(ext) || isMarkdownExtension(ext);
 }
 
-function findInvalidPythonBlock(content: string): string | null {
+function findInvalidPythonBlock(content: string, language: UiLanguage = 'nl'): string | null {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -814,7 +919,9 @@ function findInvalidPythonBlock(content: string): string | null {
       if (!next.trim() || next.trim().startsWith('#')) continue;
       const nextIndent = (next.match(/^\s*/) || [''])[0].length;
       if (nextIndent <= baseIndent) {
-        return `Python block op regel ${i + 1} heeft geen ingesprongen body.`;
+        return language === 'en'
+          ? `Python block on line ${i + 1} has no indented body.`
+          : `Python block op regel ${i + 1} heeft geen ingesprongen body.`;
       }
       break;
     }
@@ -836,17 +943,17 @@ function stripStandaloneMarkdownFenceLines(content: string): string | null {
   return stripped === text ? null : stripped;
 }
 
-function normalizeSourcePayloadContent(content: string, ext: string): { content: string; message: string } {
+function normalizeSourcePayloadContent(content: string, ext: string, language: UiLanguage = 'nl'): { content: string; message: string } {
   const messages: string[] = [];
   let next = content || '';
   const unfenced = unwrapSingleMarkdownFence(next) ?? stripStandaloneMarkdownFenceLines(next);
   if (unfenced !== null && unfenced !== next) {
     next = unfenced;
-    messages.push('Markdown code fence automatisch verwijderd');
+    messages.push(language === 'en' ? 'Markdown code fence removed automatically' : 'Markdown code fence automatisch verwijderd');
   }
 
   if (ext === '.py') {
-    const python = normalizePythonPayload(next);
+    const python = normalizePythonPayload(next, language);
     if (python.content !== next) {
       next = python.content;
       messages.push(...python.messages);
@@ -855,11 +962,13 @@ function normalizeSourcePayloadContent(content: string, ext: string): { content:
 
   return {
     content: next,
-    message: `${messages.join('; ') || 'Broncode automatisch genormaliseerd'}; broncode is als ruwe bestandsinhoud opgeslagen.`,
+    message: language === 'en'
+      ? `${messages.join('; ') || 'Source code normalized automatically'}; source code was stored as raw file contents.`
+      : `${messages.join('; ') || 'Broncode automatisch genormaliseerd'}; broncode is als ruwe bestandsinhoud opgeslagen.`,
   };
 }
 
-function normalizePythonPayload(content: string): { content: string; messages: string[] } {
+function normalizePythonPayload(content: string, language: UiLanguage = 'nl'): { content: string; messages: string[] } {
   const messages: string[] = [];
   let next = content || '';
 
@@ -869,19 +978,19 @@ function normalizePythonPayload(content: string): { content: string; messages: s
   );
   if (fixedMainGuard !== next) {
     next = fixedMainGuard;
-    messages.push('Python main guard gecorrigeerd');
+    messages.push(language === 'en' ? 'Python main guard corrected' : 'Python main guard gecorrigeerd');
   }
 
   const repairedDanglingMain = repairDanglingPythonMainGuard(next);
   if (repairedDanglingMain !== next) {
     next = repairedDanglingMain;
-    messages.push('afgebroken Python main guard aangevuld');
+    messages.push(language === 'en' ? 'incomplete Python main guard completed' : 'afgebroken Python main guard aangevuld');
   }
 
   const indented = repairTopLevelPythonIndentLoss(next);
   if (indented !== next) {
     next = indented;
-    messages.push('verloren Python-inspringing hersteld');
+    messages.push(language === 'en' ? 'lost Python indentation repaired' : 'verloren Python-inspringing hersteld');
   }
 
   return { content: next, messages };
@@ -978,3 +1087,4 @@ function shellForSlash(value: string): AgentShell | undefined {
   if (normalized === 'pwsh') return 'pwsh';
   return undefined;
 }
+import type { UiLanguage } from '../providers/types';

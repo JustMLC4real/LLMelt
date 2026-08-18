@@ -100,18 +100,18 @@ const ApiKeyChecker: React.FC = () => {
       <p className="text-sm text-muted mb-4">{t('keyChecker.description')}</p>
 
       <div className="glass-card mb-4">
-        <div className="settings-row-label mb-2">Key(s) plakken</div>
+        <div className="settings-row-label mb-2">{t('keyChecker.pasteLabel')}</div>
         <textarea
           className="textarea"
           rows={5}
           value={manualText}
           onChange={(event) => setManualText(event.target.value)}
-          placeholder="Plak hier OpenAI / Anthropic / Gemini keys. De app maskeert ze in de resultaten."
+          placeholder={t('keyChecker.pastePlaceholder')}
         />
         <div className="flex items-center justify-between mt-3">
-          <div className="text-xs text-muted">Elke key krijgt een echte generatie-smoketest (OpenAI, Anthropic, Gemini). Faalt hij, dan zie je precies waarom: ingetrokken, verlopen, tegoed op, quota op of model niet beschikbaar.</div>
+          <div className="text-xs text-muted">{t('keyChecker.smokeTestHelp')}</div>
           <button className="btn btn-primary" onClick={handleManualValidate} disabled={isValidating || !parseKeys(manualText, 'manual.txt').length}>
-            {isValidating ? t('keyChecker.validating') : 'Test geplakte keys'}
+            {isValidating ? t('keyChecker.validating') : t('keyChecker.testPasted')}
           </button>
         </div>
       </div>
@@ -146,7 +146,7 @@ const ApiKeyChecker: React.FC = () => {
             <span className="font-semibold text-sm">
               {results.filter((result) => result.status === 'valid').length}/{results.length} {t('keyChecker.valid')}
               {results.some((result) => result.status === 'limited') &&
-                ` · ${results.filter((result) => result.status === 'limited').length} beperkt`}
+                <>{' · '}{t('keyChecker.limitedCount', { count: results.filter((result) => result.status === 'limited').length })}</>}
             </span>
             <button className="btn btn-secondary" onClick={exportValidKeys} disabled={!results.some((result) => result.status === 'valid')}>
               {t('keyChecker.exportValid')}
@@ -159,7 +159,7 @@ const ApiKeyChecker: React.FC = () => {
                 <tr>
                   <th>{t('keyChecker.key')}</th>
                   <th>{t('keyChecker.provider')}</th>
-                  <th>Status</th>
+                  <th>{t('keyChecker.status')}</th>
                   <th>{t('keyChecker.models')}</th>
                   <th></th>
                 </tr>
@@ -185,7 +185,7 @@ const ApiKeyChecker: React.FC = () => {
                         <div style={{ color: result.status === 'limited' ? 'var(--color-warning)' : 'var(--color-error)' }}>{result.error}</div>
                       )}
                       {result.checkedModel && (
-                        <div style={{ color: 'var(--text-primary)' }}>Getest: {result.checkedModel}</div>
+                        <div style={{ color: 'var(--text-primary)' }}>{t('keyChecker.testedModel', { model: result.checkedModel })}</div>
                       )}
                       {result.details && <div>{result.details}</div>}
                       <div>{result.models?.join(', ') || '-'}</div>
@@ -234,8 +234,8 @@ function collectJsonValues(value: any, output: string[]) {
 
 function statusLabel(status: KeyResult['status'], t: (key: string) => string) {
   if (status === 'valid') return t('keyChecker.valid');
-  if (status === 'limited') return 'Beperkt';
-  if (status === 'expired') return 'Verlopen';
+  if (status === 'limited') return t('keyChecker.limited');
+  if (status === 'expired') return t('keyChecker.expired');
   return t('keyChecker.invalid');
 }
 

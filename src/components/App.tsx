@@ -1,4 +1,5 @@
-import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Terminal, Check, X } from 'lucide-react';
 import { useChatStore } from '../stores/chat-store';
 import { useProviderStore } from '../stores/provider-store';
@@ -21,9 +22,21 @@ import {
 } from './chatgpt-catalog-sync';
 import { settleLiveCatalog } from './live-catalog-settle';
 import { usePanelPresence } from './use-panel-presence';
-import { clampPanelWidth, draggedPanelWidth, keyboardPanelWidth, type HorizontalPanelEdge } from './panel-resize';
+import { utilityPanelsAvailableInView } from './utility-panels';
 import {
-  approvalTitle,
+  MAIN_PANEL_MIN_WIDTH,
+  SIDEBAR_PANEL_MAX_WIDTH,
+  SIDEBAR_PANEL_MIN_WIDTH,
+  TERMINAL_PANEL_MAX_WIDTH,
+  TERMINAL_PANEL_MIN_WIDTH,
+  clampPanelWidth,
+  draggedPanelWidth,
+  keyboardPanelWidth,
+  responsivePanelWidths,
+  shouldUseCompactSidebar,
+  type HorizontalPanelEdge,
+} from './panel-resize';
+import {
   deferAgentApproval,
   deferAgentApprovalsOutsideChat,
   enqueueAgentApproval,
@@ -50,14 +63,38 @@ function savedPanelWidth(key: string, fallback: number, min: number, max: number
 }
 
 const App: React.FC = () => {
+  const { t } = useTranslation();
   const { currentChatId, currentView, showTerminal, setShowTerminal, sidebarCollapsed } = useChatStore();
   const [approvals, setApprovals] = useState<QueuedAgentApproval[]>([]);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [terminalWasOpened, setTerminalWasOpened] = useState(showTerminal);
   const [terminalPrepared, setTerminalPrepared] = useState(showTerminal);
-  const [sidebarWidth, setSidebarWidth] = useState(() => savedPanelWidth(SIDEBAR_WIDTH_KEY, 280, 220, 520));
-  const [terminalWidth, setTerminalWidth] = useState(() => savedPanelWidth(TERMINAL_WIDTH_KEY, 380, 280, 860));
-  const terminalPresence = usePanelPresence(showTerminal);
+  const [sidebarWidth, setSidebarWidth] = useState(() => savedPanelWidth(
+    SIDEBAR_WIDTH_KEY,
+    280,
+    SIDEBAR_PANEL_MIN_WIDTH,
+    SIDEBAR_PANEL_MAX_WIDTH,
+  ));
+  const [terminalWidth, setTerminalWidth] = useState(() => savedPanelWidth(
+    TERMINAL_WIDTH_KEY,
+    380,
+    TERMINAL_PANEL_MIN_WIDTH,
+    TERMINAL_PANEL_MAX_WIDTH,
+  ));
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const terminalVisible = utilityPanelsAvailableInView(currentView) && showTerminal;
+  const compactSidebar = shouldUseCompactSidebar(viewportWidth, terminalVisible);
+  const [compactSidebarOpen, setCompactSidebarOpen] = useState(false);
+  const effectiveSidebarCollapsed = compactSidebar ? !compactSidebarOpen : sidebarCollapsed;
+  const layoutSidebarCollapsed = compactSidebar || sidebarCollapsed;
+  const terminalPresence = usePanelPresence(terminalVisible);
+  const panelWidths = useMemo(() => responsivePanelWidths({
+    viewportWidth,
+    sidebarWidth,
+    terminalWidth,
+    sidebarCollapsed: layoutSidebarCollapsed,
+    terminalVisible,
+  }), [layoutSidebarCollapsed, sidebarWidth, terminalVisible, terminalWidth, viewportWidth]);
   const chatgptSessionActive = useProviderStore((state) => state.chatgptSessionActive);
   const isRefreshingModels = useProviderStore((state) => state.isRefreshingModels);
   const codexCatalogAvailable = useProviderStore((state) => state.modelsByProvider.codex.length > 0);
@@ -65,11 +102,16 @@ const App: React.FC = () => {
   const codexCatalogSyncStarted = React.useRef(false);
 
   const panelMaximum = useCallback((edge: HorizontalPanelEdge) => {
-    const reservedMain = 460;
-    return edge === 'left'
-      ? Math.max(220, Math.min(520, window.innerWidth - (showTerminal ? terminalWidth : 0) - reservedMain))
-      : Math.max(280, Math.min(860, window.innerWidth - (sidebarCollapsed ? 44 : sidebarWidth) - reservedMain));
-  }, [showTerminal, sidebarCollapsed, sidebarWidth, terminalWidth]);
+    const minimum = edge === 'left' ? SIDEBAR_PANEL_MIN_WIDTH : TERMINAL_PANEL_MIN_WIDTH;
+    const maximum = edge === 'left' ? SIDEBAR_PANEL_MAX_WIDTH : TERMINAL_PANEL_MAX_WIDTH;
+    const otherPanelWidth = edge === 'left'
+      ? (terminalVisible ? panelWidths.terminalWidth : 0)
+      : panelWidths.sidebarWidth;
+    return Math.max(
+      minimum,
+      Math.min(maximum, viewportWidth - otherPanelWidth - MAIN_PANEL_MIN_WIDTH),
+    );
+  }, [panelWidths.sidebarWidth, panelWidths.terminalWidth, terminalVisible, viewportWidth]);
 
   const beginPanelResize = useCallback((
     edge: HorizontalPanelEdge,
@@ -78,8 +120,8 @@ const App: React.FC = () => {
     if (event.button !== 0) return;
     event.preventDefault();
     const startClientX = event.clientX;
-    const startWidth = edge === 'left' ? sidebarWidth : terminalWidth;
-    const min = edge === 'left' ? 220 : 280;
+    const startWidth = edge === 'left' ? panelWidths.sidebarWidth : panelWidths.terminalWidth;
+    const min = edge === 'left' ? SIDEBAR_PANEL_MIN_WIDTH : TERMINAL_PANEL_MIN_WIDTH;
     let finalWidth = startWidth;
     document.body.classList.add('panel-resize-active');
 
@@ -98,21 +140,54 @@ const App: React.FC = () => {
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', stop, { once: true });
     window.addEventListener('pointercancel', stop, { once: true });
-  }, [panelMaximum, sidebarWidth, terminalWidth]);
+  }, [panelMaximum, panelWidths.sidebarWidth, panelWidths.terminalWidth]);
 
   const resizePanelWithKeyboard = useCallback((edge: HorizontalPanelEdge, event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
-    const min = edge === 'left' ? 220 : 280;
-    const current = edge === 'left' ? sidebarWidth : terminalWidth;
+    const min = edge === 'left' ? SIDEBAR_PANEL_MIN_WIDTH : TERMINAL_PANEL_MIN_WIDTH;
+    const current = edge === 'left' ? panelWidths.sidebarWidth : panelWidths.terminalWidth;
     const next = keyboardPanelWidth(edge, current, event.key, min, panelMaximum(edge));
     if (edge === 'left') setSidebarWidth(next); else setTerminalWidth(next);
     window.localStorage.setItem(edge === 'left' ? SIDEBAR_WIDTH_KEY : TERMINAL_WIDTH_KEY, String(next));
-  }, [panelMaximum, sidebarWidth, terminalWidth]);
+  }, [panelMaximum, panelWidths.sidebarWidth, panelWidths.terminalWidth]);
 
   useEffect(() => {
-    if (showTerminal) setTerminalWasOpened(true);
-  }, [showTerminal]);
+    let frame = 0;
+    let settleTimer = 0;
+    const handleResize = () => {
+      document.body.classList.add('window-resize-active');
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      frame = window.requestAnimationFrame(() => setViewportWidth(window.innerWidth));
+      settleTimer = window.setTimeout(() => {
+        document.body.classList.remove('window-resize-active');
+      }, 120);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      document.body.classList.remove('window-resize-active');
+    };
+  }, []);
+
+  useEffect(() => {
+    if (currentView !== 'chat' && showTerminal) setShowTerminal(false);
+  }, [currentView, setShowTerminal, showTerminal]);
+
+  useEffect(() => {
+    if (!compactSidebar) setCompactSidebarOpen(false);
+  }, [compactSidebar]);
+
+  useEffect(() => {
+    setCompactSidebarOpen(false);
+  }, [currentChatId, currentView]);
+
+  useEffect(() => {
+    if (terminalVisible) setTerminalWasOpened(true);
+  }, [terminalVisible]);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,7 +206,7 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!showTerminal) return;
+    if (!terminalVisible) return;
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setShowTerminal(false);
     };
@@ -139,7 +214,7 @@ const App: React.FC = () => {
     return () => {
       document.removeEventListener('keydown', handleEscape);
     };
-  }, [setShowTerminal, showTerminal]);
+  }, [setShowTerminal, terminalVisible]);
 
   // Eerste keer openen -> gids tonen. Daarna alleen nog via Instellingen.
   useEffect(() => {
@@ -523,18 +598,31 @@ const App: React.FC = () => {
         {showOnboarding && <OnboardingGuide onClose={() => setShowOnboarding(false)} />}
       </Suspense>
       <div
-        className="app-layout"
+        className={`app-layout ${compactSidebar ? 'compact-sidebar-layout' : ''}`}
         style={{
-          '--sidebar-width': `${sidebarWidth}px`,
-          '--terminal-panel-width': `${terminalWidth}px`,
+          '--sidebar-width': `${panelWidths.sidebarWidth}px`,
+          '--terminal-panel-width': `${panelWidths.terminalWidth}px`,
         } as React.CSSProperties}
       >
-        <Sidebar />
-        {!sidebarCollapsed && (
+        <Sidebar
+          collapsed={effectiveSidebarCollapsed}
+          mobileDrawerOpen={compactSidebar && compactSidebarOpen}
+          onToggle={compactSidebar ? () => setCompactSidebarOpen((open) => !open) : undefined}
+        />
+        {compactSidebar && compactSidebarOpen && <div className="mobile-sidebar-rail" aria-hidden="true" />}
+        {compactSidebar && compactSidebarOpen && (
+          <button
+            type="button"
+            className="mobile-sidebar-backdrop"
+            aria-label={t('sidebar.collapse')}
+            onClick={() => setCompactSidebarOpen(false)}
+          />
+        )}
+        {!layoutSidebarCollapsed && (
           <div
             className="panel-resize-handle sidebar-resize-handle"
             role="separator"
-            aria-label="Breedte van zijbalk aanpassen"
+            aria-label={t('app.resizeSidebar')}
             aria-orientation="vertical"
             tabIndex={0}
             onPointerDown={(event) => beginPanelResize('left', event)}
@@ -548,19 +636,19 @@ const App: React.FC = () => {
             </div>
           </Suspense>
         </main>
-        {(showTerminal || terminalWasOpened || terminalPrepared) && (
+        {(terminalVisible || terminalWasOpened || terminalPrepared) && (
           <div
             data-terminal-panel
-            className={`terminal-panel-slot ${terminalPresence.phase}`}
-            aria-hidden={!showTerminal}
-            inert={!showTerminal}
+            className={`terminal-panel-slot ${terminalVisible ? terminalPresence.phase : 'leaving'}`}
+            aria-hidden={!terminalVisible}
+            inert={!terminalVisible}
           >
             <div
               className="panel-resize-handle terminal-resize-handle"
               role="separator"
-              aria-label="Breedte van terminal aanpassen"
+              aria-label={t('app.resizeTerminal')}
               aria-orientation="vertical"
-              tabIndex={showTerminal ? 0 : -1}
+              tabIndex={terminalVisible ? 0 : -1}
               onPointerDown={(event) => beginPanelResize('right', event)}
               onKeyDown={(event) => resizePanelWithKeyboard('right', event)}
             />
@@ -574,19 +662,21 @@ const App: React.FC = () => {
           <div className="approval-dialog motion-panel" onClick={(e) => e.stopPropagation()}>
             <div className="approval-title">
               <Terminal size={16} />
-              <span>De agent vraagt goedkeuring: {approvalTitle(approval)}</span>
+               <span>{t('chat.approval.request', { action: localizedApprovalTitle(approval, t) })}</span>
             </div>
             <pre className="approval-command">{approval.command}</pre>
             <div className="approval-cwd">
-              {approval.kind === 'command' ? `Shell: ${approval.shell || 'default'} | ` : approval.path ? `Pad: ${approval.path} | ` : ''}
-              Werkmap: {approval.cwd}
+               {approval.kind === 'command'
+                 ? `${t('chat.approval.shell')}: ${approval.shell || t('chat.approval.defaultShell')} | `
+                 : approval.path ? `${t('chat.approval.path')}: ${approval.path} | ` : ''}
+               {t('chat.approval.workingDirectory')}: {approval.cwd}
             </div>
             <div className="approval-actions">
               <button className="btn btn-primary" onClick={() => respondApproval(approval, true)}>
-                <Check size={15} /> Toestaan
+                 <Check size={15} /> {t('chat.approval.allow')}
               </button>
               <button className="btn btn-secondary" onClick={() => respondApproval(approval, false)} style={{ color: 'var(--color-error)' }}>
-                <X size={15} /> Weigeren
+                 <X size={15} /> {t('chat.approval.deny')}
               </button>
             </div>
           </div>
@@ -595,6 +685,23 @@ const App: React.FC = () => {
     </>
   );
 };
+
+function localizedApprovalTitle(
+  approval: AgentApprovalRequest,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  const knownLabels: Record<string, string> = {
+    'bestand lezen': t('chat.approval.fileRead'),
+    'bestand maken': t('chat.approval.fileCreate'),
+    'bestand wijzigen': t('chat.approval.fileEdit'),
+    'commando uitvoeren': t('chat.approval.runCommand'),
+  };
+  if (approval.label) return knownLabels[approval.label.trim().toLowerCase()] || approval.label;
+  if (approval.kind === 'file-read') return t('chat.approval.fileRead');
+  if (approval.kind === 'file-create') return t('chat.approval.fileCreate');
+  if (approval.kind === 'file-edit') return t('chat.approval.fileEdit');
+  return t('chat.approval.runCommand');
+}
 
 export default App;
 

@@ -1,3 +1,6 @@
+import type { UiLanguage } from '../src/providers/types';
+import { localizedText } from '../src/i18n/language';
+
 export type InteractiveCliKind = 'codex' | 'claude' | 'antigravity';
 
 export function interactiveCliName(kind: InteractiveCliKind) {
@@ -31,14 +34,14 @@ function installerUrl(kind: InteractiveCliKind) {
  * geldige scripttekst. Download daarom naar een tijdelijk bestand, decodeer
  * expliciet als UTF-8 en verwijder het bestand ook bij een mislukte installer.
  */
-export function downloadAndInvokePowerShellInstallerPowerShell(url: string) {
+export function downloadAndInvokePowerShellInstallerPowerShell(url: string, language: UiLanguage = 'nl') {
   return [
     "$installerScriptPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ('ai-superapp-installer-' + [Guid]::NewGuid().ToString('N') + '.ps1'))",
     'try {',
     `    Invoke-AiSuperappDownload -Uri ${powershellLiteral(url)} -OutFile $installerScriptPath -TimeoutSec 30 -Label 'installer-script'`,
     '    [byte[]]$installerBytes = [System.IO.File]::ReadAllBytes($installerScriptPath)',
     '    $installerScript = [System.Text.Encoding]::UTF8.GetString($installerBytes)',
-    "    if ([string]::IsNullOrWhiteSpace($installerScript)) { throw 'De officiële installer gaf geen script terug.' }",
+    `    if ([string]::IsNullOrWhiteSpace($installerScript)) { throw ${powershellLiteral(localizedText(language, 'De officiële installer gaf geen script terug.', 'The official installer returned an empty script.'))} }`,
     '    & ([scriptblock]::Create($installerScript))',
     '} finally {',
     '    if ([System.IO.File]::Exists($installerScriptPath)) { [System.IO.File]::Delete($installerScriptPath) }',
@@ -168,14 +171,14 @@ function Invoke-WebRequest {
 }
 
 /** Alleen vaste, officiële installers; er komt geen rendererinput in deze commando's. */
-export function interactiveCliInstallPowerShell(kind: InteractiveCliKind) {
+export function interactiveCliInstallPowerShell(kind: InteractiveCliKind, language: UiLanguage = 'nl') {
   const name = interactiveCliName(kind);
   return [
     "$ErrorActionPreference = 'Stop'",
     ...(kind === 'codex' ? ["$env:CODEX_NON_INTERACTIVE = '1'"] : []),
-    `Write-Host ${powershellLiteral(`${name} wordt geïnstalleerd...`)} -ForegroundColor Cyan`,
+    `Write-Host ${powershellLiteral(localizedText(language, `${name} wordt geïnstalleerd...`, `Installing ${name}...`))} -ForegroundColor Cyan`,
     progressAwareInvokeWebRequestPowerShell(),
-    downloadAndInvokePowerShellInstallerPowerShell(installerUrl(kind)),
+    downloadAndInvokePowerShellInstallerPowerShell(installerUrl(kind), language),
   ].join("\n");
 }
 
@@ -197,12 +200,13 @@ export function interactiveCliTerminalLauncherPowerShell(
   kind: InteractiveCliKind,
   executablePath: string,
   workingDirectory: string,
+  language: UiLanguage = 'nl',
 ) {
   const name = interactiveCliName(kind);
   const childCommand = [
     `$Host.UI.RawUI.WindowTitle = ${powershellLiteral(`LLMelt - ${name} login`)}`,
-    `Write-Host ${powershellLiteral(`${name}-login gestart door LLMelt.`)} -ForegroundColor Cyan`,
-    `Write-Host ${powershellLiteral('Rond de login hier af. Dit venster mag daarna worden gesloten.')}`,
+    `Write-Host ${powershellLiteral(localizedText(language, `${name}-login gestart door LLMelt.`, `${name} sign-in started by LLMelt.`))} -ForegroundColor Cyan`,
+    `Write-Host ${powershellLiteral(localizedText(language, 'Rond de login hier af. Dit venster mag daarna worden gesloten.', 'Complete the sign-in here. You can close this window afterwards.'))}`,
     interactiveCliLaunchPowerShell(kind, executablePath),
   ].join("\n");
   const encodedCommand = Buffer.from(childCommand, 'utf16le').toString('base64');
@@ -220,7 +224,7 @@ export function interactiveCliTerminalLauncherPowerShell(
     "$ErrorActionPreference = 'Stop'",
     `$loginProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList @(${childArguments}) -WorkingDirectory ${powershellLiteral(workingDirectory)} -WindowStyle Normal -PassThru`,
     'Start-Sleep -Milliseconds 900',
-    `if ($loginProcess.HasExited) { throw ${powershellLiteral(`${name}-loginvenster sloot direct na het openen.`)} }`,
+    `if ($loginProcess.HasExited) { throw ${powershellLiteral(localizedText(language, `${name}-loginvenster sloot direct na het openen.`, `${name} sign-in window closed immediately after opening.`))} }`,
     "Write-Output ('AI_SUPERAPP_LOGIN_PID|' + $loginProcess.Id)",
   ].join("\n");
 }
@@ -228,6 +232,7 @@ export function interactiveCliTerminalLauncherPowerShell(
 export function parseInteractiveCliInstallerProgress(
   kind: InteractiveCliKind,
   output: string,
+  language: UiLanguage = 'nl',
 ): InteractiveCliInstallerProgress | null {
   const ansiSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
   const normalized = String(output || '')
@@ -253,8 +258,8 @@ export function parseInteractiveCliInstallerProgress(
       ? Math.round(rawMarkerPercent)
       : undefined;
     const progressLabel = label === 'installer-script'
-      ? `${name}-installatiescript ophalen`
-      : `${name} downloaden`;
+      ? localizedText(language, `${name}-installatiescript ophalen`, `Fetching ${name} installer script`)
+      : localizedText(language, `${name} downloaden`, `Downloading ${name}`);
     return {
       phase: 'downloading',
       status: `${progressLabel}${markerPercent === undefined ? '...' : `... ${markerPercent}%`}`,
@@ -277,28 +282,28 @@ export function parseInteractiveCliInstallerProgress(
   if (/installed successfully|installation complete|install complete|successfully installed/i.test(phaseOutput)) {
     return {
       phase: 'installing',
-      status: `${name} is geïnstalleerd.`,
+      status: localizedText(language, `${name} is geïnstalleerd.`, `${name} is installed.`),
       percent: 100,
     };
   }
   if (/verifying|checksum|signature|resolved version/i.test(phaseOutput)) {
     return {
       phase: 'checking',
-      status: `${name}-download controleren...`,
+      status: localizedText(language, `${name}-download controleren...`, `Verifying ${name} download...`),
       ...(percent === undefined ? {} : { percent }),
     };
   }
   if (/downloading|download\b|fetching/i.test(phaseOutput) || percent !== undefined) {
     return {
       phase: 'downloading',
-      status: `${name} downloaden${percent === undefined ? '...' : `... ${percent}%`}`,
+      status: `${localizedText(language, `${name} downloaden`, `Downloading ${name}`)}${percent === undefined ? '...' : `... ${percent}%`}`,
       ...(percent === undefined ? {} : { percent }),
     };
   }
   if (/installing|setting up|extracting|updating (?:the )?path|adding .*path/i.test(phaseOutput)) {
     return {
       phase: 'installing',
-      status: `${name} installeren...`,
+      status: localizedText(language, `${name} installeren...`, `Installing ${name}...`),
     };
   }
   return null;

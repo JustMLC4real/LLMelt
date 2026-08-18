@@ -41,3 +41,10 @@ describe('Auto Mode-validatie', () => {
     expect(autoModePromptPreview('x'.repeat(700))).toHaveLength(600);
   });
 });
+
+describe('Auto Mode-taal', () => {
+  it('levert Engelse validatie en fasetekst', () => {
+    expect(autoModePhaseInfo('waiting', 'en')).toMatchObject({ label: 'Waiting', title: 'Round completed' });
+    expect(() => validateAutoModeConfig({ ...valid, language: 'en', delayMs: 0 })).toThrow(/delay must be between/i);
+  });
+});

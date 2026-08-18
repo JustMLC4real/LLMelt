@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  approvalTitle,
   deferAgentApproval,
   deferAgentApprovalsOutsideChat,
   deferredAgentApprovalsForChat,
@@ -54,5 +55,13 @@ describe('approval-queue', () => {
     expect(nextModalAgentApproval(switched, 'chat-b')).toBeNull();
     expect(switched[0].deferred).toBe(true);
     expect(deferredAgentApprovalsForChat(switched, 'chat-a')).toHaveLength(1);
+  });
+});
+
+describe('approval-titels', () => {
+  it('lokaliseert fallbacktitels en bewaart providerlabels', () => {
+    expect(approvalTitle({ ...approval('f', 'chat-a'), kind: 'file-create' }, 'en')).toBe('Create file');
+    expect(approvalTitle({ ...approval('c', 'chat-a'), kind: 'command' }, 'en')).toBe('Run command');
+    expect(approvalTitle({ ...approval('x', 'chat-a'), label: 'Exact provider label' }, 'en')).toBe('Exact provider label');
   });
 });

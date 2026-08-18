@@ -1,3 +1,6 @@
+import type { UiLanguage } from '../providers/types';
+import { localizedText } from '../i18n/language';
+
 // Pure, testbare classificatie van een ChatGPT-paginastatus voor de web-engine.
 //
 // De scraper drijft een verborgen BrowserWindow aan. Soms verschijnt de composer niet.
@@ -38,7 +41,7 @@ export type ChatGptPageVerdict = {
   retryable: boolean;
   /** Gebruiker kan via "ChatGPT herstellen" opnieuw inloggen / ingrijpen. */
   recoverable: boolean;
-  /** Eerlijke NL-melding voor de gebruiker. */
+  /** Eerlijke melding in de gekozen UI-taal. */
   message: string;
 };
 
@@ -50,7 +53,7 @@ const LOGIN_RE = /\blog ?in\b|sign up|inloggen|welcome back|create account/i;
  * Bepaal wat er met de ChatGPT-pagina aan de hand is. De volgorde is bewust:
  * eerst "klaar", dan transiente crash/blanco, dan de echte blokkades.
  */
-export function classifyChatGptPage(input: ChatGptPageInput): ChatGptPageVerdict {
+export function classifyChatGptPage(input: ChatGptPageInput, language: UiLanguage = 'nl'): ChatGptPageVerdict {
   const status = input.httpStatus ?? 0;
   const title = (input.title || '').trim();
   const body = (input.bodyText || '').trim();
@@ -67,7 +70,7 @@ export function classifyChatGptPage(input: ChatGptPageInput): ChatGptPageVerdict
       kind: 'crashed',
       retryable: true,
       recoverable: false,
-      message: 'ChatGPT render-proces crashte; opnieuw proberen met een vers venster.',
+      message: localizedText(language, 'ChatGPT render-proces crashte; opnieuw proberen met een vers venster.', 'The ChatGPT renderer crashed; retrying with a fresh window may help.'),
     };
   }
 
@@ -79,7 +82,7 @@ export function classifyChatGptPage(input: ChatGptPageInput): ChatGptPageVerdict
       kind: 'headers',
       retryable: true,
       recoverable: false,
-      message: 'ChatGPT-cookies te groot (HTTP 431); cookies opschonen en opnieuw proberen.',
+      message: localizedText(language, 'ChatGPT-cookies te groot (HTTP 431); cookies opschonen en opnieuw proberen.', 'ChatGPT cookies are too large (HTTP 431); clean up cookies and try again.'),
     };
   }
 
@@ -90,7 +93,7 @@ export function classifyChatGptPage(input: ChatGptPageInput): ChatGptPageVerdict
       kind: 'blocked',
       retryable: false,
       recoverable: true,
-      message: 'ChatGPT blokkeert deze geautomatiseerde web-engine wegens unusual activity.',
+      message: localizedText(language, 'ChatGPT blokkeert deze geautomatiseerde web-engine wegens unusual activity.', 'ChatGPT is blocking this automated web engine because of unusual activity.'),
     };
   }
 
@@ -100,7 +103,7 @@ export function classifyChatGptPage(input: ChatGptPageInput): ChatGptPageVerdict
       kind: 'cloudflare',
       retryable: false,
       recoverable: true,
-      message: 'ChatGPT verificatie (Cloudflare) blokkeert de composer; open "ChatGPT herstellen".',
+      message: localizedText(language, 'ChatGPT-verificatie (Cloudflare) blokkeert de composer; open "ChatGPT herstellen".', 'ChatGPT verification (Cloudflare) is blocking the composer; open "Recover ChatGPT".'),
     };
   }
 
@@ -110,7 +113,7 @@ export function classifyChatGptPage(input: ChatGptPageInput): ChatGptPageVerdict
       kind: 'login',
       retryable: false,
       recoverable: true,
-      message: 'ChatGPT web-sessie is niet (meer) ingelogd; open "ChatGPT herstellen" en log opnieuw in.',
+      message: localizedText(language, 'ChatGPT-websessie is niet (meer) ingelogd; open "ChatGPT herstellen" en log opnieuw in.', 'The ChatGPT web session is no longer signed in; open "Recover ChatGPT" and sign in again.'),
     };
   }
 
@@ -121,7 +124,7 @@ export function classifyChatGptPage(input: ChatGptPageInput): ChatGptPageVerdict
       kind: 'blank',
       retryable: true,
       recoverable: false,
-      message: 'ChatGPT pagina laadde leeg; opnieuw proberen met een vers venster.',
+      message: localizedText(language, 'ChatGPT-pagina laadde leeg; opnieuw proberen met een vers venster.', 'The ChatGPT page loaded blank; retrying with a fresh window may help.'),
     };
   }
 
@@ -130,6 +133,6 @@ export function classifyChatGptPage(input: ChatGptPageInput): ChatGptPageVerdict
     kind: 'unknown',
     retryable: true,
     recoverable: true,
-    message: `ChatGPT composer niet gevonden${url ? ` op ${url}` : ''}.`,
+    message: localizedText(language, `ChatGPT-composer niet gevonden${url ? ` op ${url}` : ''}.`, `ChatGPT composer not found${url ? ` at ${url}` : ''}.`),
   };
 }

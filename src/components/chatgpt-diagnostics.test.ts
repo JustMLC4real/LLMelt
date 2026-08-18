@@ -15,6 +15,16 @@ describe('classifyChatGptPage', () => {
     expect(v.recoverable).toBe(false);
   });
 
+  it('localiseert diagnostiek expliciet zonder de classificatie te veranderen', () => {
+    const nl = classifyChatGptPage({ renderGone: true }, 'nl');
+    const en = classifyChatGptPage({ renderGone: true }, 'en');
+
+    expect(nl).toMatchObject({ kind: 'crashed', retryable: true });
+    expect(en).toMatchObject({ kind: 'crashed', retryable: true });
+    expect(nl.message).toContain('render-proces');
+    expect(en.message).toContain('renderer crashed');
+  });
+
   it('treats a blank 200 page (empty title+body) as retryable blank, not a block', () => {
     const v = classifyChatGptPage({ httpStatus: 200, title: '', bodyText: '', hasComposer: false });
     expect(v.kind).toBe('blank');

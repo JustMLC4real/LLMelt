@@ -12,8 +12,14 @@ import { startNewChat } from './new-chat';
 import { requestIdsForChats } from './chat-run-state';
 import { activeProjectFolderId, isCollapsedProjectActive } from './draft-chat';
 
-const Sidebar: React.FC = () => {
-  const { t, i18n } = useTranslation();
+interface SidebarProps {
+  collapsed?: boolean;
+  mobileDrawerOpen?: boolean;
+  onToggle?: () => void;
+}
+
+const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileDrawerOpen = false, onToggle }) => {
+  const { t } = useTranslation();
   const {
     chats,
     draftChats,
@@ -34,6 +40,8 @@ const Sidebar: React.FC = () => {
     removeFolder,
     toggleSidebar,
   } = useChatStore();
+  const displayCollapsed = collapsed ?? sidebarCollapsed;
+  const handleToggle = onToggle ?? toggleSidebar;
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const [deletingChats, setDeletingChats] = useState<Set<string>>(new Set());
@@ -49,21 +57,21 @@ const Sidebar: React.FC = () => {
   const updateBadgeText = updateStatus.state === 'downloading'
     ? `${updateStatus.percent}%`
     : updateStatus.state === 'downloaded'
-      ? 'klaar'
+      ? t('sidebar.updateBadge.ready')
       : updateStatus.state === 'installing'
-        ? 'installeren'
+        ? t('sidebar.updateBadge.installing')
         : updateStatus.state === 'error'
-          ? 'fout'
-          : 'update';
+          ? t('sidebar.updateBadge.error')
+          : t('sidebar.updateBadge.available');
   const updateBadgeTitle = updateStatus.state === 'downloaded'
-    ? `Update ${updateStatus.version ?? ''} klaar om te installeren`
+    ? t('sidebar.updateTitle.ready', { version: updateStatus.version ?? '' })
     : updateStatus.state === 'downloading'
-      ? `Update wordt gedownload: ${updateStatus.percent}%`
+      ? t('sidebar.updateTitle.downloading', { percent: updateStatus.percent })
       : updateStatus.state === 'installing'
-        ? 'Update wordt geïnstalleerd'
+        ? t('sidebar.updateTitle.installing')
         : updateStatus.state === 'error'
-          ? `Updatefout: ${updateStatus.error}`
-          : 'Update beschikbaar';
+          ? t('sidebar.updateTitle.error', { error: updateStatus.error })
+          : t('sidebar.updateTitle.available');
   // Elke handmatige beurt blijft bij zijn eigen chat. Auto-modus is nog gekoppeld
   // aan de geopende chat waarop die gestart is.
   const isChatBusy = (chatId: string) => !!chatRuns[chatId] || (autoModeStatus === 'running' && autoModeChatId === chatId);
@@ -123,9 +131,9 @@ const Sidebar: React.FC = () => {
       });
     }
   }, [chats, folders]);
-  const chatsLabel = i18n.language.startsWith('nl') ? 'Gesprekken' : 'Chats';
-  const projectsLabel = i18n.language.startsWith('nl') ? 'Projecten' : 'Projects';
-  const projectlessLabel = i18n.language.startsWith('nl') ? 'Gesprekken zonder project' : 'Chats without project';
+  const chatsLabel = t('sidebar.chats');
+  const projectsLabel = t('sidebar.projects');
+  const projectlessLabel = t('sidebar.projectlessChats');
 
   const filteredChats = chats.filter((chat) => chat.title.toLowerCase().includes(searchQuery.toLowerCase()));
   // Een chat met een folderId van een niet-bestaande map telt als "zonder project",
@@ -204,7 +212,7 @@ const Sidebar: React.FC = () => {
   const handleCreateProject = async () => {
     const selected = await window.electronAPI?.files.selectDirectory();
     if (!selected) return;
-    const name = selected.split(/[\\/]/).filter(Boolean).pop() || 'Project';
+    const name = selected.split(/[\\/]/).filter(Boolean).pop() || t('sidebar.defaultProjectName');
     let folder = {
       id: crypto.randomUUID(),
       name,
@@ -226,7 +234,7 @@ const Sidebar: React.FC = () => {
   const requestDeleteFolder = (id: string) => {
     const folder = folders.find((candidate) => candidate.id === id);
     const chatCount = chats.filter((chat) => chat.folderId === id).length;
-    setPendingFolderDelete({ id, name: folder?.name || 'dit project', chatCount });
+    setPendingFolderDelete({ id, name: folder?.name || t('sidebar.thisProject'), chatCount });
   };
 
   const confirmDeleteFolder = async () => {
@@ -254,10 +262,10 @@ const Sidebar: React.FC = () => {
     if (saved) updateFolder(id, { projectPath: saved.projectPath || selected });
   };
 
-  if (sidebarCollapsed) {
+  if (displayCollapsed) {
     return (
       <div className="sidebar collapsed">
-        <button className="btn-icon sidebar-icon-btn" onClick={toggleSidebar} title="Open sidebar" aria-label="Open sidebar">
+        <button className="btn-icon sidebar-icon-btn" onClick={handleToggle} title={t('sidebar.open')} aria-label={t('sidebar.open')}>
           <Menu size={18} />
         </button>
       </div>
@@ -265,14 +273,14 @@ const Sidebar: React.FC = () => {
   }
 
   return (
-    <div className="sidebar">
+    <div className={`sidebar ${mobileDrawerOpen ? 'mobile-drawer-open' : ''}`}>
       <div className="sidebar-header">
         <div className="sidebar-brand">
           <span className="font-semibold" style={{ fontSize: 'var(--font-size-md)' }}>
             <FlipText text={t('app.title')} />
           </span>
         </div>
-        <button className="btn-icon sidebar-icon-btn" onClick={toggleSidebar} title="Collapse sidebar" aria-label="Collapse sidebar">
+        <button className="btn-icon sidebar-icon-btn" onClick={handleToggle} title={t('sidebar.collapse')} aria-label={t('sidebar.collapse')}>
           <PanelLeftClose size={18} />
         </button>
       </div>
@@ -284,7 +292,7 @@ const Sidebar: React.FC = () => {
         </button>
         <button className="sidebar-add-folder compact" onClick={handleCreateProject}>
           <FolderPlus size={16} />
-          <FlipText text={i18n.language.startsWith('nl') ? 'Nieuw project' : 'New project'} />
+          <FlipText text={t('sidebar.newProject')} />
         </button>
       </div>
 
@@ -313,8 +321,8 @@ const Sidebar: React.FC = () => {
                 <button
                   className="folder-collapse-btn"
                   onClick={() => toggleFolderCollapse(folder.id)}
-                  title={collapsed ? 'Map openklappen' : 'Map dichtklappen'}
-                  aria-label={collapsed ? 'Map openklappen' : 'Map dichtklappen'}
+                  title={collapsed ? t('sidebar.expandProject') : t('sidebar.collapseProject')}
+                  aria-label={collapsed ? t('sidebar.expandProject') : t('sidebar.collapseProject')}
                 >
                   {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                 </button>
@@ -325,16 +333,16 @@ const Sidebar: React.FC = () => {
               <span className="truncate" style={{ flex: 1 }}>
                 {folder.name}
               </span>
-              {folderBusy && <Loader2 size={13} className="folder-busy-spinner spin" aria-label="Map bevat een bezig gesprek" />}
+              {folderBusy && <Loader2 size={13} className="folder-busy-spinner spin" aria-label={t('sidebar.projectBusy')} />}
               <button
                 className={`btn-icon ${folder.projectPath ? 'active' : ''}`}
                 onClick={() => handleSetFolderProject(folder.id)}
-                title={folder.projectPath ? `Projectmap: ${folder.projectPath}` : 'Projectmap kiezen'}
-                aria-label="Projectmap kiezen"
+                title={folder.projectPath ? t('sidebar.projectPathValue', { path: folder.projectPath }) : t('sidebar.chooseProjectPath')}
+                aria-label={t('sidebar.chooseProjectPath')}
               >
                 <FolderOpen size={14} />
               </button>
-              <button className="btn-icon" onClick={() => handleNewChat(folder.id)} title="Nieuw gesprek in project" aria-label="Nieuw gesprek in project">
+              <button className="btn-icon" onClick={() => handleNewChat(folder.id)} title={t('sidebar.newChatInProject')} aria-label={t('sidebar.newChatInProject')}>
                 <MessageSquarePlus size={14} />
               </button>
               <button className="btn-icon btn-icon-danger" onClick={() => requestDeleteFolder(folder.id)} title={t('common.delete')} aria-label={t('common.delete')}>
@@ -388,12 +396,12 @@ const Sidebar: React.FC = () => {
 
       {pendingFolderDelete && (
         <ConfirmDialog
-          title="Project verwijderen"
-          message={`Project "${pendingFolderDelete.name}" verwijderen?`}
+          title={t('sidebar.deleteProject.title')}
+          message={t('sidebar.deleteProject.message', { name: pendingFolderDelete.name })}
           detail={pendingFolderDelete.chatCount > 0
-            ? `Hiermee verdwijnen ook ${pendingFolderDelete.chatCount} gesprek${pendingFolderDelete.chatCount === 1 ? '' : 'ken'} met alle berichten. Dit kan niet ongedaan worden gemaakt.`
-            : 'Dit project bevat geen gesprekken.'}
-          confirmLabel="Verwijderen"
+            ? t(pendingFolderDelete.chatCount === 1 ? 'sidebar.deleteProject.detailOne' : 'sidebar.deleteProject.detailMany', { count: pendingFolderDelete.chatCount })
+            : t('sidebar.deleteProject.detailEmpty')}
+          confirmLabel={t('common.delete')}
           danger
           onConfirm={confirmDeleteFolder}
           onCancel={() => setPendingFolderDelete(null)}
@@ -406,8 +414,9 @@ const Sidebar: React.FC = () => {
 // Skeleton dat nep-tekst nabootst met grijze pillen terwijl de titel laadt.
 const TITLE_SKELETON_PILLS = [40, 22, 15];
 function TitleSkeleton() {
+  const { t } = useTranslation();
   return (
-    <span className="title-skeleton" aria-label="Titel wordt gegenereerd">
+    <span className="title-skeleton" aria-label={t('sidebar.titleGenerating')}>
       {TITLE_SKELETON_PILLS.map((width, i) => (
         <span
           key={i}
@@ -420,6 +429,7 @@ function TitleSkeleton() {
 }
 
 function ChatRow({ chat, active, generating, busy, deleting, entering, onSelect, onDelete, onRename }: { chat: Chat; active: boolean; generating?: boolean; busy?: boolean; deleting?: boolean; entering?: boolean; onSelect: () => void; onDelete: () => void; onRename: (title: string) => void }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(chat.title);
 
@@ -436,6 +446,7 @@ function ChatRow({ chat, active, generating, busy, deleting, entering, onSelect,
       <div className="chat-item editing">
         <input
           className="chat-item-input"
+          aria-label={t('sidebar.renameChat')}
           value={draft}
           autoFocus
           onChange={(e) => setDraft(e.target.value)}
@@ -460,22 +471,22 @@ function ChatRow({ chat, active, generating, busy, deleting, entering, onSelect,
           <span className="chat-item-title">{chat.title}</span>
           {busy ? (
             // Bezig -> alleen de spinner rechts (geen hernoem/verwijder tijdens streamen).
-            <Loader2 size={14} className="chat-busy-spinner spin" aria-label="Gesprek is bezig" />
+            <Loader2 size={14} className="chat-busy-spinner spin" aria-label={t('sidebar.chatBusy')} />
           ) : (
             <>
               <button
                 className="btn-icon chat-item-action"
                 onClick={(e) => { e.stopPropagation(); startEdit(); }}
-                title="Hernoem"
-                aria-label="Hernoem"
+                title={t('sidebar.renameChat')}
+                aria-label={t('sidebar.renameChat')}
               >
                 <Pencil size={13} />
               </button>
               <button
                 className="btn-icon btn-icon-danger chat-item-action"
                 onClick={(e) => { e.stopPropagation(); onDelete(); }}
-                title="Verwijder"
-                aria-label="Verwijder"
+                title={t('common.delete')}
+                aria-label={t('common.delete')}
               >
                 <Trash2 size={14} />
               </button>

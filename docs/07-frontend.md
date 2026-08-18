@@ -41,7 +41,7 @@ React getest kunnen worden (`vitest`, met coveragegate):
 | `agent-commands.ts` | tag-parsing, validatie, reparatie-prompts (zie [doc 6](06-agent-tools.md)) |
 | `command-run-utils.ts` | live tool-run/-activity-state, render-items voor de chat |
 | `line-diff.ts` | begrensde regel-diff voor providerneutrale bestandskaarten |
-| `command-presets.ts` | slash-commando's (`/doel`, `/reset`, presets) |
+| `command-presets.ts` | provider-native commando's + duidelijk gelabelde LLMelt-snel/diep/reset-shortcuts |
 | `mcp-tools.ts` | MCP-tool-definities + `executeMcpTool` (gedeeld met main) |
 | `chatgpt-diagnostics.ts` | classificatie van ChatGPT-fouten |
 | `chat-run-state.ts` | request-, status- en streamstate per chat, inclusief request-routing |
@@ -84,7 +84,11 @@ Het hart van de interactie (~686 regels). Bevat:
   meet vóór de paint → geen sprong tijdens typen.
 - **Model-chip + agent-chip:** toont het actieve model (incl. ChatGPT-inspanning) en de PC-toegang-modus
   (`ask`/`auto-project`/`full` of "PC-tools uit"), met per-chat override via het access-menu.
-- **Run settings:** reasoning-effort/service-tier (Codex) + command-presets.
+- **Run settings:** uitsluitend live providercontrols. Codex voegt via App Server echte Plan/Default,
+  Goal, Review en skills toe; Claude/Antigravity leveren hun headless modi en efforts vanuit de
+  actuele CLI-help. Er wordt vanuit dit menu geen provider-CLI geopend. ChatGPT-web, Gemini API en
+  Ollama krijgen geen verzonnen plan-/goal-/reviewknoppen.
+  Het slashpalet scheidt provider-native acties zichtbaar van optionele LLMelt-workflows.
 - **Context-meter:** `tokens.getContextUsage` toont de context-vulling.
 - **Code-splitting:** Settings, Terminal, onboarding, keychecker en tokendashboard laden als aparte chunks.
   De navigatiechunks worden tijdens browser-idle alvast opgehaald (zonder componenten te mounten),
@@ -274,9 +278,11 @@ terwijl de echte uitgevoerde acties en bestandsdiffs behouden blijven.
 
 ## 7.10 Token-dashboard en fallbackquota
 
-Het dashboard scheidt drie dingen die niet door elkaar mogen lopen: cumulatief lokaal
+Het dashboard scheidt drie dingen die niet door elkaar mogen lopen: appbreed cumulatief lokaal
 `usage_events`-verbruik, de actuele contextvulling van de geopende chat en providerquota. De
-quota-tabel toont per bucket bronnauwkeurigheid, venster, verbruik/resterend en reset. `App.tsx`
+quota-tabel toont per bucket de provideroppervlakte (web, CLI, API of lokaal), de echte bron,
+bronnauwkeurigheid, het venster, verbruik/resterend en reset. Ontbrekende telemetrie heet
+`limiet onbekend`; dat maakt een provider of model niet automatisch onbeschikbaar. `App.tsx`
 ververst de providerbronnen bij opstart en daarna periodiek; handmatig vernieuwen blijft mogelijk.
 Dezelfde snapshots voeden `QuotaBadge` in modelkiezer en fallbackinstellingen.
 

@@ -5,6 +5,7 @@ import type {
   ChatStreamEvent,
   FallbackConfig,
   ModelRef,
+  NativeProviderCommand,
   OllamaInstalledModel,
   OllamaLibraryModel,
   OllamaLibraryTag,
@@ -15,6 +16,7 @@ import type {
   ProviderType,
   RuntimeSetupId,
   RuntimeSetupProgress,
+  UiLanguage,
   ValidationResult,
 } from '../src/providers/types';
 
@@ -51,6 +53,10 @@ const electronAPI = {
     getAccountStatuses: () => ipcRenderer.invoke('providers:getAccountStatuses'),
     chatgptVersions: () => ipcRenderer.invoke('providers:chatgptVersions'),
     openAccountSurface: (provider: ProviderAccountId) => ipcRenderer.invoke('providers:openAccountSurface', provider),
+    listNativeCommands: (input: { chatId?: string; modelRef: ModelRef; language?: UiLanguage }): Promise<NativeProviderCommand[]> =>
+      ipcRenderer.invoke('providers:listNativeCommands', input),
+    setNativeGoal: (input: { chatId: string; modelRef: ModelRef; objective: string; language?: UiLanguage }) =>
+      ipcRenderer.invoke('providers:setNativeGoal', input),
   },
 
   runtime: {
@@ -209,7 +215,7 @@ const electronAPI = {
 
   terminal: {
     listShells: () => ipcRenderer.invoke('terminal:listShells'),
-    create: (options?: { shell?: string; cwd?: string; cols?: number; rows?: number }) => ipcRenderer.invoke('terminal:create', options),
+    create: (options?: { shell?: string; providerCli?: 'codex' | 'claude' | 'antigravity'; cwd?: string; cols?: number; rows?: number }) => ipcRenderer.invoke('terminal:create', options),
     write: (id: string, data: string) => ipcRenderer.invoke('terminal:write', id, data),
     resize: (id: string, cols: number, rows: number) => ipcRenderer.invoke('terminal:resize', id, cols, rows),
     kill: (id: string) => ipcRenderer.invoke('terminal:kill', id),

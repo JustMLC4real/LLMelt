@@ -1,10 +1,13 @@
 {
   "app": {
     "title": "LLMelt",
-    "tagline": "Al je AI-modellen op een plek"
+    "tagline": "Al je AI-modellen op een plek",
+    "resizeSidebar": "Breedte van zijbalk aanpassen",
+    "resizeTerminal": "Breedte van terminal aanpassen"
   },
   "chat": {
     "placeholder": "Typ een bericht...",
+    "goalPlaceholder": "Beschrijf het doel voor deze chat...",
     "send": "Verstuur",
     "stop": "Stop",
     "newChat": "Nieuw gesprek",
@@ -21,7 +24,127 @@
     "switchedTo": "Geswitcht naar {{model}}",
     "uploadFiles": "Bestanden uploaden",
     "dragDrop": "Sleep bestanden hierheen of klik om te uploaden",
-    "typing": "is aan het typen..."
+    "typing": "is aan het typen...",
+    "startFailed": "Het bericht kon niet worden gestart.",
+    "switchingModel": "Schakelt naar {{model}}...",
+    "nextModel": "volgend model",
+    "providerRequestFailed": "Providerverzoek mislukt.",
+    "demoResponse": "Demoantwoord van {{model}} ({{provider}}). Start de Electron-app en voeg API-keys of lokale CLI's toe voor echte providercalls.",
+    "command": "Commando",
+    "resetCommand": "Commando wissen",
+    "approval": {
+      "waiting": "Wacht op goedkeuring: {{action}}",
+      "request": "De agent vraagt goedkeuring: {{action}}",
+      "position": "{{current}} van {{total}}",
+      "deferred": "Uitgesteld",
+      "allow": "Toestaan",
+      "deny": "Weigeren",
+      "fileRead": "Bestand lezen",
+      "fileCreate": "Bestand maken",
+      "fileEdit": "Bestand wijzigen",
+      "runCommand": "Commando uitvoeren",
+      "shell": "Shell",
+      "defaultShell": "standaard",
+      "path": "Pad",
+      "workingDirectory": "Werkmap"
+    },
+    "access": {
+      "full": "Volledige toegang",
+      "fullDescription": "Geen goedkeuringsvragen voor dit gesprek. Riskant, maar snel.",
+      "autoProject": "Auto in werkmap",
+      "autoProjectDescription": "Bestandstools binnen de werkmap gaan automatisch; shellcommando's blijven vragen.",
+      "ask": "Goedkeuring vragen",
+      "askShort": "Goedkeuring vragen",
+      "askDescription": "Vraag per bestand lezen/maken/wijzigen en commando om goedkeuring.",
+      "thisChat": "Alleen voor dit gesprek",
+      "followsSettings": "Volgt de instellingen",
+      "toolsOff": "Tools uit",
+      "onlyThisChat": "Alleen dit gesprek",
+      "question": "Hoe moeten AI-acties worden goedgekeurd?",
+      "settingsDefault": "Standaard uit instellingen",
+      "current": "Nu: {{mode}}",
+      "globallyOffNote": "Agenttools zijn globaal uitgeschakeld in Instellingen."
+    }
+  },
+  "message": {
+    "userAlt": "Jij",
+    "userInitials": "JIJ",
+    "autoModePrompt": "Auto-modusprompt",
+    "streaming": "Antwoord wordt gestreamd",
+    "recoverChatgpt": "ChatGPT herstellen",
+    "attachmentNumber": "Bijlage {{count}}"
+  },
+  "chatView": {
+    "agentTerminal": "Agentterminal",
+    "terminal": "Terminal",
+    "working": "werkt…",
+    "providers": {
+      "chatgptWebSession": "ChatGPT-websessie",
+      "openaiApi": "OpenAI API",
+      "codexCli": "Codex CLI"
+    },
+    "connectionStatus": {
+      "online": "online",
+      "limited": "wordt gecontroleerd",
+      "offline": "offline"
+    },
+    "pcAccess": {
+      "full": "PC-toegang: volledig zonder vragen",
+      "project": "PC-toegang: automatisch in werkmap",
+      "thisChat": " (dit gesprek)"
+    },
+    "projectPath": {
+      "legacy": "Oud chatproject",
+      "default": "Standaardwerkmap"
+    }
+  },
+  "sidebar": {
+    "chats": "Gesprekken",
+    "projects": "Projecten",
+    "projectlessChats": "Gesprekken zonder project",
+    "defaultProjectName": "Project",
+    "thisProject": "dit project",
+    "open": "Zijbalk openen",
+    "collapse": "Zijbalk inklappen",
+    "newProject": "Nieuw project",
+    "expandProject": "Project openklappen",
+    "collapseProject": "Project dichtklappen",
+    "projectBusy": "Project bevat een actief gesprek",
+    "projectPathValue": "Projectmap: {{path}}",
+    "chooseProjectPath": "Projectmap kiezen",
+    "newChatInProject": "Nieuw gesprek in project",
+    "titleGenerating": "Titel wordt gegenereerd",
+    "chatBusy": "Gesprek is bezig",
+    "renameChat": "Gesprek hernoemen",
+    "updateBadge": {
+      "ready": "klaar",
+      "installing": "installeren",
+      "error": "fout",
+      "available": "update"
+    },
+    "updateTitle": {
+      "ready": "Update {{version}} klaar om te installeren",
+      "downloading": "Update wordt gedownload: {{percent}}%",
+      "installing": "Update wordt geïnstalleerd",
+      "error": "Updatefout: {{error}}",
+      "available": "Update beschikbaar"
+    },
+    "deleteProject": {
+      "title": "Project verwijderen",
+      "message": "Project ‘{{name}}’ verwijderen?",
+      "detailOne": "Hiermee verdwijnt ook 1 gesprek met alle berichten. Dit kan niet ongedaan worden gemaakt.",
+      "detailMany": "Hiermee verdwijnen ook {{count}} gesprekken met alle berichten. Dit kan niet ongedaan worden gemaakt.",
+      "detailEmpty": "Dit project bevat geen gesprekken."
+    }
+  },
+  "window": {
+    "minimize": "Minimaliseren",
+    "maximize": "Maximaliseren",
+    "restore": "Herstellen",
+    "close": "Sluiten"
+  },
+  "systemPromptEditor": {
+    "collapse": "Systeemprompt inklappen"
   },
   "models": {
     "title": "Model kiezen",
@@ -32,11 +155,66 @@
     "offline": "Offline",
     "cooldown": "Beschikbaar over {{time}}",
     "context": "{{size}} context",
-    "noModels": "Geen modellen beschikbaar"
+    "noModels": "Geen modellen beschikbaar",
+    "noModel": "Geen model",
+    "model": "Model",
+    "provider": "Provider",
+    "variant": "Variant",
+    "family": "Familie",
+    "version": "Versie",
+    "mode": "Modus",
+    "effort": "Inspanning",
+    "standard": "Standaard",
+    "intelligence": "Intelligentie",
+    "speed": "Snelheid",
+    "noProviders": "Geen providers beschikbaar",
+    "noneFound": "Geen modellen gevonden",
+    "noneFoundHelp": "Geen bruikbare modellen gevonden. Controleer je providerinstellingen en vernieuw de catalogus.",
+    "catalogChecking": "Modelcatalogus wordt gecontroleerd",
+    "refreshing": "Modellen worden vernieuwd",
+    "catalogNotLoaded": "Modelcatalogus niet geladen",
+    "webSessionActive": "Websessie actief",
+    "webSessionSignedOut": "Niet ingelogd",
+    "webSessionUnconfirmed": "Websessie wordt gecontroleerd",
+    "remote": "Extern",
+    "accountWideChooseBelow": "Accountbrede limiet; kies hieronder model en instellingen",
+    "accountWideLimit": "Accountbrede limiet",
+    "useProvider": "Gebruik {{provider}}",
+    "noApiKey": "Geen API-key",
+    "viaSignedInChatgpt": "via je ingelogde ChatGPT-account",
+    "catalogMissingNotice": "Je sessie is gekoppeld, maar de live modelcatalogus ontbreekt.",
+    "loadCatalogFirst": "Laad eerst de modelcatalogus",
+    "signInChatgptFirst": "Log eerst in bij ChatGPT",
+    "cliFound": "CLI gevonden",
+    "cliRequired": "CLI nodig",
+    "cliNotFound": "CLI niet gevonden",
+    "cliAuthRequired": "CLI-login nodig",
+    "connected": "Verbonden",
+    "notConnected": "Niet verbonden",
+    "ollamaLocal": "Ollama lokaal",
+    "ollamaOffline": "Ollama offline",
+    "localModel": "Lokaal model",
+    "modelCount": "{{count}} modellen",
+    "efforts": {
+      "low": "Licht",
+      "medium": "Gemiddeld",
+      "high": "Hoog",
+      "xhigh": "Zeer hoog",
+      "max": "Max",
+      "ultra": "Ultra"
+    },
+    "serviceTiers": {
+      "standard": "Standaard",
+      "default": "Standaard",
+      "fast": "Snel",
+      "priority": "Snel",
+      "flex": "Flex"
+    }
   },
   "tokens": {
     "dashboard": "Token Dashboard",
     "contextWindow": "Contextvenster",
+    "noActiveModel": "Geen actief model",
     "contextUsed": "Context gebruikt",
     "used": "Gebruikt",
     "remaining": "Resterend",
@@ -63,8 +241,64 @@
     "live": "Live",
     "delayed": "Vertraagd",
     "estimated": "Geschat",
-    "unavailable": "Niet beschikbaar",
-    "local": "Lokaal"
+    "unavailable": "Niet gepubliceerd",
+    "local": "Lokaal",
+    "modelUsage": "Modelverbruik",
+    "measurement": "Meting",
+    "contextHelp": "Dit is de actuele context van dit gesprek, niet je accountquotum.",
+    "contextCountSource": "Tokenaantal: {{source}}",
+    "contextWindowSource": "Venster: {{source}}",
+    "usageScope": "Alle gesprekken in deze installatie",
+    "usageHelp": "Dit appbrede totaal omvat alle gesprekken. Verbruik per model wordt alleen als gemeten getoond wanneer de provider, CLI of lokale runtime tokenaantallen levert. Schattingen zijn apart gemarkeerd.",
+    "quotaHelp": "Accountquota staat los van modelbeschikbaarheid. Ontbrekende quotatelemetrie betekent niet dat een model offline is.",
+    "noReportedUsage": "Nog geen tokenverbruik van een voltooide modelreactie geregistreerd. De contextschatting hierboven is geen accountverbruik.",
+    "providerMeasured": "Provider gemeten",
+    "cliMeasured": "CLI gemeten",
+    "localMeasured": "Lokaal gemeten",
+    "usageEstimated": "Geschat",
+    "usageMixed": "Gemengd",
+    "usageUnknown": "Bron onbekend",
+    "surface_subscription_web": "Webabonnement",
+    "surface_api": "API",
+    "surface_cli": "CLI",
+    "surface_desktop": "Desktop-app",
+    "surface_local": "Lokaal",
+    "surface_remote": "Extern",
+    "quotaSource_headers": "responseheaders",
+    "quotaSource_codex_app_server": "Codex-accountserver",
+    "quotaSource_claude_statusline": "Claude-statusregel",
+    "quotaSource_antigravity_statusline": "Antigravity-statusregel",
+    "quotaSource_google_service_usage": "Google Service Usage",
+    "quotaSource_google_monitoring": "Google Monitoring",
+    "quotaSource_runtime_error": "runtimefout",
+    "quotaSource_local": "lokale runtime",
+    "quotaSource_unknown": "niet gepubliceerd",
+    "limitNotPublished": "limiet niet gepubliceerd",
+    "limitUnknown": "limiet onbekend",
+    "accountLimitUnknown": "accountlimiet onbekend",
+    "projectLimit": "projectlimiet",
+    "knownAfterRequest": "bekend na API-call",
+    "limitKnown": "limiet bekend",
+    "localLimit": "lokaal",
+    "primaryWindow": "Primair",
+    "secondaryWindow": "Secundair",
+    "fiveHourWindow": "5 uur",
+    "sevenDayWindow": "7 dagen",
+    "localWindow": "Lokaal",
+    "quotaExhausted": "quotum opgebruikt",
+    "quotaLimited": "bijna opgebruikt",
+    "quotaDelayed": "quota vertraagd",
+    "cooldown": "cooldown",
+    "percentRemaining": "{{percent}}% over",
+    "requestsRemaining": "{{count}} req over",
+    "usedPercent": "{{percent}}% gebruikt",
+    "usedAndRemainingPercent": "{{used}}% gebruikt · {{remaining}}% over",
+    "remainingOfLimit": "{{remaining}} / {{limit}} resterend",
+    "availableNow": "Beschikbaar",
+    "dayShort": "d",
+    "hourShort": "u",
+    "minuteShort": "m",
+    "secondShort": "s"
   },
   "autoMode": {
     "title": "Auto Mode",
@@ -84,7 +318,33 @@
     "stopped": "Gestopt",
     "iteration": "Iteratie {{current}}/{{max}}",
     "iterationInfinite": "Iteratie {{current}}/oneindig",
-    "totalTokens": "Totaal tokens: {{count}}"
+    "totalTokens": "Totaal tokens: {{count}}",
+    "unlimitedConfirm": "Auto Mode staat op oneindig zonder tokenbudget. Weet je zeker dat je wilt starten?",
+    "collapse": "Auto Mode inklappen",
+    "lastPrompt": "Laatste gemaakte prompt",
+    "goal": "Doel / opdracht voor de prompter",
+    "goalPlaceholder": "Bijv. ‘Bouw stap voor stap een marketingplan voor een nieuwe app’ - de prompter stuurt het gesprek hierop aan.",
+    "prompterHelp": "Bedenkt steeds de volgende concrete opdracht.",
+    "responderHelp": "Voert die opdracht uit in dit gesprek.",
+    "tokenBudget": "Tokenbudget (0 = geen limiet)",
+    "roundInfinite": "Ronde {{current}} / oneindig",
+    "round": "Ronde {{current}} / {{max}}",
+    "steps": {
+      "prompt": "Prompt maken",
+      "answer": "Antwoord maken",
+      "nextRound": "Volgende ronde"
+    },
+    "phases": {
+      "idle": { "label": "Gereed", "title": "Auto Mode is gereed", "description": "Kies twee modellen en start een run." },
+      "starting": { "label": "Starten", "title": "Auto Mode wordt gestart", "description": "De eerste ronde wordt voorbereid." },
+      "prompter": { "label": "Prompt maken", "title": "De prompter maakt nu een prompt", "description": "De volgende gebruikersprompt wordt opgebouwd." },
+      "responder": { "label": "Antwoord maken", "title": "Het antwoordmodel reageert nu", "description": "De gemaakte prompt wordt door het antwoordmodel verwerkt." },
+      "waiting": { "label": "Wachten", "title": "Ronde afgerond", "description": "Auto Mode wacht op de volgende ronde." },
+      "paused": { "label": "Gepauzeerd", "title": "Auto Mode is gepauzeerd", "description": "Hervat om verder te gaan." },
+      "completed": { "label": "Klaar", "title": "Auto Mode is klaar", "description": "Alle ingestelde rondes zijn afgerond." },
+      "stopped": { "label": "Gestopt", "title": "Auto Mode is gestopt", "description": "Start opnieuw wanneer je verder wilt." },
+      "error": { "label": "Fout", "title": "Auto Mode is gestopt door een fout", "description": "Bekijk de fout hieronder." }
+    }
   },
   "fallbackChain": {
     "help": "Bepaal de prioriteitsketen voor automatische fallback. Dit kan naar een andere provider schakelen en gebeurt alleen wanneer je het hieronder bewust inschakelt.",
@@ -99,7 +359,39 @@
     "addPlaceholder": "Model toevoegen...",
     "add": "Toevoegen",
     "allowPaidApi": "Betaalde API als fallback toestaan",
-    "paidApiConfirm": "Deze fallback kan API-kosten maken. Wil je betaalde API-fallback voor dit model echt toestaan?"
+    "paidApiConfirm": "Deze fallback kan API-kosten maken. Wil je betaalde API-fallback voor dit model echt toestaan?",
+    "saved": "Opgeslagen",
+    "noModel": "Geen model beschikbaar",
+    "codexAlreadyAdded": "Codex CLI staat al in de fallbackketen.",
+    "controls": {
+      "model": "Model",
+      "effort": "Inspanning",
+      "speed": "Snelheid",
+      "intelligence": "Intelligentie"
+    },
+    "effort": {
+      "low": "Licht",
+      "medium": "Gemiddeld",
+      "high": "Hoog",
+      "xhigh": "Zeer hoog",
+      "max": "Max",
+      "ultra": "Ultra"
+    },
+    "serviceTier": {
+      "standard": "Standaard",
+      "fast": "Snel"
+    },
+    "surfaces": {
+      "chatgptSubscription": "ChatGPT-abonnement",
+      "openaiApi": "OpenAI API",
+      "codexCli": "Codex CLI",
+      "claudeCli": "Claude CLI",
+      "claudeApi": "Claude API",
+      "geminiApi": "Gemini API",
+      "antigravityCli": "Antigravity CLI",
+      "local": "Lokaal",
+      "remote": "Extern"
+    }
   },
   "auth": {
     "title": "Accounts en API keys",
@@ -125,7 +417,32 @@
     "sshResetFingerprint": "Opgeslagen hostvingerafdruk wissen",
     "sshFingerprintReset": "Hostvingerafdruk gewist; de volgende verbinding slaat de nieuwe sleutel op.",
     "sshFingerprintMissing": "Voor deze host was geen vingerafdruk opgeslagen.",
-    "connect": "Verbinden"
+    "connect": "Verbinden",
+    "notSignedIn": "Niet ingelogd",
+    "notConfigured": "Niet ingesteld",
+    "cliFound": "CLI gevonden",
+    "cliFoundSignedIn": "CLI gevonden en ingelogd",
+    "cliFoundLoginRequired": "CLI gevonden; login nodig",
+    "cliAuthRequired": "CLI-login nodig",
+    "cliNotFound": "CLI niet gevonden",
+    "claudeCliNotFound": "Claude CLI niet gevonden",
+    "apiKeyConnected": "API-key verbonden",
+    "apiKeyRequired": "API-key nodig",
+    "signInMethod": "Inlogmethode",
+    "route": "Route",
+    "chatgptWebSession": "ChatGPT-websessie",
+    "subscription": "Abonnement",
+    "signInAgain": "Log opnieuw in om de sessie te herstellen.",
+    "signIn": "Inloggen",
+    "openChatgpt": "ChatGPT openen",
+    "resetWebEngine": "Webengine herstellen",
+    "signOut": "Uitloggen",
+    "connectRequired": "Koppeling nodig",
+    "browserSession": "Browsersessie",
+    "recoveryRequired": "Herstel nodig",
+    "stalled": "Vastgelopen",
+    "webSessionActivePlan": "Websessie actief · {{plan}}",
+    "webSessionActive": "Websessie actief"
   },
   "keyChecker": {
     "title": "API Key Checker",
@@ -140,7 +457,15 @@
     "expired": "Verlopen",
     "models": "Beschikbare modellen",
     "useThis": "Gebruik deze key",
-    "exportValid": "Exporteer werkende keys"
+    "exportValid": "Exporteer werkende keys",
+    "pasteLabel": "Key(s) plakken",
+    "pastePlaceholder": "Plak hier OpenAI-, Anthropic- of Gemini-keys. De app maskeert ze in de resultaten.",
+    "smokeTestHelp": "Elke key krijgt een echte generatie-smoketest voor OpenAI, Anthropic of Gemini. Bij een fout zie je of de key is ingetrokken of verlopen, het tegoed of quotum op is, of het model niet beschikbaar is.",
+    "testPasted": "Geplakte keys testen",
+    "limitedCount": "{{count}} beperkt",
+    "status": "Status",
+    "testedModel": "Getest: {{model}}",
+    "limited": "Beperkt"
   },
   "memory": {
     "title": "Geheugen",
@@ -177,7 +502,120 @@
     "importChats": "Chats importeren",
     "clearData": "Alle gegevens wissen",
     "about": "Over",
-    "version": "Versie"
+    "version": "Versie",
+    "search": "Zoek in instellingen...",
+    "updates": "Updates",
+    "providers": "Providers",
+    "saveLocalProviders": "Lokale providerinstellingen opslaan",
+    "discoveredModels": "Ontdekte modellen",
+    "modelsAvailable": "{{count}} modellen beschikbaar",
+    "refreshModels": "Modellen vernieuwen",
+    "profile": {
+      "title": "Profiel",
+      "yourAvatar": "Jouw avatar",
+      "chatAvatar": "Avatar in gesprekken",
+      "description": "Deze afbeelding verschijnt naast jouw berichten.",
+      "chooseImage": "Afbeelding kiezen",
+      "chooseImageFile": "Kies een afbeeldingsbestand",
+      "imageTooLarge": "De afbeelding is te groot. Kies een bestand kleiner dan 8 MB.",
+      "processingImage": "Afbeelding verwerken...",
+      "avatarSaved": "Avatar opgeslagen.",
+      "avatarSaveFailed": "Avatar opslaan is mislukt.",
+      "avatarRemoved": "Avatar verwijderd."
+    },
+    "onboarding": {
+      "title": "Opstartgids",
+      "description": "Loop de welkomstgids opnieuw door om providers te installeren of accounts te koppelen.",
+      "restart": "Opstartgids opnieuw starten"
+    },
+    "titles": {
+      "title": "Gesprekstitels",
+      "description": "Hoe krijgt een nieuw gesprek tijdens de eerste beurt automatisch een naam?",
+      "method": "Methode",
+      "ollamaDescription": "Laat een lokaal Ollama-model de titel maken",
+      "simple": "Eenvoudig (geen AI)",
+      "simpleDescription": "Gebruik de eerste ongeveer 42 tekens van je bericht",
+      "off": "Uit",
+      "offDescription": "Geen automatische naam",
+      "checkingOllama": "Ollama-status controleren...",
+      "readyWith": "Klaar met {{model}}",
+      "modelRequired": "Model {{model}} is nodig",
+      "ollamaRequired": "Ollama is hiervoor nodig",
+      "downloadDescription": "Download {{model}} om automatisch korte gesprekstitels te maken.",
+      "installDescription": "Installeer Ollama en download daarna {{model}} om automatisch korte gesprekstitels te maken.",
+      "downloadedOf": "{{transferred}} van {{total}} gedownload",
+      "downloadModel": "Download {{model}}",
+      "installWithModel": "Installeer Ollama met {{model}}",
+      "progress": {
+        "checking": "Ollama en het titelmodel controleren…",
+        "downloadingRuntime": "Ollama voor Windows downloaden…",
+        "verifyingRuntime": "Ollama-installer controleren…",
+        "installingRuntime": "Ollama installeren…",
+        "startingRuntime": "De lokale Ollama-server starten…",
+        "downloadingModel": "Titelmodel {{model}} downloaden…",
+        "errorDetail": "Installatie van het titelmodel is mislukt: {{detail}}"
+      }
+    },
+    "chatgpt": {
+      "statusReadFailed": "ChatGPT-status kon niet worden gelezen."
+    },
+    "cli": {
+      "foundAndConnected": "{{name}} is gevonden en verbonden.",
+      "opened": "{{name}} is geopend.",
+      "installedAndOpened": "{{name}} is geïnstalleerd en geopend.",
+      "openFailed": "{{name}} kon niet worden geopend.",
+      "openFailedDetail": "{{name}} kon niet worden geopend ({{detail}})",
+      "claudeDescription": "Gebruik je Claude-account via de native Claude Code CLI; een API-key is niet nodig.",
+      "codexDescription": "Gebruik je ChatGPT-account via de native Codex CLI.",
+      "codexRunConfigHint": "Model, inspanning en snelheid kies je per gesprek in de modelkiezer of met een slash-opdracht.",
+      "antigravityDescription": "Gebruik je Google-account via de native Antigravity CLI.",
+      "open": "Open {{name}}",
+      "install": "Installeer {{name}}",
+      "timeoutSeconds": "Timeout (seconden)",
+      "openLogin": "Login openen",
+      "detectedPath": "Gedetecteerd CLI-pad",
+      "notFoundYet": "Nog geen CLI-pad gevonden",
+      "manualPathOptional": "Handmatig executablepad (optioneel)"
+    },
+    "gemini": {
+      "invalidApiKey": "De Gemini API-key is niet geldig.",
+      "requiredCloudQuota": "Verplichte Google Cloud-quota",
+      "quotaDescription": "Koppel hetzelfde Google Cloud-project om quota en verbruik te kunnen lezen.",
+      "projectId": "Google Cloud-project-ID",
+      "oauthClientId": "OAuth desktop-client-ID",
+      "reconnect": "Opnieuw koppelen",
+      "connect": "Google Cloud koppelen",
+      "disconnect": "Google Cloud ontkoppelen"
+    },
+    "ollama": {
+      "localUrl": "Lokale Ollama-URL",
+      "remoteViaSsh": "Extern via SSH"
+    },
+    "agent": {
+      "title": "Agenttools en goedkeuring",
+      "description": "Bepaal hoe modellen bestanden mogen lezen, maken of wijzigen en commando's mogen uitvoeren.",
+      "enableToolsPrefix": "Schakel agenttools in voor",
+      "enableToolsAnd": "en",
+      "enableToolsSuffix": "modellen.",
+      "approval": "Goedkeuring",
+      "askEachAction": "Elke actie vragen",
+      "askEachActionDescription": "Vraag toestemming voor elk bestand en ieder commando.",
+      "autoProject": "Automatisch in werkmap",
+      "autoProjectDescription": "Bestandsacties in de werkmap gaan automatisch; commando's vragen toestemming.",
+      "fullAccess": "Volledige toegang",
+      "fullAccessDescription": "Geen goedkeuringsvragen. Riskant, maar snel.",
+      "defaultShell": "Standaardshell",
+      "standardWindowsPowershell": "Standaard Windows PowerShell",
+      "pwshOnlyIfInstalled": "PowerShell 7 (alleen indien geïnstalleerd)",
+      "fallbackWorkingDirectory": "Standaardwerkmap",
+      "workingDirectoryPlaceholder": "Bijv. C:\\Users\\Naam\\Project",
+      "testCommand": "Testcommando",
+      "testCommandPlaceholder": "Bijv. Get-Location",
+      "run": "Uitvoeren",
+      "noOutput": "Geen uitvoer ontvangen.",
+      "noResponse": "Geen antwoord ontvangen.",
+      "deniedByUser": "Geweigerd door gebruiker."
+    }
   },
   "activity": {
     "filesRead": "Bestanden gelezen",
@@ -195,7 +633,323 @@
     "editFailed": "Bewerking mislukt",
     "editedFile": "Bewerkt bestand",
     "copy": "Kopiëren",
-    "copyFileContent": "Bestandswijziging kopiëren"
+    "copyFileContent": "Bestandswijziging kopiëren",
+    "summaryFailed": "Samenvatting kon niet worden opgehaald: {{error}}",
+    "previousAttempt": "Eerdere poging",
+    "previousAttempts": "Eerdere pogingen ({{count}})",
+    "noDetails": "(geen details)",
+    "readStat": "gelezen",
+    "defaultToolLabel": "Heeft uitgevoerd: tool-output",
+    "attempt": "poging {{count}}",
+    "toolOutput": "Tool-output",
+    "noOutput": "(geen output)",
+    "executedCommand": "Heeft uitgevoerd: {{command}}",
+    "shell": "Shell",
+    "exitCode": "Afsluitcode {{code}}",
+    "phase": {
+      "planning": "Model plant toolstappen",
+      "approval_pending": "Wacht op goedkeuring",
+      "approval_approved": "Goedgekeurd",
+      "approval_denied": "Geweigerd",
+      "running": "Voert uit",
+      "sending_output": "Tool-output verwerkt",
+      "summarizing": "Model vat samen",
+      "repairing": "Model herstelt",
+      "done": "Klaar",
+      "stopped": "Gestopt"
+    },
+    "approval": {
+      "pending": "goedkeuring in afwachting",
+      "approved": "goedkeuring gegeven",
+      "denied": "goedkeuring geweigerd"
+    },
+    "group": {
+      "runningCommandOne": "voert 1 opdracht uit",
+      "runningCommandMany": "voert {{count}} opdrachten uit",
+      "completedCommandOne": "voerde 1 opdracht uit",
+      "completedCommandMany": "voerde {{count}} opdrachten uit",
+      "toolResultOne": "verwerkte 1 toolresultaat",
+      "toolResultMany": "verwerkte {{count}} toolresultaten",
+      "join": "{{first}} en {{last}}",
+      "withPreviousOne": "{{base}} · 1 eerdere poging",
+      "withPreviousMany": "{{base}} · {{count}} eerdere pogingen",
+      "readFileOne": "las 1 bestand",
+      "readFileMany": "las {{count}} bestanden",
+      "createdFileOne": "maakte 1 bestand",
+      "createdFileMany": "maakte {{count}} bestanden",
+      "editedFileOne": "bewerkte 1 bestand",
+      "editedFileMany": "bewerkte {{count}} bestanden",
+      "changedFileOne": "wijzigde 1 bestand",
+      "changedFileMany": "wijzigde {{count}} bestanden"
+    }
+  },
+  "onboarding": {
+    "skip": "Overslaan",
+    "welcome": {
+      "title": "Hallo, welkom bij LLMelt",
+      "text": "We controleren eerst wat al werkt en stellen daarna alleen jouw gekozen diensten in.",
+      "start": "Beginnen"
+    },
+    "intro": {
+      "title": "Al je LLM's op één plek",
+      "text": "Installaties starten nooit stil. Jij kiest een provider, de gids opent de officiële installer of login en controleert daarna of de koppeling echt werkt.",
+      "check": "Controleer deze pc"
+    },
+    "scanning": {
+      "title": "Diensten en accounts controleren",
+      "text": "We lezen alleen providerstatussen. Je gesprekken, bestanden en bestaande instellingen worden niet gewist.",
+      "progress": "{{scanned}} van {{total}} gecontroleerd"
+    },
+    "confirm": {
+      "title": "Dit is al gevonden",
+      "text": "“Gevonden” kan ook betekenen dat een CLI nog login nodig heeft; dat lossen we in de volgende stappen op.",
+      "none": "Nog niets gevonden. Geen probleem: kies hierna wat je wilt installeren of koppelen."
+    },
+    "missing": {
+      "title": "Wat wil je nog instellen?",
+      "text": "Kies “Ja” om nu samen de installatie of login te doorlopen.",
+      "allFound": "Alle diensten zijn gevonden."
+    },
+    "next": "Volgende",
+    "back": "Terug",
+    "setupWithMe": "Instellen met mij",
+    "step": "Stap {{current}} van {{total}}",
+    "working": "Bezig…",
+    "recheck": "Controleer opnieuw",
+    "finish": "Afronden",
+    "finishLater": "Later afronden",
+    "saving": "Keuzes opslaan…",
+    "done": {
+      "title": "LLMelt staat klaar",
+      "text": "Je kunt providerinstellingen en deze gids later altijd opnieuw openen."
+    },
+    "status": {
+      "pythonChecking": "Python-runtime controleren…",
+      "pythonInstalling": "Officiële Python-installatie starten…",
+      "chatgptLogin": "Log in in het geopende ChatGPT-venster. De gids controleert je sessie automatisch.",
+      "codexLogin": "Rond de ChatGPT-login af in het geopende terminalvenster.",
+      "claudeLogin": "Rond de Claude-login af in het geopende terminalvenster.",
+      "antigravityLogin": "Rond de Google-login af in het geopende terminalvenster.",
+      "geminiKeyMissing": "Plak eerst je Gemini API-sleutel.",
+      "geminiProjectMissing": "Vul ook het Google Cloud-project en de OAuth desktop-client-ID in.",
+      "geminiKeyInvalid": "De Gemini API-sleutel is niet geldig.",
+      "geminiQuotaFailed": "Google Cloud-quota koppelen is niet gelukt.",
+      "geminiConnected": "Gemini API-key en Google Cloud-quota zijn gekoppeld.",
+      "setupStartFailed": "De configuratiestap kon niet worden gestart.",
+      "providerReady": "{{provider}} is gecontroleerd en gebruiksklaar.",
+      "providerAlreadyReady": "{{provider}} is al gebruiksklaar.",
+      "setupIncomplete": "De stap is nog niet afgerond. Rond de installatie of login af en kies daarna “Controleer opnieuw”.",
+      "checking": "Status controleren…",
+      "notReady": "Nog niet klaar. Rond de zichtbare installatie- of login-stap eerst af."
+    },
+    "python": {
+      "title": "Python voor code-opdrachten",
+      "description": "Python is optioneel voor chat, maar nodig wanneer een model Python-scripts moet bouwen en uitvoeren.",
+      "steps": {
+        "validate": "De app accepteert alleen een executable die echt een Python-versie retourneert.",
+        "install": "Installeren gebeurt pas na jouw klik via de officiële Python Install Manager.",
+        "save": "Na installatie wordt het executablepad opnieuw gecontroleerd en voor toolcommando's bewaard."
+      },
+      "detectedPath": "Gedetecteerd Python-pad",
+      "notChecked": "Python is nog niet gecontroleerd.",
+      "installOfficial": "Installeer officiële Python",
+      "continueWithout": "Zonder Python doorgaan"
+    },
+    "setup": {
+      "providerTitle": "{{provider}} instellen",
+      "detectedCliPath": "Gedetecteerd CLI-pad",
+      "geminiApiKey": "Gemini API-sleutel",
+      "googleProjectId": "Google Cloud-project-ID",
+      "oauthClientId": "OAuth desktop-client-ID"
+    },
+    "progress": {
+      "awaitingLogin": "Wacht op afronden van de login",
+      "live": "Voortgang wordt live gevolgd"
+    },
+    "providers": {
+      "openai": {
+        "description": "ChatGPT Subscription gebruikt een aparte beveiligde websessie in LLMelt; er is geen API-key nodig.",
+        "steps": {
+          "open": "Open het ChatGPT-loginvenster.",
+          "login": "Log in en kies zo nodig je workspace.",
+          "return": "Keer terug; de gids controleert de sessie automatisch."
+        },
+        "action": "Open ChatGPT-login"
+      },
+      "codex": {
+        "install": "Installeer Codex CLI",
+        "open": "Open Codex-login"
+      },
+      "claude": {
+        "install": "Installeer Claude CLI",
+        "open": "Open Claude-login"
+      },
+      "antigravity": {
+        "install": "Installeer Antigravity",
+        "open": "Open Antigravity-login"
+      },
+      "cli": {
+        "description": "{{name}} gebruikt je {{account}}-account rechtstreeks; LLMelt bewaart het accountwachtwoord niet.",
+        "steps": {
+          "found": "De CLI is al gevonden.",
+          "install": "Start de officiële Windows-installer.",
+          "login": "Rond de {{account}}-login af in het zichtbare terminal- of browservenster.",
+          "return": "Keer terug; de gids controleert installatie en login automatisch."
+        }
+      },
+      "google": {
+        "description": "Gemini gebruikt de Developer API. De API-key en read-only Google Cloud-quota moeten verplicht aan hetzelfde project zijn gekoppeld.",
+        "steps": {
+          "key": "Maak een API-sleutel in Google AI Studio.",
+          "apis": "Activeer API Keys API, Cloud Resource Manager API, Service Usage API en Cloud Monitoring API in hetzelfde Cloud-project.",
+          "oauth": "Maak in dat project een OAuth desktop-client.",
+          "validate": "LLMelt valideert alles en leest daarna alleen project-, quota- en verbruiksgegevens."
+        },
+        "action": "Valideer en koppel Google Cloud"
+      },
+      "ollama": {
+        "description": "Ollama draait volledig lokaal en moet als lokale server actief zijn.",
+        "steps": {
+          "install": "Start na jouw klik de officiële Windows-installatie.",
+          "start": "Start de lokale Ollama-server.",
+          "model": "Download bij een lege installatie het lichte basismodel en controleer de live catalogus."
+        },
+        "action": "Installeer en controleer Ollama"
+      }
+    },
+    "bulk": {
+      "aria": "Alle diensten kiezen",
+      "selectAll": "Alles selecteren",
+      "deselectAll": "Alles deselecteren"
+    },
+    "answers": {
+      "yes": "Ja",
+      "later": "Later",
+      "no": "Nee"
+    },
+    "sources": {
+      "lokaal": "lokaal",
+      "account": "account",
+      "api": "API"
+    },
+    "looksAt": {
+      "openai": "ChatGPT-websessie of OpenAI API-sleutel",
+      "codex": "Codex CLI op je pc",
+      "anthropic": "Claude Code CLI of Anthropic API-sleutel",
+      "google": "Gemini API-sleutel",
+      "antigravity": "Antigravity CLI op je pc",
+      "ollama": "lokale Ollama-server"
+    },
+    "detection": {
+      "checking": "Status wordt gecontroleerd",
+      "notFound": "{{provider}} is nog niet gevonden",
+      "ready": "{{provider}} is gebruiksklaar",
+      "foundNeedsSetup": "{{provider}} is gevonden; installatie of login moet nog worden afgerond"
+    }
+  },
+  "ollamaManager": {
+    "aria": "Ollama-modellen beheren",
+    "localModels": "Lokale modellen",
+    "manageAt": "Beheer de modellen op {{url}}.",
+    "refreshInstalledAria": "Geïnstalleerde modellen vernieuwen",
+    "refresh": "Vernieuwen",
+    "offline": "Ollama is niet bereikbaar",
+    "offlineHelp": "Start Ollama of controleer de opgeslagen URL.",
+    "offlineDetail": "Ollama is niet bereikbaar ({{detail}})",
+    "installing": "Installeren…",
+    "installOllama": "Ollama installeren",
+    "filterPlaceholder": "Filter geïnstalleerde modellen…",
+    "filterAria": "Geïnstalleerde modellen filteren",
+    "loadingModels": "Modellen ophalen…",
+    "noLocalModel": "Nog geen lokaal model geïnstalleerd.",
+    "noFilterMatch": "Geen geïnstalleerd model komt overeen met dit filter.",
+    "context": "{{value}} context",
+    "removeModelAria": "{{model}} verwijderen",
+    "removeModel": "Model verwijderen",
+    "removeConfirm": "Wil je {{model}} lokaal verwijderen?\n\nChats blijven bestaan, maar kunnen dit model pas weer gebruiken nadat je het opnieuw downloadt.",
+    "cancel": "Annuleren",
+    "of": "van",
+    "searchNew": "Nieuw model zoeken",
+    "searchHelp": "Zoek in de officiële Ollama-bibliotheek en kies daarna een variant.",
+    "library": "Bibliotheek",
+    "searchPlaceholder": "Bijvoorbeeld qwen, coder of vision…",
+    "searchAria": "Officiële Ollama-bibliotheek doorzoeken",
+    "search": "Zoeken",
+    "searchMinimum": "Typ minstens twee tekens om modellen te zoeken.",
+    "downloadCount": "{{count}} downloads",
+    "variantCount": "{{count}} varianten",
+    "loadingVariants": "Varianten ophalen…",
+    "defaultVariant": "Standaardvariant",
+    "exactModelName": "Exacte modelnaam",
+    "directInstallHelp": "Werkt ook als de online zoekpagina tijdelijk niet beschikbaar is.",
+    "exactModelAria": "Exacte Ollama-modelnaam",
+    "download": "Downloaden",
+    "installed": "Geïnstalleerd",
+    "preparingModel": "{{model}} voorbereiden…",
+    "actionFailed": "De Ollama-actie is mislukt.",
+    "actionFailedDetail": "De Ollama-actie is mislukt ({{detail}})",
+    "capabilities": {
+      "audio": "Audio",
+      "cloud": "Cloud",
+      "completion": "Chat",
+      "embedding": "Embeddings",
+      "insert": "Invullen",
+      "thinking": "Redeneren",
+      "tools": "Tools",
+      "vision": "Beeld"
+    }
+  },
+  "updates": {
+    "title": "App-updates",
+    "installedOnly": "Updates werken alleen in de geïnstalleerde app (niet in dev-modus).",
+    "unknownError": "Onbekende updatefout.",
+    "of": "van",
+    "progressAria": "Downloadvoortgang van app-update",
+    "preparing": "Download voorbereiden…",
+    "searching": "Zoeken…",
+    "retry": "Opnieuw proberen",
+    "check": "Zoek naar updates",
+    "installing": "Installeren…",
+    "installRestart": "Nu installeren & herstarten",
+    "errors": {
+      "installed-only": "Updates werken alleen in de geïnstalleerde app (niet in dev-modus).",
+      "no-failed-download": "Er staat geen mislukte update klaar om opnieuw te downloaden.",
+      "download-first": "Download de update eerst volledig voordat je die installeert."
+    },
+    "status": {
+      "checking": "Zoeken naar updates…",
+      "available": "Update {{version}} gevonden. Downloaden start automatisch…",
+      "downloadingVersion": "Update {{version}} downloaden… {{percent}}%",
+      "downloading": "Update downloaden… {{percent}}%",
+      "downloaded": "Update {{version}} is gedownload en klaar om te installeren.",
+      "installing": "Update wordt geïnstalleerd; de app herstart zo…",
+      "upToDateVersion": "Je hebt de nieuwste versie ({{version}}).",
+      "upToDate": "Je hebt de nieuwste versie.",
+      "error": "Update mislukt: {{error}}",
+      "current": "Huidige versie: {{version}}"
+    }
+  },
+  "confirm": {
+    "delete": "Verwijderen",
+    "cancel": "Annuleren"
+  },
+  "terminal": {
+    "title": "Terminal",
+    "chooseShell": "Shell kiezen",
+    "notFound": "niet gevonden",
+    "newTerminal": "Nieuwe terminal",
+    "stopSession": "Terminalsessie stoppen",
+    "closeTerminal": "Terminal sluiten",
+    "closeSession": "Terminalsessie {{session}} sluiten"
+  },
+  "runSettings": {
+    "title": "Run-instellingen",
+    "effort": "Inspanning",
+    "intelligence": "Intelligentie",
+    "speed": "Snelheid",
+    "providerNative": "Provider-native",
+    "providerNativeActions": "Provider-native actions",
+    "appWorkflows": "LLMelt workflows"
   },
   "common": {
     "save": "Opslaan",
@@ -209,6 +963,12 @@
     "success": "Gelukt",
     "confirm": "Bevestigen",
     "yes": "Ja",
-    "no": "Nee"
+    "no": "Nee",
+    "reload": "Opnieuw laden",
+    "refresh": "Vernieuwen",
+    "unknown": "Onbekend",
+    "pleaseWait": "Even geduld...",
+    "running": "Bezig...",
+    "status": "Status"
   }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   blockingQuotaForModel,
+  makeUnknownQuota,
   parseAntigravityStatuslinePayload,
   parseClaudeStatuslinePayload,
   parseCodexRateLimitsResponse,
@@ -23,6 +24,19 @@ describe('providerneutrale quota', () => {
     expect(snapshots[0].buckets.map((bucket) => bucket.label)).toEqual(['5 uur', '7 dagen']);
     expect(snapshots[0].state).toBe('cooldown');
     expect(snapshots[0].planTier).toBe('pro');
+    expect(snapshots[0].buckets[0].resetAt).toBe('2027-01-15T08:00:00.000Z');
+  });
+
+  it('presenteert ontbrekende quotatelemetrie niet als een onbeschikbaar model', () => {
+    const snapshot = makeUnknownQuota(
+      'openai',
+      'subscription-web',
+      'openai:account',
+      'ChatGPT publiceert geen abonnementsquotum.',
+    );
+    expect(snapshot.state).toBe('unknown');
+    expect(snapshot.accuracy).toBe('unavailable');
+    expect(snapshot.buckets).toEqual([]);
   });
 
   it('leest Claude 5-uur- en 7-dagenvelden uit de statusregel', () => {
@@ -65,6 +79,23 @@ describe('providerneutrale quota', () => {
     }, '2029-12-31T23:59:00.000Z');
     expect(blockingQuotaForModel({ provider: 'anthropic', modelId: 'claude-cli:x' }, snapshots ? [snapshots] : [], 'anthropic:account', Date.parse('2029-12-31T23:59:30Z'))).not.toBeNull();
     expect(blockingQuotaForModel({ provider: 'anthropic', modelId: 'claude-cli:x' }, snapshots ? [snapshots] : [], 'anthropic:account', Date.parse('2030-01-02T00:00:00Z'))).toBeNull();
+  });
+
+  it('laat een webabonnement-cooldown niet lekken naar de API-verbinding', () => {
+    const snapshot = makeUnknownQuota('openai', 'subscription-web', 'openai:account', 'Geen quotum.', 'runtime-error');
+    snapshot.state = 'cooldown';
+    snapshot.buckets = [{ id: 'runtime', label: 'Runtime', meter: 'provider', state: 'cooldown' }];
+
+    expect(blockingQuotaForModel(
+      { provider: 'openai', modelId: 'gpt-api-model' },
+      [snapshot],
+      'openai:gpt-api-model',
+    )).toBeNull();
+    expect(blockingQuotaForModel(
+      { provider: 'openai', modelId: 'chatgpt:gpt-web-model' },
+      [snapshot],
+      'openai:account',
+    )).not.toBeNull();
   });
 
   it('combineert Gemini Monitoring-limiet en vertraagd werkelijk verbruik per model', () => {

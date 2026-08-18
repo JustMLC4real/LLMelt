@@ -73,4 +73,13 @@ describe('Claude eindstatus', () => {
   it('laat een normale result-status door', () => {
     expect(claudeResultFailure({ type: 'result', subtype: 'success', result: 'Klaar.' })).toBeNull();
   });
+
+  it('lokaliseert alleen de app-fallback en behoudt providertekst', () => {
+    expect(claudeResultFailure({ type: 'result', subtype: 'error_unknown', is_error: true }, 'en'))
+      .toBe('error_unknown');
+    expect(claudeResultFailure({ type: 'result', is_error: true }, 'en'))
+      .toBe('Claude reported a failed turn.');
+    expect(claudeResultFailure({ type: 'result', is_error: true, result: 'Raw provider failure' }, 'nl'))
+      .toBe('Raw provider failure');
+  });
 });

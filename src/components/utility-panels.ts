@@ -11,6 +11,11 @@ export function toggledUtilityPanel(current: UtilityPanelId | null, requested: U
   return current === requested ? null : requested;
 }
 
+/** Werkpanelen horen bij de chat en mogen nooit boven instellingen/dashboard blijven staan. */
+export function utilityPanelsAvailableInView(view: string) {
+  return view === 'chat';
+}
+
 /** Laat knoppen buiten ChatView dezelfde exclusieve paneelrouter gebruiken. */
 export function requestUtilityPanelToggle(panel: UtilityPanelId) {
   window.dispatchEvent(new CustomEvent(UTILITY_PANEL_TOGGLE_EVENT, { detail: panel }));

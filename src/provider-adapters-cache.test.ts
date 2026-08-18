@@ -26,8 +26,10 @@ vi.mock('../electron/settings-store', () => ({
 }));
 
 import {
+  antigravityPromptFileInstruction,
   cachedCliResult,
   claudeCliChatArgs,
+  classifyKeyFailure,
   classifyProviderError,
   codexCliChatArgs,
   createAdapters,
@@ -36,6 +38,7 @@ import {
   invalidateCachedCliResults,
   listableCodexCatalogModels,
   pickOpenAISmokeModel,
+  selectAdvertisedReasoningEffort,
 } from '../electron/provider-adapters';
 
 afterEach(() => {
@@ -182,6 +185,25 @@ describe('pickOpenAISmokeModel', () => {
 });
 
 describe('native providerfouten', () => {
+  it('lokaliseert keyvalidatie en behoudt het ruwe providerdetail', () => {
+    const check = { httpStatus: 401, bodyText: '{"error":{"message":"upstream detail"}}' };
+    const nl = classifyKeyFailure(check, 'nl');
+    const en = classifyKeyFailure(check, 'en');
+
+    expect(nl.error).toContain('Key ongeldig');
+    expect(en.error).toContain('key is invalid');
+    expect(nl.error).toContain('upstream detail');
+    expect(en.error).toContain('upstream detail');
+  });
+
+  it('lokaliseert afbreken en de verborgen Antigravity-bestandsinstructie', () => {
+    const cancelled = Object.assign(new Error('extern detail'), { name: 'AbortError' });
+    expect(classifyProviderError(cancelled, 'nl').message).toContain('geannuleerd');
+    expect(classifyProviderError(cancelled, 'en').message).toContain('cancelled');
+    expect(antigravityPromptFileInstruction('C:\\tmp\\prompt.txt', 'nl')).toContain('volledige gebruikersopdracht');
+    expect(antigravityPromptFileInstruction('C:\\tmp\\prompt.txt', 'en')).toContain('complete user request');
+  });
+
   it('schakelt na een gestarte tool niet over naar een tweede provider', () => {
     const error = Object.assign(new Error('timeout na bestandswijziging'), { preventFallback: true });
     expect(classifyProviderError(error)).toMatchObject({
@@ -189,13 +211,66 @@ describe('native providerfouten', () => {
       message: 'timeout na bestandswijziging',
     });
   });
+
+  it('herkent vereiste Claude-usagecredits als limiet zodat fallback kan herstellen', () => {
+    expect(classifyProviderError(new Error(
+      'Fable 5 requires usage credits. Run /usage-credits to continue or switch models with /model.',
+    ))).toMatchObject({ reason: 'rate_limit' });
+  });
+
+  it('classificeert een kale Gemini HTTP 401 als auth-fout voor veilige fallback', () => {
+    expect(classifyProviderError(new Error('Gemini models.list faalde met HTTP 401.')))
+      .toMatchObject({ reason: 'auth_failed' });
+  });
+
+  it('classificeert Gemini RESOURCE_EXHAUSTED/HTTP 429 als herstelbare limiet', () => {
+    expect(classifyProviderError(new Error(
+      'HTTP 429 RESOURCE_EXHAUSTED: quota exceeded; retry later.',
+    ))).toMatchObject({ reason: 'rate_limit' });
+  });
+
+  it('ziet gewone generate- en KeyError-fouten niet aan voor quota of authenticatie', () => {
+    expect(classifyProviderError(new Error('generateContent failed while decoding the response.')))
+      .toMatchObject({ reason: 'provider_error' });
+    expect(classifyProviderError(new Error('KeyError: expected property path.')))
+      .toMatchObject({ reason: 'provider_error' });
+  });
+
+  it('blijft gangbare rate-limit- en API-keymeldingen herkennen', () => {
+    expect(classifyProviderError(new Error('Too many requests: rate_limit exceeded.')))
+      .toMatchObject({ reason: 'rate_limit' });
+    expect(classifyProviderError(new Error('API key is missing.')))
+      .toMatchObject({ reason: 'auth_failed' });
+  });
+
+  it('laat een onbekend Antigravity-model een providerfout blijven', () => {
+    expect(classifyProviderError(new Error('Unknown model selection.')))
+      .toMatchObject({ reason: 'provider_error' });
+  });
+
+  it('verzint zonder expliciete catalogusdefault geen eerste effort', () => {
+    expect(selectAdvertisedReasoningEffort(['eco-v2', 'warp'])).toBeUndefined();
+    expect(selectAdvertisedReasoningEffort(['eco-v2', 'warp'], 'onbekend')).toBeUndefined();
+    expect(selectAdvertisedReasoningEffort(['eco-v2', 'warp'], undefined, 'warp')).toBe('warp');
+  });
 });
 
 describe('CLI-chat zonder PC-tools', () => {
   it('zet Claude in plan/safe-mode zonder sessiepersistentie', () => {
-    expect(claudeCliChatArgs('live-model', 'high')).toEqual(expect.arrayContaining([
+    expect(claudeCliChatArgs('live-model', 'high', ['low', 'high'])).toEqual(expect.arrayContaining([
       '--permission-mode', 'plan', '--safe-mode', '--no-session-persistence', '--effort', 'high',
     ]));
+  });
+
+  it('stuurt Claude geen effort die de geïnstalleerde CLI niet live publiceert', () => {
+    expect(claudeCliChatArgs('live-model', 'max', ['low', 'medium', 'high'])).not.toContain('--effort');
+  });
+
+  it('stuurt een live ontdekte Claude-planmodus mee en negeert een onbekende modus', () => {
+    expect(claudeCliChatArgs('live-model', undefined, [], 'plan', ['default', 'plan']))
+      .toEqual(expect.arrayContaining(['--permission-mode', 'plan']));
+    expect(claudeCliChatArgs('live-model', undefined, [], 'future-mode', ['default', 'plan']))
+      .toEqual(expect.arrayContaining(['--permission-mode', 'plan']));
   });
 
   it('isoleert Codex van schrijfmodi en gebruikersconfig', () => {
@@ -204,6 +279,11 @@ describe('CLI-chat zonder PC-tools', () => {
       '--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', 'read-only',
     ]));
     expect(args).not.toContain('danger-full-access');
+  });
+
+  it('stuurt geen verzonnen Codex-effort wanneer de catalogus niets publiceerde', () => {
+    const args = codexCliChatArgs('future-model');
+    expect(args.join(' ')).not.toContain('model_reasoning_effort');
   });
 });
 

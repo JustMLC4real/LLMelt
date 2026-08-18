@@ -48,7 +48,13 @@ export function registerUpdater(ipcMain: IpcMain, getWindow: () => BrowserWindow
   ipcMain.handle('updater:getStatus', async () => ({ status: latestStatus, currentVersion: app.getVersion(), supported: app.isPackaged }));
 
   ipcMain.handle('updater:check', async () => {
-    if (!app.isPackaged) return { ok: false, error: 'Updates werken alleen in de geïnstalleerde app (niet in dev).' };
+    if (!app.isPackaged) {
+      return {
+        ok: false,
+        reason: 'installed-only',
+        error: 'Updates werken alleen in de geïnstalleerde app (niet in dev).',
+      };
+    }
     try {
       const result = await autoUpdater.checkForUpdates();
       return { ok: true, version: result?.updateInfo?.version };
@@ -58,9 +64,13 @@ export function registerUpdater(ipcMain: IpcMain, getWindow: () => BrowserWindow
   });
 
   ipcMain.handle('updater:download', async () => {
-    if (!app.isPackaged) return { ok: false, error: 'Alleen in de geïnstalleerde app.' };
+    if (!app.isPackaged) return { ok: false, reason: 'installed-only', error: 'Alleen in de geïnstalleerde app.' };
     if (latestStatus.state !== 'available' && latestStatus.state !== 'error') {
-      return { ok: false, error: 'Er staat geen mislukte update klaar om opnieuw te downloaden.' };
+      return {
+        ok: false,
+        reason: 'no-failed-download',
+        error: 'Er staat geen mislukte update klaar om opnieuw te downloaden.',
+      };
     }
     // Compatibiliteit voor oudere renderers en een handmatige retry na een fout.
     // Nieuwe updates bereiken deze handler normaal niet: autoDownload doet dit.
@@ -75,7 +85,7 @@ export function registerUpdater(ipcMain: IpcMain, getWindow: () => BrowserWindow
 
   ipcMain.handle('updater:install', async () => {
     if (latestStatus.state !== 'downloaded') {
-      return { ok: false, error: 'Download de update eerst volledig.' };
+      return { ok: false, reason: 'download-first', error: 'Download de update eerst volledig.' };
     }
     // Een losse installer is bewust begeleid en laat een installatiemap kiezen.
     // Een reeds gedownloade update gebruikt die wizard niet opnieuw: stil vervangen

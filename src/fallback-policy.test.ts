@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeFallbackSwitchState } from '../electron/fallback-policy';
+import { credentialPreflightFallbackReason, normalizeFallbackSwitchState } from '../electron/fallback-policy';
 
 describe('fallbackbeleid', () => {
   it('schakelt een oude impliciet ingeschakelde keten veilig uit', () => {
@@ -21,5 +21,11 @@ describe('fallbackbeleid', () => {
       autoSwitchEnabled: false,
       autoSwitchConfirmed: true,
     });
+  });
+
+  it('kan ontbrekende of niet-ingelogde CLI-providers overslaan', () => {
+    expect(credentialPreflightFallbackReason('codex')).toBe('auth_failed');
+    expect(credentialPreflightFallbackReason('antigravity')).toBe('auth_failed');
+    expect(credentialPreflightFallbackReason('ollama')).toBe('network');
   });
 });

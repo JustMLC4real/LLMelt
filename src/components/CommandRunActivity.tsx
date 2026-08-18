@@ -7,10 +7,7 @@ import {
   type CommandRunGroup,
   type CommandRunGroupItem,
   type FileToolActivity,
-  commandRunGroupLabel,
   commandRunGroupTone,
-  commandRunItemLabel,
-  commandRunStatusLabel,
   commandRunTone,
   formatDuration,
   normalizeActivityGroupOrder,
@@ -18,6 +15,7 @@ import {
 import { copyTextToClipboard } from './clipboard-utils';
 
 export default function CommandRunActivity({ group }: { group: CommandRunGroup }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
   const [expandedRuns, setExpandedRuns] = React.useState<Set<string>>(new Set());
   const [now, setNow] = React.useState(() => Date.now());
@@ -39,7 +37,7 @@ export default function CommandRunActivity({ group }: { group: CommandRunGroup }
       return next;
     });
   };
-  const groupLabel = commandRunGroupLabel(displayGroup);
+  const groupLabel = localizedCommandRunGroupLabel(displayGroup, t);
   const statusItems = displayGroup.runs.filter((item) => item.phase && item.attemptKind !== 'previous-attempt');
   const fileItems = displayGroup.runs.filter((item) => item.file && item.attemptKind !== 'previous-attempt');
   const commandItems = displayGroup.runs.filter((item) => item.run && item.attemptKind !== 'previous-attempt');
@@ -97,7 +95,7 @@ export default function CommandRunActivity({ group }: { group: CommandRunGroup }
           )}
           {group.summaryError && (
             <div className="command-summary-error">
-              Samenvatting kon niet worden opgehaald: {group.summaryError}
+              {t('activity.summaryFailed', { error: group.summaryError })}
             </div>
           )}
         </div>
@@ -123,9 +121,12 @@ function PreviousAttemptsGroup({
   expandedKeys: Set<string>;
   onToggle: (key: string) => void;
 }) {
+  const { t } = useTranslation();
   const groupKey = 'previous-attempts';
   const expanded = expandedKeys.has(groupKey);
-  const label = items.length === 1 ? 'Eerdere poging' : `Eerdere pogingen (${items.length})`;
+  const label = items.length === 1
+    ? t('activity.previousAttempt')
+    : t('activity.previousAttempts', { count: items.length });
   return (
     <div className="command-activity-previous">
       <button type="button" className="command-activity-command-line previous" onClick={() => onToggle(groupKey)}>
@@ -239,7 +240,7 @@ function FileActivityDetails({ item }: { item: CommandRunGroupItem & { file: Fil
   return (
     <div className="file-activity-details">
       <div className="file-activity-detail-title">{t('activity.file')}</div>
-      <pre>{item.toolText || '(geen details)'}</pre>
+      <pre>{item.toolText || t('activity.noDetails')}</pre>
     </div>
   );
 }
@@ -289,14 +290,16 @@ function FileContentLines({ file }: { file: FileToolActivity }) {
 }
 
 function FileGroupStat({ files, add, del }: { files: FileToolActivity[]; add: number; del: number }) {
+  const { t } = useTranslation();
   if (files.length > 0 && files.every((file) => file.status === 'read')) {
-    return <span className="file-read-stat">gelezen</span>;
+    return <span className="file-read-stat">{t('activity.readStat')}</span>;
   }
   return <DiffStat add={add} del={del} />;
 }
 
 function FileStat({ file }: { file: FileToolActivity }) {
-  if (file.status === 'read') return <span className="file-read-stat">gelezen</span>;
+  const { t } = useTranslation();
+  if (file.status === 'read') return <span className="file-read-stat">{t('activity.readStat')}</span>;
   return <DiffStat add={file.addLines} del={file.deleteLines} />;
 }
 
@@ -328,13 +331,14 @@ function fileDetailTitle(file: FileToolActivity, t: TFunction) {
 }
 
 function ToolOutputLine({ item, expanded, onToggle }: { item: CommandRunGroupItem; expanded: boolean; onToggle: () => void }) {
+  const { t } = useTranslation();
   const tone = item.tone || 'ok';
-  const label = item.label || 'Heeft uitgevoerd: tool output';
+  const label = item.label || t('activity.defaultToolLabel');
   const active = tone === 'running' || isActiveActivityPhase(item.phase);
   const meta = [
-    item.phase ? phaseText(item.phase) : null,
-    item.approvalStatus ? approvalText(item.approvalStatus) : null,
-    item.attempt ? `poging ${item.attempt}` : null,
+    item.phase ? phaseText(item.phase, t) : null,
+    item.approvalStatus ? approvalText(item.approvalStatus, t) : null,
+    item.attempt ? t('activity.attempt', { count: item.attempt }) : null,
   ].filter(Boolean);
   return (
     <div className={`command-activity-item ${tone}`}>
@@ -344,13 +348,13 @@ function ToolOutputLine({ item, expanded, onToggle }: { item: CommandRunGroupIte
       </button>
       <AnimatedReveal open={expanded}>
         <div className="command-activity-details">
-          <div className="command-activity-detail-title">Tool output</div>
+          <div className="command-activity-detail-title">{t('activity.toolOutput')}</div>
           {meta.length > 0 && (
             <div className="command-activity-meta">
               {meta.map((part) => <span key={part}>{part}</span>)}
             </div>
           )}
-          <pre className={tone === 'failed' ? 'stderr' : 'stdout'}>{item.toolText || '(geen output)'}</pre>
+          <pre className={tone === 'failed' ? 'stderr' : 'stdout'}>{item.toolText || t('activity.noOutput')}</pre>
           {item.stopReason && <pre className="stderr">{item.stopReason}</pre>}
         </div>
       </AnimatedReveal>
@@ -359,8 +363,9 @@ function ToolOutputLine({ item, expanded, onToggle }: { item: CommandRunGroupIte
 }
 
 function CommandRunLine({ run, now, expanded, onToggle }: { run: CommandRun; now: number; expanded: boolean; onToggle: () => void }) {
+  const { t } = useTranslation();
   const tone = commandRunTone(run);
-  const label = commandRunItemLabel(run);
+  const label = t('activity.executedCommand', { command: run.command });
   return (
     <div className={`command-activity-item ${tone}`}>
       <button type="button" className="command-activity-command-line" onClick={onToggle}>
@@ -369,43 +374,92 @@ function CommandRunLine({ run, now, expanded, onToggle }: { run: CommandRun; now
       </button>
       <AnimatedReveal open={expanded}>
         <div className="command-activity-details">
-          <div className="command-activity-detail-title">Shell</div>
+          <div className="command-activity-detail-title">{t('activity.shell')}</div>
           <pre className="command-activity-command"><span>$ </span>{run.command}</pre>
           <div className="command-activity-meta">
             <span>{run.shell}</span>
             <span title={run.cwd}>{run.cwd}</span>
-            <span>{commandRunStatusLabel(run, now)}</span>
+            <span>{localizedCommandRunStatusLabel(run, now, t)}</span>
             {typeof run.durationMs === 'number' && <span>{formatDuration(run.durationMs)}</span>}
           </div>
           {run.stdout && <pre className="stdout">{run.stdout}</pre>}
           {run.stderr && <pre className="stderr">{run.stderr}</pre>}
-          {!run.stdout && !run.stderr && <pre className="muted">(geen output)</pre>}
+          {!run.stdout && !run.stderr && <pre className="muted">{t('activity.noOutput')}</pre>}
         </div>
       </AnimatedReveal>
     </div>
   );
 }
 
-function phaseText(phase: NonNullable<CommandRunGroupItem['phase']>) {
-  switch (phase) {
-    case 'planning': return 'Model plant toolstappen';
-    case 'approval_pending': return 'Wacht op goedkeuring';
-    case 'approval_approved': return 'Goedgekeurd';
-    case 'approval_denied': return 'Geweigerd';
-    case 'running': return 'Voert uit';
-    case 'sending_output': return 'Tool-output verwerkt';
-    case 'summarizing': return 'Model vat samen';
-    case 'repairing': return 'Model herstelt';
-    case 'done': return 'Klaar';
-    case 'stopped': return 'Gestopt';
-    default: return phase;
-  }
+function phaseText(phase: NonNullable<CommandRunGroupItem['phase']>, t: TFunction) {
+  return t(`activity.phase.${phase}`);
 }
 
-function approvalText(status: NonNullable<CommandRunGroupItem['approvalStatus']>) {
-  if (status === 'pending') return 'approval pending';
-  if (status === 'approved') return 'approval approved';
-  return 'approval denied';
+function approvalText(status: NonNullable<CommandRunGroupItem['approvalStatus']>, t: TFunction) {
+  return t(`activity.approval.${status}`);
+}
+
+export function localizedCommandRunStatusLabel(run: CommandRun, now: number, t: TFunction) {
+  if (run.status === 'running') return formatDuration(Math.max(0, now - new Date(run.startedAt).getTime()));
+  if (run.status === 'denied') return t('activity.denied');
+  if (run.exitCode !== null) return t('activity.exitCode', { code: run.exitCode });
+  return run.status === 'completed' ? t('activity.phase.done') : t('activity.failed');
+}
+
+export function localizedCommandRunGroupLabel(group: CommandRunGroup, t: TFunction) {
+  const activeActivity = [...group.runs].reverse().find((item) => isActiveActivityPhase(item.phase));
+  if (activeActivity?.phase) {
+    return activeActivity.phase === 'planning' && activeActivity.label
+      ? activeActivity.label
+      : phaseText(activeActivity.phase, t);
+  }
+  if (group.summaryError) return t('activity.phase.stopped');
+
+  const normalized = normalizeActivityGroupOrder(group).runs;
+  const primaryItems = normalized.filter((item) => item.attemptKind !== 'previous-attempt' && !item.phase);
+  const previousCount = normalized.filter((item) => item.attemptKind === 'previous-attempt').length;
+  const files = primaryItems.filter((item) => item.file).map((item) => item.file!);
+  const commands = primaryItems.filter((item) => item.run);
+  const other = primaryItems.filter((item) => !item.file && !item.run);
+  const running = commands.some((item) => item.run?.status === 'running');
+
+  const parts: string[] = [];
+  if (files.length) parts.push(localizedFileActionSummary(files, t));
+  if (commands.length) {
+    parts.push(t(
+      commands.length === 1
+        ? running ? 'activity.group.runningCommandOne' : 'activity.group.completedCommandOne'
+        : running ? 'activity.group.runningCommandMany' : 'activity.group.completedCommandMany',
+      { count: commands.length },
+    ));
+  }
+  if (!parts.length && other.length) {
+    parts.push(t(other.length === 1 ? 'activity.group.toolResultOne' : 'activity.group.toolResultMany', { count: other.length }));
+  }
+
+  const base = capitalizeFirstLocalized(parts.length === 2
+    ? t('activity.group.join', { first: parts[0], last: parts[1] })
+    : parts[0] || t('activity.group.completedCommandOne', { count: 1 }));
+  if (!previousCount) return base;
+  return t(previousCount === 1 ? 'activity.group.withPreviousOne' : 'activity.group.withPreviousMany', {
+    base,
+    count: previousCount,
+  });
+}
+
+function localizedFileActionSummary(files: FileToolActivity[], t: TFunction) {
+  const key = files.every((file) => file.status === 'read')
+    ? 'read'
+    : files.every((file) => file.status === 'created')
+      ? 'created'
+      : files.every((file) => file.status === 'edited')
+        ? 'edited'
+        : 'changed';
+  return t(`activity.group.${key}${files.length === 1 ? 'FileOne' : 'FileMany'}`, { count: files.length });
+}
+
+function capitalizeFirstLocalized(value: string) {
+  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
 }
 
 function isActiveActivityPhase(phase?: CommandRunGroupItem['phase']) {

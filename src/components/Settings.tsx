@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Bot, Check, ChevronDown, Globe2, ImagePlus, KeyRound, Loader2, LockKeyhole, RefreshCw, Rocket, Save, Search, Settings as SettingsIcon, Server, Sparkles, Terminal, Trash2, UserRound } from 'lucide-react';
 import { changeLanguage } from '../i18n';
@@ -8,15 +8,13 @@ import FallbackChain from './FallbackChain';
 import OllamaModelManager from './OllamaModelManager';
 import UpdatePanel from './UpdatePanel';
 import { requestOnboarding } from './onboarding-launch';
-import { reasoningEffortLabel, serviceTierLabel } from './model-utils';
 import { formatUpdateBytes } from '../update-status';
 import type { AgentShell, AuthMethod, ModelRunConfig, OllamaTitleSetupProgress, ProviderAccountId, ProviderType } from '../providers/types';
+import { normalizeLegacyModelId } from '../providers/model-ref-normalization';
 import { FlipText, SegmentedControl, SelectField } from './ui';
 
 type TestState = 'idle' | 'testing' | 'success' | 'error';
 type CliSetupProvider = 'codex' | 'claude' | 'antigravity';
-type CodexServiceTier = string;
-type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 type ChatGptEngineState = {
   active: boolean;
   plan?: string | null;
@@ -86,23 +84,21 @@ const PROVIDER_CARDS: Array<{
 
 const Settings: React.FC = () => {
   const { t, i18n } = useTranslation();
+  const isEnglish = (i18n.resolvedLanguage || i18n.language).toLowerCase().startsWith('en');
+  const localizedStatus = (raw: string | undefined, fallbackKey: string) => (
+    isEnglish ? t(fallbackKey) : raw || t(fallbackKey)
+  );
   const {
     authStatus, accountStatuses, setAuthStatus, setAccountStatuses,
-    models, setModels, setProviderModels, setChatgptVersions, setFallbackConfig,
+    models, setModels, setProviderModels, setChatgptVersions,
+    setChatgptSessionActive: setProviderChatgptSessionActive, setFallbackConfig,
     preferredAuthMethod, setPreferredAuthMethod,
   } = useProviderStore();
   const { userAvatarDataUrl, setUserAvatarDataUrl } = useProfileStore();
-  // Live Codex service tiers, unioned across discovered Codex models.
-  const codexTierOptions = useMemo(() => {
-    const tiers = Array.from(new Set(models.filter((m) => m.provider === 'codex').flatMap((m) => m.supportedServiceTiers || [])));
-    return tiers.length ? tiers : ['fast'];
-  }, [models]);
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [testResults, setTestResults] = useState<Record<string, TestState>>({});
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [codexExecutable, setCodexExecutable] = useState('');
-  const [codexServiceTier, setCodexServiceTier] = useState<CodexServiceTier>('fast');
-  const [codexReasoningEffort, setCodexReasoningEffort] = useState<CodexReasoningEffort>('high');
   const [codexTimeoutSeconds, setCodexTimeoutSeconds] = useState(180);
   const [claudeExecutable, setClaudeExecutable] = useState('');
   const [antigravityExecutable, setAntigravityExecutable] = useState('');
@@ -149,6 +145,24 @@ const Settings: React.FC = () => {
     };
   }, []);
 
+  const refreshChatGptStatus = React.useCallback(async () => {
+    if (!window.electronAPI) return null;
+    try {
+      const session = await window.electronAPI.auth.chatgptEngineStatus();
+      setChatgptEngine(session || null);
+      setChatgptSessionActive(!!session?.active);
+      setProviderChatgptSessionActive(!!session?.active);
+      setChatgptPlan((session as any)?.plan || null);
+      return session;
+    } catch {
+      setChatgptEngine({ active: false, stage: 'failed', lastError: t('settings.chatgpt.statusReadFailed'), recoverable: true });
+      setChatgptSessionActive(false);
+      setProviderChatgptSessionActive(false);
+      setChatgptPlan(null);
+      return null;
+    }
+  }, [setProviderChatgptSessionActive, t]);
+
   useEffect(() => {
     const load = async () => {
       if (!window.electronAPI) return;
@@ -176,8 +190,6 @@ const Settings: React.FC = () => {
           }
         });
       setCodexExecutable(settings?.codex?.executable || '');
-      setCodexServiceTier(settings?.codex?.serviceTier || 'fast');
-      setCodexReasoningEffort(normalizeReasoningEffort(settings?.codex?.reasoningEffort));
       setCodexTimeoutSeconds(Number(settings?.codex?.timeoutSeconds || 180));
       setClaudeExecutable(settings?.claude?.executable || '');
       setAntigravityExecutable(settings?.antigravity?.executable || '');
@@ -210,7 +222,7 @@ const Settings: React.FC = () => {
       await refreshChatGptStatus();
     };
     load();
-  }, [setAccountStatuses, setFallbackConfig, setUserAvatarDataUrl]);
+  }, [refreshChatGptStatus, setAccountStatuses, setFallbackConfig, setUserAvatarDataUrl]);
 
   useEffect(() => {
     const api = window.electronAPI;
@@ -241,7 +253,7 @@ const Settings: React.FC = () => {
     setOllamaTitleSetupLoading(true);
     setOllamaTitleSetupProgress({
       phase: 'checking',
-      status: 'Ollama en het titelmodel controleren...',
+       status: t('settings.titles.checkingOllama'),
       model: ollamaTitleSetup?.model || 'qwen3:1.7b',
     });
     try {
@@ -269,32 +281,32 @@ const Settings: React.FC = () => {
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
-      setAvatarStatus('Kies een afbeeldingsbestand.');
+      setAvatarStatus(t('settings.profile.chooseImageFile'));
       return;
     }
 
     if (file.size > 8 * 1024 * 1024) {
-      setAvatarStatus('Afbeelding is te groot. Kies max 8 MB.');
+      setAvatarStatus(t('settings.profile.imageTooLarge'));
       return;
     }
 
     try {
-      setAvatarStatus('Afbeelding verwerken...');
+      setAvatarStatus(t('settings.profile.processingImage'));
       const dataUrl = await resizeAvatarImage(file);
       setUserAvatarDataUrl(dataUrl);
       await window.electronAPI?.settings.set('profile.avatarDataUrl', dataUrl);
-      setAvatarStatus('Avatar opgeslagen.');
+      setAvatarStatus(t('settings.profile.avatarSaved'));
       setTimeout(() => setAvatarStatus(null), 1800);
     } catch (error) {
       console.error(error);
-      setAvatarStatus('Avatar kon niet worden opgeslagen.');
+      setAvatarStatus(t('settings.profile.avatarSaveFailed'));
     }
   };
 
   const removeUserAvatar = async () => {
     setUserAvatarDataUrl(null);
     await window.electronAPI?.settings.set('profile.avatarDataUrl', null);
-    setAvatarStatus('Avatar verwijderd.');
+    setAvatarStatus(t('settings.profile.avatarRemoved'));
     setTimeout(() => setAvatarStatus(null), 1800);
   };
 
@@ -317,29 +329,13 @@ const Settings: React.FC = () => {
     await window.electronAPI.agent.setConfig({ mode: agentMode, workingDir: agentWorkingDir, defaultShell: agentDefaultShell });
     const res: any = await window.electronAPI.agent.runCommand(agentTestCmd, { shell: agentDefaultShell, source: 'test' });
     setAgentRunning(false);
-    if (!res) { setAgentTestOutput('Geen respons.'); return; }
+    if (!res) { setAgentTestOutput(t('settings.agent.noResponse')); return; }
     setAgentTestOutput([
-      res.denied ? '[Geweigerd door gebruiker]' : `[exit ${res.code}]  (${res.cwd || ''})`,
+      res.denied ? t('settings.agent.deniedByUser') : `[exit ${res.code}]  (${res.cwd || ''})`,
       res.stdout,
       res.stderr,
       res.error,
     ].filter(Boolean).join('\n'));
-  };
-
-  const refreshChatGptStatus = async () => {
-    if (!window.electronAPI) return null;
-    try {
-      const session = await window.electronAPI.auth.chatgptEngineStatus();
-      setChatgptEngine(session || null);
-      setChatgptSessionActive(!!session?.active);
-      setChatgptPlan((session as any)?.plan || null);
-      return session;
-    } catch {
-      setChatgptEngine({ active: false, stage: 'failed', lastError: 'ChatGPT status kon niet worden gelezen', recoverable: true });
-      setChatgptSessionActive(false);
-      setChatgptPlan(null);
-      return null;
-    }
   };
 
   const refreshAuthStatus = async () => {
@@ -377,7 +373,7 @@ const Settings: React.FC = () => {
       const apiKey = keys.google?.trim();
       if (apiKey) {
         const validation = await window.electronAPI.auth.saveCredential('google', apiKey, 'apikey');
-        if (validation.status !== 'valid') throw new Error(validation.error || 'De Gemini API-key is niet geldig.');
+        if (validation.status !== 'valid') throw new Error(validation.error || t('settings.gemini.invalidApiKey'));
       }
       await window.electronAPI.geminiQuota.configure(geminiProjectId, geminiOauthClientId);
       const status = await window.electronAPI.geminiQuota.connect();
@@ -409,6 +405,14 @@ const Settings: React.FC = () => {
     const result = await window.electronAPI.auth.chatgptBrowserLogin();
     if (result.success) {
       setTestResults((prev) => ({ ...prev, openai: 'success' }));
+      if (Array.isArray(result.models)) setProviderModels('openai', result.models);
+      if (Array.isArray(result.versions)) setChatgptVersions(result.versions);
+      if (result.sessionStatus) {
+        setChatgptEngine(result.sessionStatus);
+        setChatgptSessionActive(result.sessionStatus.active === true);
+        setProviderChatgptSessionActive(result.sessionStatus.active === true);
+        setChatgptPlan(result.sessionStatus.plan || null);
+      }
     } else {
       setTestResults((prev) => ({ ...prev, openai: 'error' }));
     }
@@ -431,6 +435,7 @@ const Settings: React.FC = () => {
     const status = await window.electronAPI.auth.chatgptEngineReset();
     setChatgptEngine(status || null);
     setChatgptSessionActive(!!status?.active);
+    setProviderChatgptSessionActive(!!status?.active);
     setChatgptPlan((status as any)?.plan || null);
     setTestResults((prev) => ({ ...prev, openai: 'idle' }));
   };
@@ -474,7 +479,7 @@ const Settings: React.FC = () => {
       await refreshModels();
       if (!settingsMountedRef.current) return;
       setTestResults((previous) => ({ ...previous, [provider]: 'success' }));
-      setCliActionMessage(messageProvider, `${displayName} is gevonden en gekoppeld.`);
+      setCliActionMessage(messageProvider, t('settings.cli.foundAndConnected', { name: displayName }));
       return;
     }
   };
@@ -487,10 +492,12 @@ const Settings: React.FC = () => {
     const result = await window.electronAPI.auth.claudeCliLogin();
     if (result.success) {
       setTestResults((prev) => ({ ...prev, anthropic: 'success' }));
-      setCliActionMessage('claude', result.message || 'Claude Code CLI geopend.');
+      setCliActionMessage('claude', t(result.action === 'install' ? 'settings.cli.installedAndOpened' : 'settings.cli.opened', { name: 'Claude Code CLI' }));
     } else {
       setTestResults((prev) => ({ ...prev, anthropic: 'error' }));
-      setCliActionMessage('claude', result.error || 'Claude Code CLI kon niet worden geopend.');
+      setCliActionMessage('claude', result.error
+        ? t('settings.cli.openFailedDetail', { name: 'Claude Code CLI', detail: result.error })
+        : t('settings.cli.openFailed', { name: 'Claude Code CLI' }));
     }
     if (result.success) void monitorCliConnection('claude-cli', 'anthropic', 'claude', 'Claude Code CLI');
   };
@@ -502,11 +509,13 @@ const Settings: React.FC = () => {
     const result = await window.electronAPI.auth.codexCliLogin();
     if (result.success) {
       setTestResults((prev) => ({ ...prev, codex: 'success' }));
-      setCliActionMessage('codex', result.message || 'Codex CLI geopend.');
+      setCliActionMessage('codex', t(result.action === 'install' ? 'settings.cli.installedAndOpened' : 'settings.cli.opened', { name: 'Codex CLI' }));
       void monitorCliConnection('codex', 'codex', 'codex', 'Codex CLI');
     } else {
       setTestResults((prev) => ({ ...prev, codex: 'error' }));
-      setCliActionMessage('codex', result.error || 'Codex CLI kon niet worden geopend.');
+      setCliActionMessage('codex', result.error
+        ? t('settings.cli.openFailedDetail', { name: 'Codex CLI', detail: result.error })
+        : t('settings.cli.openFailed', { name: 'Codex CLI' }));
     }
   };
 
@@ -518,10 +527,12 @@ const Settings: React.FC = () => {
     const result = await window.electronAPI.auth.antigravityCliLogin();
     if (result.success) {
       setTestResults((prev) => ({ ...prev, antigravity: 'success' }));
-      setCliActionMessage('antigravity', result.message || 'Antigravity CLI geopend.');
+      setCliActionMessage('antigravity', t(result.action === 'install' ? 'settings.cli.installedAndOpened' : 'settings.cli.opened', { name: 'Antigravity CLI' }));
     } else {
       setTestResults((prev) => ({ ...prev, antigravity: 'error' }));
-      setCliActionMessage('antigravity', result.error || 'Antigravity CLI kon niet worden geopend.');
+      setCliActionMessage('antigravity', result.error
+        ? t('settings.cli.openFailedDetail', { name: 'Antigravity CLI', detail: result.error })
+        : t('settings.cli.openFailed', { name: 'Antigravity CLI' }));
     }
     if (result.success) void monitorCliConnection('antigravity', 'antigravity', 'antigravity', 'Antigravity CLI');
   };
@@ -530,8 +541,6 @@ const Settings: React.FC = () => {
     if (!window.electronAPI) return;
     await window.electronAPI.settings.set('ollama.url', ollamaUrl.trim() || 'http://localhost:11434');
     await window.electronAPI.settings.set('codex.executable', codexExecutable.trim());
-    await window.electronAPI.settings.set('codex.serviceTier', codexServiceTier);
-    await window.electronAPI.settings.set('codex.reasoningEffort', codexReasoningEffort);
     await window.electronAPI.settings.set('codex.timeoutSeconds', Math.max(30, Number(codexTimeoutSeconds || 180)));
     await window.electronAPI.settings.set('claude.executable', claudeExecutable.trim());
     await window.electronAPI.settings.set('antigravity.executable', antigravityExecutable.trim());
@@ -556,28 +565,28 @@ const Settings: React.FC = () => {
 
     if (selectedMethod === 'browser') {
       if (providerId === 'openai' && chatgptSessionActive) {
-        return { online: !chatgptEngine?.lastError, label: chatgptStatusLabel(chatgptEngine, chatgptPlan) };
+        return { online: !chatgptEngine?.lastError, label: chatgptStatusLabel(chatgptEngine, chatgptPlan, t) };
       }
-      return { online: false, label: 'Niet ingelogd' };
+      return { online: false, label: t('auth.notSignedIn') };
     }
 
     if (selectedMethod === 'cli') {
       const claudeCli = accountStatuses['claude-cli'];
       const cliReady = !!cliLabel && (claudeCli?.authenticated || auth?.label === cliLabel || hasCliModel);
-      if (cliReady) return { online: true, label: claudeCli?.statusLabel || 'CLI gevonden en ingelogd' };
-      if (claudeCli?.installed) return { online: false, label: 'CLI gevonden; login nodig' };
-      return { online: false, label: 'Claude CLI niet gevonden' };
+      if (cliReady) return { online: true, label: localizedStatus(claudeCli?.statusLabel, 'auth.cliFoundSignedIn') };
+      if (claudeCli?.installed) return { online: false, label: t('auth.cliFoundLoginRequired') };
+      return { online: false, label: t('auth.claudeCliNotFound') };
     }
 
     if (selectedMethod === 'apikey') {
       const apiReady = !!auth?.authenticated && auth.method === 'apikey' && auth.label !== 'claude-cli';
-      if (apiReady) return { online: true, label: 'API key verbonden' };
-      return { online: false, label: 'API key nodig' };
+      if (apiReady) return { online: true, label: t('auth.apiKeyConnected') };
+      return { online: false, label: t('auth.apiKeyRequired') };
     }
 
-    if (!auth) return { online: false, label: 'Niet geconfigureerd' };
-    if (auth.authenticated) return { online: true, label: auth.statusLabel || 'Verbonden' };
-    return { online: false, label: auth.statusLabel || 'Niet verbonden' };
+    if (!auth) return { online: false, label: t('auth.notConfigured') };
+    if (auth.authenticated) return { online: true, label: localizedStatus(auth.statusLabel, 'auth.connected') };
+    return { online: false, label: localizedStatus(auth.statusLabel, 'auth.notConnected') };
   };
 
   const getSelectedMethod = (providerId: ProviderType): AuthMethod => {
@@ -603,7 +612,7 @@ const Settings: React.FC = () => {
           <Search size={16} />
           <input
             type="text"
-            placeholder="Zoek in instellingen..."
+            placeholder={t('settings.search')}
             value={providerSearch}
             onChange={(e) => setProviderSearch(e.target.value)}
           />
@@ -626,29 +635,29 @@ const Settings: React.FC = () => {
 
         {/* Profile */}
         <div className="settings-section" style={{ display: sectionMatches(['profiel', 'profile', 'avatar', 'afbeelding', 'foto', 'chat-avatar']) ? undefined : 'none' }}>
-          <div className="settings-section-title">Profiel</div>
+          <div className="settings-section-title">{t('settings.profile.title')}</div>
           <div className="glass-card profile-settings-card">
             <div className={`profile-avatar-preview ${userAvatarDataUrl ? 'has-image' : ''}`}>
               {userAvatarDataUrl
-                ? <img src={userAvatarDataUrl} alt="Jouw avatar" draggable={false} />
+                ? <img src={userAvatarDataUrl} alt={t('settings.profile.yourAvatar')} draggable={false} />
                 : <UserRound size={24} />}
             </div>
             <div className="profile-settings-copy">
-              <div className="font-semibold">Jouw chat-avatar</div>
+              <div className="font-semibold">{t('settings.profile.chatAvatar')}</div>
               <div className="text-sm text-muted">
-                Deze afbeelding wordt gebruikt bij jouw berichten. De app snijdt hem netjes vierkant bij.
+                {t('settings.profile.description')}
               </div>
               {avatarStatus && <div className="text-xs text-muted mt-1">{avatarStatus}</div>}
             </div>
             <div className="profile-settings-actions">
               <label className="btn btn-secondary profile-avatar-upload">
                 <ImagePlus size={15} />
-                Kies afbeelding
+                {t('settings.profile.chooseImage')}
                 <input type="file" accept="image/*" onChange={chooseUserAvatar} />
               </label>
               <button className="btn btn-secondary" onClick={removeUserAvatar} disabled={!userAvatarDataUrl}>
                 <Trash2 size={15} />
-                Verwijderen
+                {t('common.delete')}
               </button>
             </div>
           </div>
@@ -656,39 +665,39 @@ const Settings: React.FC = () => {
 
         {/* Updates */}
         <div className="settings-section" style={{ display: sectionMatches(['update', 'updates', 'versie', 'version', 'bijwerken', 'app-update']) ? undefined : 'none' }}>
-          <div className="settings-section-title">Updates</div>
+          <div className="settings-section-title">{t('settings.updates')}</div>
           <UpdatePanel />
         </div>
 
         {/* Opstartgids */}
         <div className="settings-section" style={{ display: sectionMatches(['opstartgids', 'gids', 'tutorial', 'onboarding', 'rondleiding', 'welkom']) ? undefined : 'none' }}>
-          <div className="settings-section-title">Opstartgids</div>
+          <div className="settings-section-title">{t('settings.onboarding.title')}</div>
           <div className="glass-card">
             <div className="text-sm text-muted mb-3">
-              Loop de welkomstrondleiding opnieuw door: de app kijkt welke AI-diensten je hebt en je geeft aan wat je gebruikt.
+              {t('settings.onboarding.description')}
             </div>
             <button className="btn btn-secondary" onClick={requestOnboarding}>
-              <Sparkles size={15} /> Opstartgids opnieuw starten
+              <Sparkles size={15} /> {t('settings.onboarding.restart')}
             </button>
           </div>
         </div>
 
         {/* Gesprekstitels */}
         <div className="settings-section" style={{ display: sectionMatches(['gesprekstitels', 'titel', 'title', 'naam', 'auto-naam', 'chat']) ? undefined : 'none' }}>
-          <div className="settings-section-title">Gesprekstitels</div>
+          <div className="settings-section-title">{t('settings.titles.title')}</div>
           <div className="glass-card">
             <div className="text-sm text-muted mb-3">
-              Hoe krijgt een nieuw gesprek tijdens de eerste beurt automatisch een naam?
+              {t('settings.titles.description')}
             </div>
             <div style={{ maxWidth: 360 }}>
               <SelectField
-                label="Methode"
+                label={t('settings.titles.method')}
                 value={chatTitleMode}
                 onChange={(value) => { setChatTitleMode(value); window.electronAPI?.settings.set('chat.autoTitleMode', value); }}
                 options={[
-                  { value: 'ollama', label: 'Ollama', description: 'Maakt lokaal de AI-titel; ChatGPT wordt hiervoor niet gebruikt' },
-                  { value: 'simple', label: 'Eenvoudig (geen AI)', description: 'Eerste ~42 tekens van je bericht' },
-                  { value: 'off', label: 'Uit', description: 'Geen automatische naam' },
+                  { value: 'ollama', label: 'Ollama', description: t('settings.titles.ollamaDescription') },
+                  { value: 'simple', label: t('settings.titles.simple'), description: t('settings.titles.simpleDescription') },
+                  { value: 'off', label: t('settings.titles.off'), description: t('settings.titles.offDescription') },
                 ]}
               />
             </div>
@@ -713,19 +722,19 @@ const Settings: React.FC = () => {
                         : <Server size={16} />}
                     <span className="text-sm font-semibold">
                       {ollamaTitleSetup?.ready
-                        ? `Klaar met ${ollamaTitleSetup.model}`
+                        ? t('settings.titles.readyWith', { model: ollamaTitleSetup.model })
                         : !ollamaTitleSetup
-                          ? 'Ollama controleren...'
+                          ? t('settings.titles.checkingOllama')
                           : ollamaTitleSetup.runtimeAvailable
-                            ? `${ollamaTitleSetup.model} is hiervoor nodig`
-                            : 'Ollama is hiervoor nodig'}
+                            ? t('settings.titles.modelRequired', { model: ollamaTitleSetup.model })
+                            : t('settings.titles.ollamaRequired')}
                     </span>
                   </div>
                   {!ollamaTitleSetup?.ready && ollamaTitleSetup && (
                     <p className="text-xs text-muted mb-3">
                       {ollamaTitleSetup.runtimeAvailable
-                        ? `Download ${ollamaTitleSetup.model}; daarna maakt dit lokale model de gesprekstitels.`
-                        : `Installeer Ollama met ${ollamaTitleSetup.model}. De app installeert eerst Ollama en downloadt daarna automatisch dit titelmodel.`}
+                        ? t('settings.titles.downloadDescription', { model: ollamaTitleSetup.model })
+                        : t('settings.titles.installDescription', { model: ollamaTitleSetup.model })}
                     </p>
                   )}
                   {ollamaTitleSetupProgress && ollamaTitleSetupProgress.phase !== 'ready' && (
@@ -734,7 +743,7 @@ const Settings: React.FC = () => {
                         className="text-xs mb-2"
                         style={{ color: ollamaTitleSetupProgress.phase === 'error' ? 'var(--color-error)' : 'var(--text-muted)' }}
                       >
-                        {ollamaTitleSetupProgress.status}
+                        {ollamaTitleProgressLabel(ollamaTitleSetupProgress, t)}
                       </p>
                       {ollamaTitleSetupProgress.percent !== undefined && (
                         <>
@@ -751,7 +760,7 @@ const Settings: React.FC = () => {
                           <div className="text-xs text-muted mb-3">
                             {ollamaTitleSetupProgress.percent}%
                             {Number(ollamaTitleSetupProgress.total) > 0
-                              ? ` · ${formatUpdateBytes(Number(ollamaTitleSetupProgress.transferred) || 0)} van ${formatUpdateBytes(Number(ollamaTitleSetupProgress.total))}`
+                              ? ` · ${t('settings.titles.downloadedOf', { transferred: formatUpdateBytes(Number(ollamaTitleSetupProgress.transferred) || 0), total: formatUpdateBytes(Number(ollamaTitleSetupProgress.total)) })}`
                               : ''}
                             {Number(ollamaTitleSetupProgress.bytesPerSecond) > 0
                               ? ` · ${formatUpdateBytes(Number(ollamaTitleSetupProgress.bytesPerSecond))}/s`
@@ -770,8 +779,8 @@ const Settings: React.FC = () => {
                     >
                       {ollamaTitleSetupLoading && <Loader2 size={15} className="spin" />}
                       {ollamaTitleSetup.runtimeAvailable
-                        ? `Download ${ollamaTitleSetup.model}`
-                        : `Installeer met ${ollamaTitleSetup.model}`}
+                        ? t('settings.titles.downloadModel', { model: ollamaTitleSetup.model })
+                        : t('settings.titles.installWithModel', { model: ollamaTitleSetup.model })}
                     </button>
                   )}
                 </div>
@@ -781,7 +790,7 @@ const Settings: React.FC = () => {
 
         {/* Provider Cards */}
         <div className="settings-section" style={{ display: anyProviderMatches ? undefined : 'none' }}>
-          <div className="settings-section-title">Providers</div>
+          <div className="settings-section-title">{t('settings.providers')}</div>
 
           {PROVIDER_CARDS.filter((card) => matchProvider(card.label)).map((card) => {
             const selectedMethod = getSelectedMethod(card.id);
@@ -811,7 +820,7 @@ const Settings: React.FC = () => {
                     className={`status-badge ${status.online ? 'online' : 'offline'}`}
                     style={{ transition: 'all var(--transition-fast)' }}
                   >
-                    {isTesting ? 'Testen...' : status.label}
+                    {isTesting ? t('auth.testing') : status.label}
                   </span>
                   <ChevronDown size={14} style={{ opacity: 0.55, transition: 'transform var(--transition-fast)', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0)' }} />
                 </div>
@@ -822,13 +831,13 @@ const Settings: React.FC = () => {
                     {/* Auth method tabs */}
                     {card.authOptions.length > 1 && (
                       <div style={{ marginBottom: 'var(--space-4)' }}>
-                        <div className="settings-row-label mb-2">Inlogmethode</div>
+                        <div className="settings-row-label mb-2">{t('auth.signInMethod')}</div>
                         <SegmentedControl
                           value={selectedMethod}
                           onChange={(value) => setPreferredAuthMethod(card.id, value)}
                           options={card.authOptions.map((option) => ({
                             value: option.value,
-                            label: methodLabel(option.value, card.id),
+                            label: methodLabel(option.value, card.id, t),
                             icon: option.value === 'browser' ? Globe2 : option.value === 'cli' ? Terminal : KeyRound,
                           }))}
                         />
@@ -843,17 +852,17 @@ const Settings: React.FC = () => {
                           <span className="text-sm font-semibold">ChatGPT Subscription</span>
                           <div style={{ flex: 1 }} />
                           <span className={`status-badge ${chatgptSessionActive && !chatgptEngine?.lastError ? 'online' : 'offline'}`} style={{ fontSize: '0.65rem' }}>
-                            {chatgptStatusLabel(chatgptEngine, chatgptPlan)}
+                            {chatgptStatusLabel(chatgptEngine, chatgptPlan, t)}
                           </span>
                         </div>
                         <div className="settings-mini-grid mb-3">
                           <div>
-                            <div className="settings-row-label">Route</div>
-                            <div className="text-xs">ChatGPT websessie</div>
+                            <div className="settings-row-label">{t('auth.route')}</div>
+                            <div className="text-xs">{t('auth.chatgptWebSession')}</div>
                           </div>
                           <div>
-                            <div className="settings-row-label">Abonnement</div>
-                            <div className="text-xs">{chatgptPlan || (chatgptSessionActive ? 'Onbekend' : '—')}</div>
+                            <div className="settings-row-label">{t('auth.subscription')}</div>
+                            <div className="text-xs">{chatgptPlan || (chatgptSessionActive ? t('common.unknown') : '—')}</div>
                           </div>
                         </div>
                         {chatgptEngine?.lastError && (
@@ -869,7 +878,7 @@ const Settings: React.FC = () => {
                             style={{ fontSize: 'var(--font-size-xs)' }}
                           >
                             <Globe2 size={15} />
-                            {isTesting ? 'Bezig...' : chatgptSessionActive ? 'Opnieuw inloggen' : 'Inloggen'}
+                             {isTesting ? t('common.loading') : chatgptSessionActive ? t('auth.signInAgain') : t('auth.signIn')}
                           </button>
                           <button
                             className="btn btn-secondary"
@@ -877,7 +886,7 @@ const Settings: React.FC = () => {
                             style={{ fontSize: 'var(--font-size-xs)' }}
                           >
                             <Globe2 size={15} />
-                            Open ChatGPT
+                             {t('auth.openChatgpt')}
                           </button>
                           <button
                             className="btn btn-secondary"
@@ -886,7 +895,7 @@ const Settings: React.FC = () => {
                             style={{ fontSize: 'var(--font-size-xs)' }}
                           >
                             <RefreshCw size={15} />
-                            Reset web-engine
+                             {t('auth.resetWebEngine')}
                           </button>
                           <button
                             className="btn btn-secondary"
@@ -894,7 +903,7 @@ const Settings: React.FC = () => {
                             style={{ fontSize: 'var(--font-size-xs)' }}
                           >
                             <RefreshCw size={15} />
-                            Status
+                            {t('common.status')}
                           </button>
                           {chatgptSessionActive && (
                             <button
@@ -902,7 +911,7 @@ const Settings: React.FC = () => {
                               onClick={handleChatGptLogout}
                               style={{ fontSize: 'var(--font-size-xs)' }}
                             >
-                              Uitloggen
+                               {t('auth.signOut')}
                             </button>
                           )}
                         </div>
@@ -917,8 +926,7 @@ const Settings: React.FC = () => {
                           <span className="text-sm font-semibold">Claude Code CLI</span>
                         </div>
                         <p className="text-xs text-muted mb-3">
-                          Gebruik je Claude-account via de native Claude Code CLI; een API-key is niet nodig.
-                          Als de CLI ontbreekt, installeert de knop de officiële Windows-versie en opent daarna de login.
+                          {t('settings.cli.claudeDescription')}
                         </p>
                         <CliPathFields
                           detectedPath={accountStatuses['claude-cli']?.executablePath}
@@ -934,10 +942,10 @@ const Settings: React.FC = () => {
                             style={{ fontSize: 'var(--font-size-xs)' }}
                           >
                             {isTesting
-                              ? 'Even geduld...'
+                              ? t('common.pleaseWait')
                               : accountStatuses['claude-cli']?.installed
-                                ? 'Open Claude CLI'
-                                : 'Installeer Claude CLI'}
+                                ? t('settings.cli.open', { name: 'Claude CLI' })
+                                : t('settings.cli.install', { name: 'Claude CLI' })}
                           </button>
                           <button
                             className="btn btn-secondary"
@@ -946,7 +954,7 @@ const Settings: React.FC = () => {
                             style={{ fontSize: 'var(--font-size-xs)' }}
                           >
                             <RefreshCw size={14} />
-                            Refresh
+                            {t('common.refresh')}
                           </button>
                         </div>
                         {cliActionMessages.claude && <p className="text-xs text-muted mt-3">{cliActionMessages.claude}</p>}
@@ -956,7 +964,7 @@ const Settings: React.FC = () => {
                     {/* API Key input */}
                     {selectedMethod === 'apikey' && card.apiKeyPlaceholder && (
                       <div style={{ marginTop: card.authOptions.length > 1 ? 'var(--space-3)' : 0 }}>
-                        <div className="settings-row-label mb-2">API Key</div>
+                        <div className="settings-row-label mb-2">{t('auth.apiKey')}</div>
                         <div className="flex gap-2">
                           <input
                             className="input flex-1"
@@ -980,22 +988,22 @@ const Settings: React.FC = () => {
                           <div className="glass-card mt-3" style={{ background: 'rgba(66, 133, 244, 0.05)', border: '1px solid rgba(66, 133, 244, 0.18)' }}>
                             <div className="flex items-center gap-2 mb-2">
                               <LockKeyhole size={16} />
-                              <span className="text-sm font-semibold">Verplichte Google Cloud-quota</span>
+                              <span className="text-sm font-semibold">{t('settings.gemini.requiredCloudQuota')}</span>
                               <div style={{ flex: 1 }} />
                               <span className={`status-badge ${geminiQuotaStatus?.connected ? 'online' : 'offline'}`}>
-                                {geminiQuotaStatus?.connected ? 'Gekoppeld' : 'Nog koppelen'}
+                                {geminiQuotaStatus?.connected ? t('auth.connected') : t('auth.connectRequired')}
                               </span>
                             </div>
                             <p className="text-xs text-muted mb-3">
-                              Gemini wordt pas actief wanneer de API-key en Google Cloud-koppeling naar hetzelfde project wijzen. API Keys, Cloud Resource Manager, Service Usage en Cloud Monitoring moeten in dat project actief zijn; LLMelt vraagt alleen leestoegang.
+                              {t('settings.gemini.quotaDescription')}
                             </p>
                             <div className="settings-mini-grid mb-3">
                               <label>
-                                <span className="settings-row-label">Google Cloud-project-ID</span>
+                                <span className="settings-row-label">{t('settings.gemini.projectId')}</span>
                                 <input className="input" value={geminiProjectId} onChange={(event) => setGeminiProjectId(event.target.value)} placeholder="mijn-gemini-project" />
                               </label>
                               <label>
-                                <span className="settings-row-label">OAuth desktop-client-ID</span>
+                                <span className="settings-row-label">{t('settings.gemini.oauthClientId')}</span>
                                 <input className="input" value={geminiOauthClientId} onChange={(event) => setGeminiOauthClientId(event.target.value)} placeholder="...apps.googleusercontent.com" />
                               </label>
                             </div>
@@ -1003,9 +1011,9 @@ const Settings: React.FC = () => {
                             <div className="flex gap-2">
                               <button className="btn btn-primary" onClick={connectGeminiQuota} disabled={geminiQuotaLoading || !geminiProjectId || !geminiOauthClientId}>
                                 {geminiQuotaLoading && <Loader2 size={14} className="spin" />}
-                                {geminiQuotaStatus?.connected ? 'Opnieuw koppelen' : 'Google Cloud koppelen'}
+                                {geminiQuotaStatus?.connected ? t('settings.gemini.reconnect') : t('settings.gemini.connect')}
                               </button>
-                              {geminiQuotaStatus?.connected && <button className="btn btn-secondary" onClick={disconnectGeminiQuota}>Ontkoppelen</button>}
+                              {geminiQuotaStatus?.connected && <button className="btn btn-secondary" onClick={disconnectGeminiQuota}>{t('settings.gemini.disconnect')}</button>}
                             </div>
                           </div>
                         )}
@@ -1024,7 +1032,7 @@ const Settings: React.FC = () => {
                 <span className="font-semibold">Codex CLI</span>
                 <div style={{ flex: 1 }} />
                 <span className={`status-badge ${authStatus.codex?.authenticated ? 'online' : 'offline'}`}>
-                  {authStatus.codex?.statusLabel || (authStatus.codex?.authenticated ? 'CLI gevonden' : 'CLI auth nodig')}
+                  {localizedStatus(authStatus.codex?.statusLabel, authStatus.codex?.authenticated ? 'auth.cliFound' : 'auth.cliAuthRequired')}
                 </span>
                 <ChevronDown size={14} style={{ opacity: 0.55, transition: 'transform var(--transition-fast)', transform: expandedProvider === 'codex' ? 'rotate(180deg)' : 'rotate(0)' }} />
               </div>
@@ -1032,7 +1040,10 @@ const Settings: React.FC = () => {
               {expandedProvider === 'codex' && (
                 <div style={{ marginTop: 'var(--space-4)', animation: 'fadeIn var(--transition-fast) ease-out' }}>
                   <p className="text-xs text-muted mb-3">
-                    Ontbreekt Codex, dan installeert de knop de officiële Windows-CLI en opent daarna de ChatGPT-login.
+                    {t('settings.cli.codexDescription')}
+                  </p>
+                  <p className="text-xs text-muted mb-3">
+                    {t('settings.cli.codexRunConfigHint')}
                   </p>
                   <CliPathFields
                     detectedPath={accountStatuses.codex?.executablePath}
@@ -1043,28 +1054,7 @@ const Settings: React.FC = () => {
 
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 'var(--space-3)' }}>
                     <div>
-                      <SelectField
-                        label="Snelheid"
-                        value={codexServiceTier}
-                        onChange={(value) => setCodexServiceTier(value as CodexServiceTier)}
-                        options={codexTierOptions.map((tier) => ({ value: tier, label: serviceTierLabel(tier) }))}
-                      />
-                    </div>
-                    <div>
-                      <SelectField
-                        label="Inspanning"
-                        value={codexReasoningEffort}
-                        onChange={(value) => setCodexReasoningEffort(value as CodexReasoningEffort)}
-                        options={[
-                          { value: 'low', label: reasoningEffortLabel('low') },
-                          { value: 'medium', label: reasoningEffortLabel('medium') },
-                          { value: 'high', label: reasoningEffortLabel('high') },
-                          { value: 'xhigh', label: reasoningEffortLabel('xhigh') },
-                        ]}
-                      />
-                    </div>
-                    <div>
-                      <div className="settings-row-label mb-2">Timeout (sec)</div>
+                      <div className="settings-row-label mb-2">{t('settings.cli.timeoutSeconds')}</div>
                       <input className="input" type="number" min={30} max={900} value={codexTimeoutSeconds} onChange={(e) => setCodexTimeoutSeconds(Number(e.target.value))} />
                     </div>
                   </div>
@@ -1076,12 +1066,12 @@ const Settings: React.FC = () => {
                       disabled={testResults.codex === 'testing'}
                     >
                       {testResults.codex === 'testing'
-                        ? 'Even geduld...'
+                        ? t('common.pleaseWait')
                         : accountStatuses.codex?.installed
-                          ? 'Open Codex-login'
-                          : 'Installeer Codex CLI'}
+                          ? t('settings.cli.openLogin', { name: 'Codex' })
+                          : t('settings.cli.install', { name: 'Codex CLI' })}
                     </button>
-                    <button className="btn btn-secondary" onClick={saveLocalSettings}><Save size={15} /> Opslaan</button>
+                    <button className="btn btn-secondary" onClick={saveLocalSettings}><Save size={15} /> {t('common.save')}</button>
                     <button
                       className="btn btn-secondary"
                       onClick={async () => { await saveLocalSettings(); await testProvider('codex'); }}
@@ -1103,14 +1093,14 @@ const Settings: React.FC = () => {
                 <span className="font-semibold">Antigravity CLI</span>
                 <div style={{ flex: 1 }} />
                 <span className={`status-badge ${accountStatuses.antigravity?.authenticated ? 'online' : 'offline'}`}>
-                  {accountStatuses.antigravity?.statusLabel || (accountStatuses.antigravity?.installed ? 'CLI gevonden; login nodig' : 'CLI niet gevonden')}
+                  {localizedStatus(accountStatuses.antigravity?.statusLabel, accountStatuses.antigravity?.installed ? 'auth.cliFoundLoginRequired' : 'auth.cliNotFound')}
                 </span>
                 <ChevronDown size={14} style={{ opacity: 0.55, transition: 'transform var(--transition-fast)', transform: expandedProvider === 'antigravity' ? 'rotate(180deg)' : 'rotate(0)' }} />
               </div>
               {expandedProvider === 'antigravity' && (
                 <div style={{ marginTop: 'var(--space-4)', animation: 'fadeIn var(--transition-fast) ease-out' }}>
                   <p className="text-xs text-muted mb-3">
-                    Ontbreekt Antigravity, dan installeert de knop de officiële Windows-CLI en opent daarna de accountlogin.
+                    {t('settings.cli.antigravityDescription')}
                   </p>
                   <CliPathFields
                     detectedPath={accountStatuses.antigravity?.executablePath}
@@ -1125,10 +1115,10 @@ const Settings: React.FC = () => {
                       disabled={testResults.antigravity === 'testing'}
                     >
                       {testResults.antigravity === 'testing'
-                        ? 'Even geduld...'
+                        ? t('common.pleaseWait')
                         : accountStatuses.antigravity?.installed
-                          ? 'Open Antigravity CLI'
-                          : 'Installeer Antigravity CLI'}
+                          ? t('settings.cli.open', { name: 'Antigravity CLI' })
+                          : t('settings.cli.install', { name: 'Antigravity CLI' })}
                     </button>
                     <button
                       className="btn btn-secondary"
@@ -1136,7 +1126,7 @@ const Settings: React.FC = () => {
                       disabled={testResults.antigravity === 'testing'}
                     >
                       <RefreshCw size={14} />
-                      Refresh
+                      {t('common.refresh')}
                     </button>
                   </div>
                   {cliActionMessages.antigravity && <p className="text-xs text-muted mt-3">{cliActionMessages.antigravity}</p>}
@@ -1152,13 +1142,13 @@ const Settings: React.FC = () => {
                 <span className="font-semibold">Ollama</span>
                 <div style={{ flex: 1 }} />
                 <span className={`status-badge ${authStatus.ollama?.authenticated ? 'online' : 'offline'}`}>
-                  {authStatus.ollama?.statusLabel || 'Offline'}
+                  {localizedStatus(authStatus.ollama?.statusLabel, authStatus.ollama?.authenticated ? 'models.online' : 'models.offline')}
                 </span>
                 <ChevronDown size={14} style={{ opacity: 0.55, transition: 'transform var(--transition-fast)', transform: expandedProvider === 'ollama' ? 'rotate(180deg)' : 'rotate(0)' }} />
               </div>
               {expandedProvider === 'ollama' && (
                 <div style={{ marginTop: 'var(--space-4)', animation: 'fadeIn var(--transition-fast) ease-out' }}>
-                  <div className="settings-row-label mb-2">Ollama URL (lokaal)</div>
+                  <div className="settings-row-label mb-2">{t('settings.ollama.localUrl')}</div>
                   <input className="input mb-4" value={ollamaUrl} onChange={(e) => setOllamaUrl(e.target.value)} />
 
                   <OllamaModelManager
@@ -1172,7 +1162,7 @@ const Settings: React.FC = () => {
                   />
 
                   <div className="settings-row-label mb-2" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                    <LockKeyhole size={15} /> Remote Ollama via SSH
+                    <LockKeyhole size={15} /> {t('settings.ollama.remoteViaSsh')}
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 'var(--space-2)' }}>
                     <input className="input" placeholder={t('auth.sshHost')} value={sshConfig.host} onChange={(e) => setSshConfig((s) => ({ ...s, host: e.target.value }))} />
@@ -1200,47 +1190,47 @@ const Settings: React.FC = () => {
           )}
 
           {(matchProvider('Antigravity CLI') || matchProvider('Ollama')) && (
-            <button className="btn btn-primary" onClick={saveLocalSettings}><Save size={15} /> Lokale providers opslaan</button>
+            <button className="btn btn-primary" onClick={saveLocalSettings}><Save size={15} /> {t('settings.saveLocalProviders')}</button>
           )}
         </div>
 
         {/* Agent PC access */}
         <div className="settings-section" style={{ display: sectionMatches(['pc-toegang', 'pc', 'toegang', 'agent', 'shell', 'commando', 'command', 'goedkeuring', 'approval', 'werkmap', 'tools']) ? undefined : 'none' }}>
-          <div className="settings-section-title">PC-toegang (Agent)</div>
+          <div className="settings-section-title">{t('settings.agent.title')}</div>
           <div className="glass-card">
             <div className="text-sm text-muted mb-2">
-              Laat modellen projectbestanden lezen, bestanden maken/wijzigen en shell-commando's uitvoeren. Tools draaien vanuit de gekozen projectmap; nieuwe chats zonder project gebruiken Documents\LLMelt.
+              {t('settings.agent.description')}
             </div>
             <label className="settings-row" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
               <input type="checkbox" checked={agentToolsEnabled} onChange={(e) => toggleAgentTools(e.target.checked)} />
-              <span className="text-sm">Modellen mogen projecttools gebruiken (zoals <code>&lt;file-read&gt;</code>, <code>&lt;file-create&gt;</code>, <code>&lt;file-edit&gt;</code> en <code>&lt;run-command&gt;</code>, met de approval hieronder)</span>
+              <span className="text-sm">{t('settings.agent.enableToolsPrefix')} <code>&lt;file-read&gt;</code>, <code>&lt;file-create&gt;</code>, <code>&lt;file-edit&gt;</code> {t('settings.agent.enableToolsAnd')} <code>&lt;run-command&gt;</code>{t('settings.agent.enableToolsSuffix')}</span>
             </label>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--space-3)' }}>
               <SelectField
-                label="Goedkeuring"
+                label={t('settings.agent.approval')}
                 value={agentMode}
                 onChange={(value) => saveAgentConfig(value, agentWorkingDir)}
                 options={[
-                  { value: 'ask', label: 'Vragen per actie', description: 'Veiligst — elke read/write/run vraagt goedkeuring' },
-                  { value: 'auto-project', label: 'Auto in werkmap', description: 'Bestandstools binnen de werkmap automatisch; shellcommando’s vragen' },
-                  { value: 'full', label: 'Volledige toegang', description: 'Alles zonder vragen — riskant' },
+                  { value: 'ask', label: t('settings.agent.askEachAction'), description: t('settings.agent.askEachActionDescription') },
+                  { value: 'auto-project', label: t('settings.agent.autoProject'), description: t('settings.agent.autoProjectDescription') },
+                  { value: 'full', label: t('settings.agent.fullAccess'), description: t('settings.agent.fullAccessDescription') },
                 ]}
               />
               <SelectField
-                label="Default shell"
+                label={t('settings.agent.defaultShell')}
                 value={agentDefaultShell}
                 onChange={(value) => saveAgentConfig(agentMode, agentWorkingDir, value as AgentShell)}
                 options={[
-                  { value: 'powershell', label: 'PowerShell', description: 'Standaard Windows PowerShell' },
+                  { value: 'powershell', label: 'PowerShell', description: t('settings.agent.standardWindowsPowershell') },
                   { value: 'cmd', label: 'Cmd', description: 'Windows Command Prompt' },
-                  { value: 'pwsh', label: 'PowerShell 7', description: 'Alleen als pwsh.exe is geinstalleerd' },
+                  { value: 'pwsh', label: 'PowerShell 7', description: t('settings.agent.pwshOnlyIfInstalled') },
                 ]}
               />
               <div>
-                <label className="text-xs text-muted">Fallback werkmap voor losse agent-tests</label>
+                <label className="text-xs text-muted">{t('settings.agent.fallbackWorkingDirectory')}</label>
                 <input
                   className="input mt-2"
-                  placeholder="Leeg = Documents\\LLMelt voor chats zonder project"
+                  placeholder={t('settings.agent.workingDirectoryPlaceholder')}
                   value={agentWorkingDir}
                   onChange={(e) => setAgentWorkingDir(e.target.value)}
                   onBlur={() => saveAgentConfig(agentMode, agentWorkingDir, agentDefaultShell)}
@@ -1248,23 +1238,23 @@ const Settings: React.FC = () => {
               </div>
             </div>
             <div style={{ marginTop: 'var(--space-3)' }}>
-              <label className="text-xs text-muted">Test-commando</label>
+              <label className="text-xs text-muted">{t('settings.agent.testCommand')}</label>
               <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-2)' }}>
                 <input
                   className="input"
-                  placeholder='bijv. echo hello  of  dir'
+                  placeholder={t('settings.agent.testCommandPlaceholder')}
                   value={agentTestCmd}
                   onChange={(e) => setAgentTestCmd(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') runAgentTest(); }}
                   style={{ flex: 1 }}
                 />
                 <button className="btn btn-secondary" onClick={runAgentTest} disabled={agentRunning || !agentTestCmd.trim()}>
-                  <Terminal size={15} /> {agentRunning ? 'Bezig…' : 'Uitvoeren'}
+                  <Terminal size={15} /> {agentRunning ? t('common.running') : t('settings.agent.run')}
                 </button>
               </div>
               {agentTestOutput != null && (
                 <pre style={{ marginTop: 'var(--space-2)', maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: '0.8rem', background: 'var(--bg-secondary)', padding: 'var(--space-2)', borderRadius: 'var(--radius-md)' }}>
-                  {agentTestOutput || '(geen output)'}
+                  {agentTestOutput || t('settings.agent.noOutput')}
                 </pre>
               )}
             </div>
@@ -1279,10 +1269,10 @@ const Settings: React.FC = () => {
 
         {/* Discovered Models */}
         <div className="settings-section" style={{ display: sectionMatches(['ontdekte', 'modellen', 'models', 'discovered', 'refresh', 'model']) ? undefined : 'none' }}>
-          <div className="settings-section-title">Ontdekte modellen</div>
+          <div className="settings-section-title">{t('settings.discoveredModels')}</div>
           <div className="glass-card">
-            <div className="text-sm text-muted mb-2">{models.length} modellen beschikbaar</div>
-            <button className="btn btn-secondary" onClick={refreshModels}><RefreshCw size={15} /> Modellen vernieuwen</button>
+            <div className="text-sm text-muted mb-2">{t('settings.modelsAvailable', { count: models.length })}</div>
+            <button className="btn btn-secondary" onClick={refreshModels}><RefreshCw size={15} /> {t('settings.refreshModels')}</button>
           </div>
         </div>
       </div>
@@ -1319,19 +1309,10 @@ function resizeAvatarImage(file: File): Promise<string> {
   });
 }
 
-function normalizeReasoningEffort(value: unknown): CodexReasoningEffort {
-  return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' ? value : 'high';
-}
-
-function normalizeLegacyModelId(provider: ProviderType, modelId: string): { modelId: string; runConfig?: ModelRunConfig } {
-  if (provider !== 'codex') return { modelId };
-  const [baseModelId, legacyMode] = modelId.split('#');
-  if (!legacyMode) return { modelId: baseModelId, runConfig: { baseModelId, reasoningEffort: 'high' } };
-  const reasoningEffort =
-    legacyMode === 'instant' ? 'low' :
-      legacyMode === 'pro' ? 'xhigh' :
-        'high';
-  return { modelId: baseModelId, runConfig: { baseModelId, reasoningEffort } };
+function normalizeLiveChoice(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const choice = value.trim();
+  return /^[a-z][a-z0-9._-]*$/i.test(choice) ? choice : '';
 }
 
 function parseRunConfig(text: string): ModelRunConfig | undefined {
@@ -1339,18 +1320,32 @@ function parseRunConfig(text: string): ModelRunConfig | undefined {
   const runConfig: ModelRunConfig = {};
   for (const part of text.split(/\s+/)) {
     const [key, value] = part.split('=');
-    if ((key === 'effort' || key === 'reasoning') && isReasoningEffort(value)) {
-      runConfig.reasoningEffort = value;
+    if ((key === 'effort' || key === 'reasoning') && normalizeLiveChoice(value)) {
+      runConfig.reasoningEffort = normalizeLiveChoice(value);
     }
-    if ((key === 'tier' || key === 'service') && (value === 'fast' || value === 'flex')) {
-      runConfig.serviceTier = value;
+    if ((key === 'tier' || key === 'service') && normalizeLiveChoice(value)) {
+      runConfig.serviceTier = normalizeLiveChoice(value);
     }
   }
   return Object.keys(runConfig).length ? runConfig : undefined;
 }
 
-function isReasoningEffort(value: unknown): value is CodexReasoningEffort {
-  return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh';
+function ollamaTitleProgressLabel(
+  progress: OllamaTitleSetupProgress,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (progress.phase === 'checking') return t('settings.titles.progress.checking');
+  if (progress.phase === 'downloading-runtime') return t('settings.titles.progress.downloadingRuntime');
+  if (progress.phase === 'verifying-runtime') return t('settings.titles.progress.verifyingRuntime');
+  if (progress.phase === 'installing-runtime') return t('settings.titles.progress.installingRuntime');
+  if (progress.phase === 'starting-runtime') return t('settings.titles.progress.startingRuntime');
+  if (progress.phase === 'downloading-model') {
+    return t('settings.titles.progress.downloadingModel', { model: progress.model });
+  }
+  if (progress.phase === 'error') {
+    return t('settings.titles.progress.errorDetail', { detail: progress.status });
+  }
+  return t('settings.titles.readyWith', { model: progress.model });
 }
 
 function normalizeChatTitleMode(value: unknown) {
@@ -1368,13 +1363,14 @@ function CliPathFields({
   placeholder: string;
   onManualPathChange: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <>
-      <div className="settings-row-label mb-2">Gedetecteerd CLI-pad</div>
+      <div className="settings-row-label mb-2">{t('settings.cli.detectedPath')}</div>
       <div className="cli-path-display mb-3" title={detectedPath || ''}>
-        {detectedPath || 'Nog niet gevonden'}
+        {detectedPath || t('settings.cli.notFoundYet')}
       </div>
-      <div className="settings-row-label mb-2">Handmatig pad (optioneel)</div>
+      <div className="settings-row-label mb-2">{t('settings.cli.manualPathOptional')}</div>
       <input
         className="input mb-3"
         placeholder={placeholder}
@@ -1403,19 +1399,23 @@ function providerIcon(provider: ProviderType) {
   return LockKeyhole;
 }
 
-function methodLabel(method: AuthMethod, provider?: ProviderType) {
-  if (method === 'browser') return provider === 'openai' ? 'ChatGPT Subscription' : 'Browser sessie';
+function methodLabel(method: AuthMethod, provider: ProviderType | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  if (method === 'browser') return provider === 'openai' ? 'ChatGPT Subscription' : t('auth.browserSession');
   if (method === 'cli') return 'CLI';
   if (method === 'apikey') return provider === 'openai' ? 'OpenAI API' : 'API key';
   return method;
 }
 
-function chatgptStatusLabel(engine: ChatGptEngineState | null, plan?: string | null) {
-  if (!engine?.active) return 'Niet ingelogd';
-  if (engine.lastError && /niet ingelogd/i.test(engine.lastError)) return 'Niet ingelogd';
-  if (engine.lastError && engine.recoverable) return 'Herstel nodig';
-  if (engine.lastError) return 'Vastgelopen';
-  return plan ? `Websessie actief · ${plan}` : 'Websessie actief';
+function chatgptStatusLabel(
+  engine: ChatGptEngineState | null,
+  plan: string | null | undefined,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (!engine?.active) return t('auth.notSignedIn');
+  if (engine.lastError && /niet ingelogd|not signed in/i.test(engine.lastError)) return t('auth.notSignedIn');
+  if (engine.lastError && engine.recoverable) return t('auth.recoveryRequired');
+  if (engine.lastError) return t('auth.stalled');
+  return plan ? t('auth.webSessionActivePlan', { plan }) : t('auth.webSessionActive');
 }
 
 export default Settings;

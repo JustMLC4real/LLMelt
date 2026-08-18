@@ -1,4 +1,6 @@
 import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 
 export interface CliSpawnSpec {
   command: string;
@@ -9,6 +11,23 @@ export interface CliSpawnSpec {
 export type AgentShellProcess = 'powershell' | 'pwsh' | 'cmd';
 
 const CMD_META_CHARS = /([()\][%!^"`<>&|;, *?])/g;
+
+/**
+ * Een verpakte Electron-app erft op een verse Windows-installatie niet altijd
+ * hetzelfde PATH als een interactieve terminal. Gebruik daarom het echte
+ * Windows PowerShell-pad als dat bestaat.
+ */
+export function windowsPowerShellExecutable(
+  environment: NodeJS.ProcessEnv = process.env,
+  exists: (candidate: string) => boolean = fs.existsSync,
+) {
+  const windowsRoot = String(environment.SystemRoot || environment.WINDIR || '').trim();
+  if (windowsRoot) {
+    const candidate = path.win32.join(windowsRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    if (exists(candidate)) return candidate;
+  }
+  return 'powershell.exe';
+}
 
 function escapeCmdCommand(value: string) {
   return value.replace(CMD_META_CHARS, '^$1');
@@ -45,6 +64,31 @@ export function cliSpawnSpec(
 }
 
 /**
+ * node-pty verwacht op Windows voor `cmd.exe` een reeds opgebouwde commandline.
+ * Een argv-array escapt de quotes van een npm-`.cmd` letterlijk (`\"...\"`),
+ * waardoor de echte provider-shim niet start.
+ */
+export function cliPtySpawnSpec(
+  executable: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+  comspec = process.env.COMSPEC || 'cmd.exe',
+): { command: string; args: string[] | string } {
+  if (platform !== 'win32' || !/\.(cmd|bat)$/i.test(executable)) {
+    return { command: executable, args };
+  }
+  const commandLine = [quotePtyCmdArgument(executable), ...args.map(quotePtyCmdArgument)].join(' ');
+  return {
+    command: comspec,
+    args: `/d /s /c "${commandLine}"`,
+  };
+}
+
+function quotePtyCmdArgument(value: string) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+/**
  * Start een door de agent gekozen shell zonder dat Windows aanhalingstekens
  * rond bestandsnamen met spaties opnieuw interpreteert. Vooral `cmd /s /c`
  * heeft een extra buitenste quote en verbatim argumentdoorgifte nodig.
@@ -75,7 +119,7 @@ export function agentShellSpawnSpec(
     };
   }
   return {
-    command: 'powershell.exe',
+    command: windowsPowerShellExecutable(environment),
     args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
   };
 }

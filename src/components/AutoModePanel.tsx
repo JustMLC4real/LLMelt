@@ -42,9 +42,11 @@ import {
 } from './auto-mode-model-selection';
 import { ensureChatMaterialized } from './new-chat';
 import { SelectField } from './ui';
+import { normalizeUiLanguage } from '../i18n/language';
 
 const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const uiLanguage = normalizeUiLanguage(i18n.resolvedLanguage || i18n.language);
   const currentChatId = useChatStore((state) => state.currentChatId);
   const {
     models,
@@ -100,7 +102,7 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
 
   const handleStart = async () => {
     if (!window.electronAPI || !currentChatId || !prompterRef || !responderRef) return;
-    if (unlimitedIterations && tokenBudget <= 0 && !window.confirm('Auto Mode staat op oneindig zonder tokenbudget. Weet je zeker dat je wilt starten?')) return;
+    if (unlimitedIterations && tokenBudget <= 0 && !window.confirm(t('autoMode.unlimitedConfirm'))) return;
     setStartError('');
     try {
       await ensureChatMaterialized(currentChatId);
@@ -112,6 +114,7 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
         tokenBudget: tokenBudget > 0 ? tokenBudget : undefined,
         chatId: currentChatId,
         goal: goal.trim() || undefined,
+        language: uiLanguage,
       });
       setAutoModeState(status);
       onClose?.();
@@ -138,7 +141,10 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
   const autoModeLocked = autoModeStatus === 'running' || autoModeStatus === 'paused';
   const visibleMaxIterations = autoModeMaxIterations || (unlimitedIterations ? 0 : maxIterations);
   const phase = autoModePhase || 'idle';
-  const phaseInfo = autoModePhaseInfo(phase);
+  const phaseInfo = autoModePhaseInfo(phase, uiLanguage);
+  const phaseLabel = t(`autoMode.phases.${phase}.label`);
+  const phaseTitle = t(`autoMode.phases.${phase}.title`);
+  const phaseDescription = t(`autoMode.phases.${phase}.description`);
   const visibleError = autoModeError || startError;
 
   return (
@@ -147,10 +153,10 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
         <span className="font-semibold text-sm">{t('autoMode.title')}</span>
         <div className="panel-header-actions">
           <span className={`status-badge ${phase === 'error' || phase === 'stopped' ? 'offline' : autoModeStatus === 'running' ? 'limited' : 'online'}`}>
-            {phaseInfo.label}
+            {phaseLabel}
           </span>
           {onClose && (
-            <button type="button" className="btn-icon" onClick={onClose} title="Inklappen" aria-label="Auto Mode inklappen">
+            <button type="button" className="btn-icon" onClick={onClose} title={t('autoMode.collapse')} aria-label={t('autoMode.collapse')}>
               <X size={14} />
             </button>
           )}
@@ -169,20 +175,20 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
                   : <CheckCircle2 size={17} />}
             </span>
             <div>
-              <div className="auto-mode-progress-title">{phaseInfo.title}</div>
-              <div className="auto-mode-progress-detail">{autoModeDetail || phaseInfo.description}</div>
+              <div className="auto-mode-progress-title">{phaseTitle}</div>
+              <div className="auto-mode-progress-detail">{autoModeDetail || phaseDescription}</div>
             </div>
           </div>
           <div className="auto-mode-phase-steps">
             {(['prompter', 'responder', 'waiting'] as const).map((step, index) => {
               const state = autoModeStepState(phase, index);
-              const labels = ['Prompt maken', 'Antwoord maken', 'Volgende ronde'];
+              const labels = [t('autoMode.steps.prompt'), t('autoMode.steps.answer'), t('autoMode.steps.nextRound')];
               return <span key={step} className={`auto-mode-phase-step ${state}`}>{labels[index]}</span>;
             })}
           </div>
           {autoModeLastPromptPreview && (
             <div className="auto-mode-prompt-preview">
-              <span>Laatste gemaakte prompt</span>
+              <span>{t('autoMode.lastPrompt')}</span>
               <p>{autoModeLastPromptPreview}</p>
             </div>
           )}
@@ -191,11 +197,11 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
       )}
 
       <div style={{ marginTop: 'var(--space-3)' }}>
-        <label className="text-xs text-muted">Doel / opdracht voor de prompter</label>
+        <label className="text-xs text-muted">{t('autoMode.goal')}</label>
         <textarea
           className="input mt-2"
           rows={2}
-          placeholder="Bijv. 'Bouw stap voor stap een marketingplan voor een nieuwe app' - de prompter stuurt het gesprek hierop aan."
+          placeholder={t('autoMode.goalPlaceholder')}
           value={goal}
           onChange={(event) => setGoal(event.target.value)}
           disabled={autoModeLocked}
@@ -206,7 +212,7 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
       <div className="auto-mode-config-grid">
         <RoleModelPicker
           label={t('autoMode.prompter')}
-          help="Bedenkt steeds de volgende concrete opdracht."
+          help={t('autoMode.prompterHelp')}
           models={availableModels}
           value={prompterRef}
           onChange={setPrompterRef}
@@ -215,7 +221,7 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
         />
         <RoleModelPicker
           label={t('autoMode.responder')}
-          help="Voert die opdracht uit in dit gesprek."
+          help={t('autoMode.responderHelp')}
           models={availableModels}
           value={responderRef}
           onChange={setResponderRef}
@@ -241,7 +247,7 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
                 onChange={(event) => setUnlimitedIterations(event.target.checked)}
                 disabled={autoModeLocked}
               />
-              <span>Oneindig</span>
+              <span>{t('autoMode.infinite')}</span>
             </label>
           </div>
         </div>
@@ -250,7 +256,7 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
           <input className="input mt-2" type="number" min={1} max={60} value={delay} onChange={(event) => setDelay(Number(event.target.value))} disabled={autoModeLocked} />
         </div>
         <div style={{ gridColumn: '1 / -1' }}>
-          <label className="text-xs text-muted">Tokenbudget (0 = geen limiet)</label>
+          <label className="text-xs text-muted">{t('autoMode.tokenBudget')}</label>
           <input className="input mt-2" type="number" min={0} value={tokenBudget} onChange={(event) => setTokenBudget(Number(event.target.value))} disabled={autoModeLocked} />
         </div>
       </div>
@@ -275,7 +281,7 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
 
       {(phase !== 'idle' || autoModeIteration > 0) && (
         <div className="auto-mode-status">
-          <span>{visibleMaxIterations === 0 ? `Iteratie ${autoModeIteration} / ∞` : t('autoMode.iteration', { current: autoModeIteration, max: visibleMaxIterations })}</span>
+          <span>{visibleMaxIterations === 0 ? t('autoMode.iterationInfinite', { current: autoModeIteration }) : t('autoMode.iteration', { current: autoModeIteration, max: visibleMaxIterations })}</span>
           <span>-</span>
           <span>{t('autoMode.totalTokens', { count: autoModeTotalTokens.toLocaleString() })}</span>
         </div>
@@ -301,9 +307,11 @@ function RoleModelPicker({
   disabled: boolean;
   chatgptVersions: ChatgptVersion[];
 }) {
+  const { t, i18n } = useTranslation();
+  const uiLanguage = normalizeUiLanguage(i18n.resolvedLanguage || i18n.language);
   const selectedModel = value ? autoModeModelByKey(models, `${value.provider}:${value.modelId}`) : models[0];
-  const selectedSurface = selectedModel ? surfaceLabel(selectedModel) : '';
-  const surfaceModels = autoModeModelsForSurface(models, selectedSurface);
+  const selectedSurface = selectedModel ? surfaceLabel(selectedModel, uiLanguage) : '';
+  const surfaceModels = autoModeModelsForSurface(models, selectedSurface, uiLanguage);
   const efforts = selectedModel?.supportedReasoningEfforts || [];
   const serviceTiers = selectedModel?.supportedServiceTiers || [];
   const chatgptEfforts = chatgptEffortsForModel(selectedModel);
@@ -326,12 +334,12 @@ function RoleModelPicker({
       </div>
       <div className="auto-mode-role-fields">
         <SelectField
-          label="Provider"
+          label={t('models.provider')}
           value={selectedSurface}
-          options={autoModeSurfaces(models).map((surface) => ({ value: surface, label: surface }))}
-          onChange={(surface) => changeModel(autoModeModelsForSurface(models, surface)[0])}
+          options={autoModeSurfaces(models, uiLanguage).map((surface) => ({ value: surface, label: surface }))}
+          onChange={(surface) => changeModel(autoModeModelsForSurface(models, surface, uiLanguage)[0])}
           disabled={disabled}
-          placeholder="Geen providers gevonden"
+          placeholder={t('models.noProviders')}
         />
         <RoleModelFields
           models={surfaceModels}
@@ -342,11 +350,14 @@ function RoleModelPicker({
           onModelChange={changeModel}
           onRefChange={onChange}
         />
-        {efforts.length > 0 && value && (
+        {efforts.length > 1 && value && (
           <SelectField
-            label="Inspanning"
-            value={value.runConfig?.reasoningEffort || selectedModel?.defaultReasoningEffort || ''}
-            options={efforts.map((effort) => ({ value: effort, label: reasoningEffortLabel(effort) }))}
+            label={t('models.effort')}
+            value={value.runConfig?.reasoningEffort || ''}
+            options={[
+              ...(selectedModel?.defaultReasoningEffort ? [] : [{ value: '', label: t('models.standard') }]),
+              ...efforts.map((effort) => ({ value: effort, label: reasoningEffortLabel(effort, uiLanguage) })),
+            ]}
             onChange={(effort) => onChange(withAutoModeReasoningEffort(value, effort))}
             disabled={disabled}
           />
@@ -356,7 +367,7 @@ function RoleModelPicker({
           && !(selectedModel?.provider === 'openai' && selectedModel.id.startsWith('chatgpt:') && chatgptVersions.length > 0)
           && (
           <SelectField
-            label="Intelligentie"
+            label={t('models.intelligence')}
             value={value.runConfig?.chatgptThinkingEffort || ''}
             options={chatgptEfforts}
             onChange={(effort) => onChange(withAutoModeChatgptEffort(value, effort))}
@@ -365,9 +376,12 @@ function RoleModelPicker({
         )}
         {serviceTiers.length > 0 && value && (
           <SelectField
-            label="Snelheid"
+            label={t('models.speed')}
             value={value.runConfig?.serviceTier || ''}
-            options={serviceTiers.map((tier) => ({ value: tier, label: serviceTierLabel(tier) }))}
+            options={[
+              { value: '', label: t('models.standard') },
+              ...serviceTiers.map((tier) => ({ value: tier, label: serviceTierLabel(tier, uiLanguage) })),
+            ]}
             onChange={(tier) => onChange(withAutoModeServiceTier(value, tier))}
             disabled={disabled}
           />
@@ -394,30 +408,32 @@ function RoleModelFields({
   onModelChange: (model?: AIModel) => void;
   onRefChange: (ref: ModelRef) => void;
 }) {
+  const { t, i18n } = useTranslation();
+  const uiLanguage = normalizeUiLanguage(i18n.resolvedLanguage || i18n.language);
   if (!selectedModel) {
     return (
-      <SelectField value="" options={[]} onChange={() => {}} label="Model" placeholder="Geen modellen gevonden" disabled />
+      <SelectField value="" options={[]} onChange={() => {}} label={t('models.model')} placeholder={t('models.noneFound')} disabled />
     );
   }
 
   if (selectedModel.provider === 'codex') {
-    const selected = parseCodexModel(selectedModel);
-    const versions = [...new Set(models.map((model) => parseCodexModel(model).version))];
-    const variants = models.filter((model) => parseCodexModel(model).version === selected.version);
+    const selected = parseCodexModel(selectedModel, uiLanguage);
+    const versions = [...new Set(models.map((model) => parseCodexModel(model, uiLanguage).version))];
+    const variants = models.filter((model) => parseCodexModel(model, uiLanguage).version === selected.version);
     return (
       <>
         <SelectField
-          label="Model"
+          label={t('models.model')}
           value={selected.version}
           options={versions.map((version) => ({ value: version, label: version }))}
-          onChange={(version) => onModelChange(models.find((model) => parseCodexModel(model).version === version))}
+          onChange={(version) => onModelChange(models.find((model) => parseCodexModel(model, uiLanguage).version === version))}
           disabled={disabled}
         />
         {variants.length > 1 && (
           <SelectField
-            label="Variant"
+            label={t('models.variant')}
             value={autoModeModelKey(selectedModel)}
-            options={variants.map((model) => ({ value: autoModeModelKey(model), label: parseCodexModel(model).variant }))}
+            options={variants.map((model) => ({ value: autoModeModelKey(model), label: parseCodexModel(model, uiLanguage).variant }))}
             onChange={(key) => onModelChange(autoModeModelByKey(models, key))}
             disabled={disabled}
           />
@@ -427,23 +443,23 @@ function RoleModelFields({
   }
 
   if (selectedModel.provider === 'anthropic' && selectedModel.id.startsWith('claude-cli:')) {
-    const selected = parseClaudeCliModel(selectedModel);
-    const families = claudeCliFamilies(models);
-    const versions = claudeCliVersionsFor(models, selected.family);
+    const selected = parseClaudeCliModel(selectedModel, uiLanguage);
+    const families = claudeCliFamilies(models, uiLanguage);
+    const versions = claudeCliVersionsFor(models, selected.family, uiLanguage);
     return (
       <>
         <SelectField
-          label="Familie"
+          label={t('models.family')}
           value={selected.family}
           options={families.map((family) => ({ value: family, label: family }))}
-          onChange={(family) => onModelChange(claudeCliModelFor(models, family, claudeCliVersionsFor(models, family)[0]))}
+          onChange={(family) => onModelChange(claudeCliModelFor(models, family, claudeCliVersionsFor(models, family, uiLanguage)[0], uiLanguage))}
           disabled={disabled}
         />
         <SelectField
-          label="Versie"
+          label={t('models.version')}
           value={selected.version}
           options={versions.map((version) => ({ value: version, label: version }))}
-          onChange={(version) => onModelChange(claudeCliModelFor(models, selected.family, version))}
+          onChange={(version) => onModelChange(claudeCliModelFor(models, selected.family, version, uiLanguage))}
           disabled={disabled}
         />
       </>
@@ -451,34 +467,34 @@ function RoleModelFields({
   }
 
   if (selectedModel.provider === 'google') {
-    const selected = parseGoogleModelChoice(selectedModel);
-    const families = [...new Set(models.map((model) => parseGoogleModelChoice(model).family))];
-    const familyModels = models.filter((model) => parseGoogleModelChoice(model).family === selected.family);
-    const versions = [...new Set(familyModels.map((model) => parseGoogleModelChoice(model).version))];
-    const variants = familyModels.filter((model) => parseGoogleModelChoice(model).version === selected.version);
+    const selected = parseGoogleModelChoice(selectedModel, uiLanguage);
+    const families = [...new Set(models.map((model) => parseGoogleModelChoice(model, uiLanguage).family))];
+    const familyModels = models.filter((model) => parseGoogleModelChoice(model, uiLanguage).family === selected.family);
+    const versions = [...new Set(familyModels.map((model) => parseGoogleModelChoice(model, uiLanguage).version))];
+    const variants = familyModels.filter((model) => parseGoogleModelChoice(model, uiLanguage).version === selected.version);
     return (
       <>
         <SelectField
-          label="Familie"
+          label={t('models.family')}
           value={selected.family}
           options={families.map((family) => ({ value: family, label: family }))}
-          onChange={(family) => onModelChange(models.find((model) => parseGoogleModelChoice(model).family === family))}
+          onChange={(family) => onModelChange(models.find((model) => parseGoogleModelChoice(model, uiLanguage).family === family))}
           disabled={disabled}
         />
         {versions.length > 1 && (
           <SelectField
-            label="Versie"
+            label={t('models.version')}
             value={selected.version}
             options={versions.map((version) => ({ value: version, label: version }))}
-            onChange={(version) => onModelChange(familyModels.find((model) => parseGoogleModelChoice(model).version === version))}
+            onChange={(version) => onModelChange(familyModels.find((model) => parseGoogleModelChoice(model, uiLanguage).version === version))}
             disabled={disabled}
           />
         )}
         {variants.length > 1 && (
           <SelectField
-            label="Variant"
+            label={t('models.variant')}
             value={autoModeModelKey(selectedModel)}
-            options={variants.map((model) => ({ value: autoModeModelKey(model), label: parseGoogleModelChoice(model).variant }))}
+            options={variants.map((model) => ({ value: autoModeModelKey(model), label: parseGoogleModelChoice(model, uiLanguage).variant }))}
             onChange={(key) => onModelChange(autoModeModelByKey(models, key))}
             disabled={disabled}
           />
@@ -488,37 +504,37 @@ function RoleModelFields({
   }
 
   if (selectedModel.provider === 'antigravity') {
-    const selected = parseAntigravityModel(selectedModel);
-    const providers = antigravityProviders(models);
-    const modelNames = antigravityModelNamesFor(models, selected.provider);
-    const modes = antigravityModesFor(models, selected.provider, selected.model);
+    const selected = parseAntigravityModel(selectedModel, uiLanguage);
+    const providers = antigravityProviders(models, uiLanguage);
+    const modelNames = antigravityModelNamesFor(models, selected.provider, uiLanguage);
+    const modes = antigravityModesFor(models, selected.provider, selected.model, uiLanguage);
     return (
       <>
         {providers.length > 1 && (
           <SelectField
-            label="Familie"
+            label={t('models.family')}
             value={selected.provider}
             options={providers.map((provider) => ({ value: provider, label: provider }))}
             onChange={(provider) => {
-              const name = antigravityModelNamesFor(models, provider)[0];
-              onModelChange(antigravityModelFor(models, provider, name, antigravityModesFor(models, provider, name)[0]));
+              const name = antigravityModelNamesFor(models, provider, uiLanguage)[0];
+              onModelChange(antigravityModelFor(models, provider, name, antigravityModesFor(models, provider, name, uiLanguage)[0], uiLanguage));
             }}
             disabled={disabled}
           />
         )}
         <SelectField
-          label="Model"
+          label={t('models.model')}
           value={selected.model}
           options={modelNames.map((model) => ({ value: model, label: model }))}
-          onChange={(model) => onModelChange(antigravityModelFor(models, selected.provider, model, antigravityModesFor(models, selected.provider, model)[0]))}
+          onChange={(model) => onModelChange(antigravityModelFor(models, selected.provider, model, antigravityModesFor(models, selected.provider, model, uiLanguage)[0], uiLanguage))}
           disabled={disabled}
         />
         {modes.length > 1 && (
           <SelectField
-            label="Modus"
+            label={t('models.mode')}
             value={selected.mode}
             options={modes.map((mode) => ({ value: mode, label: mode }))}
-            onChange={(mode) => onModelChange(antigravityModelFor(models, selected.provider, selected.model, mode))}
+            onChange={(mode) => onModelChange(antigravityModelFor(models, selected.provider, selected.model, mode, uiLanguage))}
             disabled={disabled}
           />
         )}
@@ -536,7 +552,7 @@ function RoleModelFields({
     return (
       <>
         <SelectField
-          label="Model"
+          label={t('models.model')}
           value={selectedVersion?.id || ''}
           options={visibleVersions.map((version) => ({ value: version.id, label: version.title }))}
           onChange={(versionId) => {
@@ -553,7 +569,7 @@ function RoleModelFields({
         />
         {availablePresets.length > 0 && (
           <SelectField
-            label="Intelligentie"
+            label={t('models.intelligence')}
             value={selectedChoice?.preset
               ? `${selectedChoice.preset.modelSlug}|${selectedChoice.preset.thinkingEffort || ''}`
               : ''}
@@ -583,15 +599,15 @@ function RoleModelFields({
 
   return (
     <SelectField
-      label="Model"
+      label={t('models.model')}
       value={autoModeModelKey(selectedModel)}
       options={models.map((model) => ({
         value: autoModeModelKey(model),
-        label: compactModelChoiceLabel(model, chatgptVersions),
+        label: compactModelChoiceLabel(model, chatgptVersions, uiLanguage),
       }))}
       onChange={(key) => onModelChange(autoModeModelByKey(models, key))}
       disabled={disabled}
-      placeholder="Geen modellen gevonden"
+      placeholder={t('models.noneFound')}
     />
   );
 }

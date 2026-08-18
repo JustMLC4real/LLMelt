@@ -265,6 +265,38 @@ export function initDatabase() {
     `);
   });
 
+  runMigration('2026-08-11-token-usage-source', () => {
+    addColumnIfMissing('usage_events', 'usageSource', "TEXT DEFAULT 'unknown'");
+    // Oudere builds bewaarden tokenaantallen al op assistentberichten, maar nog
+    // niet altijd in usage_events. Neem uitsluitend positieve, ontbrekende
+    // metingen over en markeer de herkomst eerlijk als onbekend.
+    db.exec(`
+      INSERT OR IGNORE INTO usage_events
+        (id, chatId, messageId, provider, modelId, inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens, usageSource, createdAt)
+      SELECT
+        'legacy-message:' || messages.id,
+        messages.chatId,
+        messages.id,
+        messages.provider,
+        messages.modelId,
+        MAX(0, IFNULL(messages.inputTokens, 0)),
+        MAX(0, IFNULL(messages.outputTokens, 0)),
+        MAX(0, IFNULL(messages.inputTokens, 0)) + MAX(0, IFNULL(messages.outputTokens, 0)),
+        0,
+        0,
+        'unknown',
+        messages.createdAt
+      FROM messages
+      WHERE messages.role = 'assistant'
+        AND messages.provider IS NOT NULL
+        AND messages.modelId IS NOT NULL
+        AND (IFNULL(messages.inputTokens, 0) > 0 OR IFNULL(messages.outputTokens, 0) > 0)
+        AND NOT EXISTS (
+          SELECT 1 FROM usage_events WHERE usage_events.messageId = messages.id
+        );
+    `);
+  });
+
   return db;
 }
 

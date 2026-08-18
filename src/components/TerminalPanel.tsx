@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Plus, Square, Terminal as TerminalIcon, X } from 'lucide-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -6,9 +7,15 @@ import '@xterm/xterm/css/xterm.css';
 import { useChatStore } from '../stores/chat-store';
 import type { AgentShell } from '../providers/types';
 import { chatFromVisibleOrDraft } from './draft-chat';
+import {
+  terminalContainerIsMeasurable,
+  terminalGridIsUsable,
+  terminalSessionCanStart,
+} from './terminal-sizing';
 
 type ShellOption = { id: AgentShell; label: string; available: boolean };
-type SessionTab = { id: string; shell: AgentShell; label: string; cwd: string; exited?: boolean };
+type ProviderCliTerminal = 'codex' | 'claude' | 'antigravity';
+type SessionTab = { id: string; shell: AgentShell; providerCli?: ProviderCliTerminal; label: string; cwd: string; exited?: boolean };
 
 const SHELL_LABELS: Record<AgentShell, string> = {
   powershell: 'PowerShell',
@@ -17,7 +24,8 @@ const SHELL_LABELS: Record<AgentShell, string> = {
 };
 
 const TerminalPanel: React.FC = () => {
-  const { showTerminal, setShowTerminal, chats, draftChats, currentChatId, folders } = useChatStore();
+  const { t } = useTranslation();
+  const { showTerminal, setShowTerminal, terminalLaunchRequest, clearTerminalLaunchRequest, chats, draftChats, currentChatId, folders } = useChatStore();
   const [defaultWorkspacePath, setDefaultWorkspacePath] = useState('');
   const currentChat = chatFromVisibleOrDraft(chats, draftChats, currentChatId);
   const currentFolder = folders.find((folder) => folder.id === currentChat?.folderId);
@@ -31,6 +39,7 @@ const TerminalPanel: React.FC = () => {
   const [selectedShell, setSelectedShell] = useState<AgentShell>('powershell');
   const [sessions, setSessions] = useState<SessionTab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [containerReady, setContainerReady] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -86,7 +95,6 @@ const TerminalPanel: React.FC = () => {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
-    fit.fit();
     termRef.current = term;
     fitRef.current = fit;
 
@@ -98,11 +106,32 @@ const TerminalPanel: React.FC = () => {
       const id = activeIdRef.current;
       if (id) window.electronAPI?.terminal.resize(id, cols, rows);
     });
-    const resizeObserver = new ResizeObserver(() => fit.fit());
+    let fitFrame = 0;
+    let disposed = false;
+    const fitVisibleTerminal = () => {
+      const container = containerRef.current;
+      if (!terminalContainerIsMeasurable(container)) {
+        if (!disposed) setContainerReady(false);
+        return;
+      }
+      try {
+        fit.fit();
+        if (!disposed) setContainerReady(terminalGridIsUsable(term));
+      } catch {
+        if (!disposed) setContainerReady(false);
+      }
+    };
+    fitVisibleTerminal();
+    const resizeObserver = new ResizeObserver(() => {
+      window.cancelAnimationFrame(fitFrame);
+      fitFrame = window.requestAnimationFrame(fitVisibleTerminal);
+    });
     resizeObserver.observe(containerRef.current);
 
     return () => {
+      disposed = true;
       resizeObserver.disconnect();
+      window.cancelAnimationFrame(fitFrame);
       dataDisposable.dispose();
       resizeDisposable.dispose();
       term.dispose();
@@ -129,17 +158,30 @@ const TerminalPanel: React.FC = () => {
     };
   }, []);
 
-  const createSession = useCallback(async (shell: AgentShell = selectedShell) => {
+  const createSession = useCallback(async (shell: AgentShell = selectedShell, providerCli?: ProviderCliTerminal) => {
     const terminalApi = window.electronAPI?.terminal;
-    if (!terminalApi || !termRef.current || !fitRef.current || creatingSessionRef.current) return;
+    const terminal = termRef.current;
+    const fit = fitRef.current;
+    if (!showTerminal || !containerReady || !terminalApi || !terminal || !fit || creatingSessionRef.current) return;
+    if (!terminalContainerIsMeasurable(containerRef.current)) return;
     creatingSessionRef.current = true;
     try {
-      fitRef.current.fit();
+      try {
+        fit.fit();
+      } catch {
+        setContainerReady(false);
+        return;
+      }
+      if (!terminalSessionCanStart(containerRef.current, terminal)) {
+        setContainerReady(false);
+        return;
+      }
       const created = await terminalApi.create({
         shell,
+        providerCli,
         cwd: effectiveProjectPath || undefined,
-        cols: termRef.current.cols,
-        rows: termRef.current.rows,
+        cols: terminal.cols,
+        rows: terminal.rows,
       });
       // Bij het afsluiten van de app kan de IPC-aanvraag terugkomen nadat xterm al weg is.
       // Ruim die sessie meteen op in plaats van een onzichtbaar proces achter te laten.
@@ -149,8 +191,12 @@ const TerminalPanel: React.FC = () => {
       }
       buffersRef.current.set(created.id, '');
       setSessions((prev) => {
-        const label = `${SHELL_LABELS[shell]} ${prev.filter((session) => session.shell === shell).length + 1}`;
-        return [...prev, { id: created.id, shell, label, cwd: created.cwd }];
+        const baseLabel = providerCli === 'codex' ? 'Codex CLI'
+          : providerCli === 'claude' ? 'Claude CLI'
+            : providerCli === 'antigravity' ? 'Antigravity CLI'
+              : SHELL_LABELS[shell];
+        const label = `${baseLabel} ${prev.filter((session) => (session.providerCli || session.shell) === (providerCli || shell)).length + 1}`;
+        return [...prev, { id: created.id, shell, providerCli, label, cwd: created.cwd }];
       });
       setActiveId(created.id);
       termRef.current.reset();
@@ -158,13 +204,20 @@ const TerminalPanel: React.FC = () => {
     } finally {
       creatingSessionRef.current = false;
     }
-  }, [selectedShell, effectiveProjectPath]);
+  }, [selectedShell, effectiveProjectPath, showTerminal, containerReady]);
 
   useEffect(() => {
-    if (showTerminal && sessions.length === 0 && termRef.current) {
+    if (!terminalLaunchRequest || !showTerminal || !containerReady) return;
+    const providerCli = terminalLaunchRequest.providerCli;
+    clearTerminalLaunchRequest();
+    void createSession(selectedShell, providerCli);
+  }, [clearTerminalLaunchRequest, containerReady, createSession, selectedShell, showTerminal, terminalLaunchRequest]);
+
+  useEffect(() => {
+    if (showTerminal && containerReady && sessions.length === 0 && termRef.current && !terminalLaunchRequest) {
       void createSession(selectedShell);
     }
-  }, [showTerminal, sessions.length, selectedShell, createSession]);
+  }, [showTerminal, containerReady, sessions.length, selectedShell, createSession, terminalLaunchRequest]);
 
   const switchSession = (id: string) => {
     setActiveId(id);
@@ -198,30 +251,30 @@ const TerminalPanel: React.FC = () => {
     <aside className="terminal-panel">
       <div className="terminal-panel-header">
         <span className="terminal-panel-title">
-          <TerminalIcon size={14} /> Terminal
+          <TerminalIcon size={14} /> <span>{t('terminal.title')}</span>
         </span>
         <div className="terminal-panel-actions">
           <select
             className="terminal-shell-select"
             value={selectedShell}
             onChange={(event) => setSelectedShell(event.target.value as AgentShell)}
-            title="Shell kiezen"
+            title={t('terminal.chooseShell')}
           >
             {shells.map((shell) => (
               <option key={shell.id} value={shell.id} disabled={!shell.available}>
-                {shell.label}{shell.available ? '' : ' (niet gevonden)'}
+                {shell.label}{shell.available ? '' : ` (${t('terminal.notFound')})`}
               </option>
             ))}
           </select>
-          <button type="button" className="btn-icon" title="Nieuwe terminal" aria-label="Nieuwe terminal" onClick={() => createSession(selectedShell)}>
+          <button type="button" className="btn-icon" title={t('terminal.newTerminal')} aria-label={t('terminal.newTerminal')} onClick={() => createSession(selectedShell)}>
             <Plus size={14} />
           </button>
           {activeSession && (
-            <button type="button" className="btn-icon" title="Stop sessie" aria-label="Stop sessie" onClick={() => killSession(activeSession.id)}>
+            <button type="button" className="btn-icon" title={t('terminal.stopSession')} aria-label={t('terminal.stopSession')} onClick={() => killSession(activeSession.id)}>
               <Square size={13} />
             </button>
           )}
-          <button type="button" className="btn-icon" title="Sluiten" aria-label="Sluiten" onClick={() => setShowTerminal(false)}>
+          <button type="button" className="btn-icon" title={t('common.close')} aria-label={t('common.close')} onClick={() => setShowTerminal(false)}>
             <X size={14} />
           </button>
         </div>
@@ -240,8 +293,8 @@ const TerminalPanel: React.FC = () => {
               role="button"
               tabIndex={-1}
               className="terminal-tab-close"
-              title="Terminal sluiten"
-              aria-label={`${session.label} sluiten`}
+              title={t('terminal.closeTerminal')}
+              aria-label={t('terminal.closeSession', { session: session.label })}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();

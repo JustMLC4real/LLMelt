@@ -119,7 +119,11 @@ export async function assertSkylineArtifacts(root: string, run: LiveProviderRun)
     const normalizedFile = fileName.replace(/\\/g, '/').toLowerCase();
     const basename = path.basename(normalizedFile);
     return successfulCommands.some((activity) => {
-      const command = String(activity.input?.command || '').replace(/\\/g, '/').toLowerCase();
+      // Antigravity publiceert de officiële run_command-parameter als
+      // `CommandLine`; de andere native providers gebruiken `command`.
+      const command = String(activity.input?.command || activity.input?.CommandLine || '')
+        .replace(/\\/g, '/')
+        .toLowerCase();
       return command.includes(normalizedFile) || command.includes(basename);
     });
   });

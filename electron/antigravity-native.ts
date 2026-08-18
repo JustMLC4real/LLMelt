@@ -11,7 +11,8 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import { app } from 'electron';
-import type { AgentApprovalMode } from '../src/providers/types';
+import type { AgentApprovalMode, UiLanguage } from '../src/providers/types';
+import { localizedText } from '../src/i18n/language';
 import type { NativePermissionHandler, NativeToolActivity } from './native-tools';
 import { antigravityFinalTranscriptText, antigravityPartialSummary } from './antigravity-output';
 import { cliSpawnSpec, clipNativeOutput, terminateProcessTree } from './process-utils';
@@ -20,6 +21,10 @@ import { agentCommandEnvironment } from './agent-command-environment';
 export interface RunAntigravityNativeOptions {
   exe: string;
   modelId: string;
+  /** Alleen ingevuld nadat `agy --help` dit exacte niveau live publiceerde. */
+  reasoningEffort?: string;
+  /** Alleen ingevuld nadat `agy --help` deze exacte modus live publiceerde. */
+  executionMode?: string;
   prompt: string;
   cwd: string;
   agentMode: AgentApprovalMode;
@@ -28,6 +33,7 @@ export interface RunAntigravityNativeOptions {
   onStatus?: (status: string) => void;
   onToolActivity?: (activity: NativeToolActivity) => void;
   requestPermission: NativePermissionHandler;
+  language?: UiLanguage;
 }
 
 export interface RunAntigravityNativeResult {
@@ -55,6 +61,7 @@ interface PendingAntigravityTool {
 
 const BRIDGE_SCRIPT = String.raw`
 const http = require('http');
+const language = process.env.AI_SUPERAPP_UI_LANGUAGE === 'en' ? 'en' : 'nl';
 let body = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => body += chunk);
@@ -72,7 +79,7 @@ process.stdin.on('end', () => {
         let out = ''; res.setEncoding('utf8'); res.on('data', c => out += c);
         res.on('end', () => process.stdout.write(out || '{}'));
       });
-  req.on('error', () => process.stdout.write(JSON.stringify({ decision: 'deny', reason: 'LLMelt approval-brug niet bereikbaar.' })));
+  req.on('error', () => process.stdout.write(JSON.stringify({ decision: 'deny', reason: language === 'en' ? 'The LLMelt approval bridge is unavailable.' : 'LLMelt approval-brug niet bereikbaar.' })));
   req.write(data); req.end();
 });
 `;
@@ -82,7 +89,8 @@ let hookMutationTail: Promise<void> = Promise.resolve();
 
 export async function runAntigravityNative(options: RunAntigravityNativeOptions): Promise<RunAntigravityNativeResult> {
   if (options.signal.aborted) throw new Error('cancelled');
-  const promptTransport = await createPromptTransport(options.prompt);
+  const language = options.language || 'nl';
+  const promptTransport = await createPromptTransport(options.prompt, language);
   let toolStarted = false;
   let completedTools = 0;
   let failedTools = 0;
@@ -109,9 +117,13 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
       if (stopContinuations < 2 && (unresolved > 0 || (toolStarted && !hasFinalText))) {
         stopContinuations += 1;
         const reason = unresolved > 0
-          ? `${unresolved} toolactie(s) hebben nog geen PostToolUse-resultaat. Controleer eerst of de actie echt is uitgevoerd; herstel of voer opnieuw uit als dat nodig is en geef daarna één kort eindantwoord.`
-          : 'De tools zijn klaar, maar het eindantwoord ontbreekt. Geef nu één kort eindantwoord zonder nieuwe tools, tenzij een concrete controle nog noodzakelijk is.';
-        options.onStatus?.('Antigravity rondt de toolbeurt af...');
+          ? localizedText(language,
+            `${unresolved} toolactie(s) hebben nog geen PostToolUse-resultaat. Controleer eerst of de actie echt is uitgevoerd; herstel of voer opnieuw uit als dat nodig is en geef daarna één kort eindantwoord.`,
+            `${unresolved} tool action(s) do not yet have a PostToolUse result. First verify whether each action really ran; repair or run it again if needed, then provide one short final answer.`)
+          : localizedText(language,
+            'De tools zijn klaar, maar het eindantwoord ontbreekt. Geef nu één kort eindantwoord zonder nieuwe tools, tenzij een concrete controle nog noodzakelijk is.',
+            'The tools are complete, but the final answer is missing. Provide one short final answer now without new tools, unless a concrete check is still required.');
+        options.onStatus?.(localizedText(options.language || 'nl', 'Antigravity rondt de toolbeurt af...', 'Antigravity is finishing the tool turn...'));
         return { decision: 'continue', reason };
       }
       return { decision: 'stop' };
@@ -120,16 +132,16 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
     const isPostToolUse = Object.prototype.hasOwnProperty.call(event, 'error');
     if (event.toolCall && !isPostToolUse) {
       toolStarted = true;
-      const name = String(event.toolCall.name || 'onbekende_tool');
+      const name = String(event.toolCall.name || localizedText(language, 'onbekende_tool', 'unknown_tool'));
       const input = event.toolCall.args && typeof event.toolCall.args === 'object' ? event.toolCall.args : {};
       if (promptTransport.file && isInternalPromptRead(name, input, promptTransport.file)) {
-        return { decision: 'allow', reason: 'Interne promptoverdracht van LLMelt.' };
+        return { decision: 'allow', reason: localizedText(language, 'Interne promptoverdracht van LLMelt.', 'Internal prompt transfer by LLMelt.') };
       }
       const tool = { id: `agy-${conversationId}-${stepIdx}-${crypto.randomBytes(3).toString('hex')}`, name, input };
       pending.set(key, tool);
       lastPendingByConversation.set(conversationId, tool);
       options.onToolActivity?.({ provider: 'antigravity', toolName: name, input, toolUseId: tool.id, phase: 'requested' });
-      options.onStatus?.(`Antigravity gebruikt ${name}`);
+      options.onStatus?.(localizedText(options.language || 'nl', `Antigravity gebruikt ${name}`, `Antigravity is using ${name}`));
       const verdict = await options.requestPermission(name, input);
       options.onToolActivity?.({ provider: 'antigravity', toolName: name, input, toolUseId: tool.id, phase: verdict.allow ? 'approved' : 'denied' });
       if (!verdict.allow) {
@@ -137,14 +149,19 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
         pending.delete(key);
         if (lastPendingByConversation.get(conversationId)?.id === tool.id) lastPendingByConversation.delete(conversationId);
       }
-      return { decision: verdict.allow ? 'allow' : 'deny', reason: verdict.message || (verdict.allow ? 'Goedgekeurd door LLMelt.' : 'Geweigerd door gebruiker.') };
+      return {
+        decision: verdict.allow ? 'allow' : 'deny',
+        reason: verdict.message || (verdict.allow
+          ? localizedText(language, 'Goedgekeurd door LLMelt.', 'Approved by LLMelt.')
+          : localizedText(language, 'Geweigerd door gebruiker.', 'Denied by the user.')),
+      };
     }
 
     const tool = pending.get(key) || lastPendingByConversation.get(conversationId);
     if (tool) {
       pending.delete(key);
       if (lastPendingByConversation.get(conversationId)?.id === tool.id) lastPendingByConversation.delete(conversationId);
-      const output = await antigravityToolOutput(event.transcriptPath, stepIdx, event.error);
+      const output = await antigravityToolOutput(event.transcriptPath, stepIdx, event.error, language);
       completedTools += 1;
       if (event.error) failedTools += 1;
       options.onToolActivity?.({
@@ -158,7 +175,7 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
       });
     }
     return {};
-  }).catch(async (error) => {
+  }, language).catch(async (error) => {
     await promptTransport.cleanup();
     throw error;
   });
@@ -167,18 +184,19 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
   let plugin: Awaited<ReturnType<typeof createHookPlugin>> | undefined;
   try {
     const bridge = ensureBridgeScript();
-    plugin = await createHookPlugin(options.cwd);
+    plugin = await createHookPlugin(options.cwd, language);
     const args = [
       // Printmodus heeft geen interactieve TUI om een tweede CLI-permissionprompt
       // af te handelen. De tijdelijke PreToolUse-hook hierboven blijft de
       // autoritatieve app-goedkeuring voor iedere toolactie.
       '--dangerously-skip-permissions',
-      '--mode', 'accept-edits',
+      '--mode', options.executionMode || 'accept-edits',
       '--add-dir', options.cwd,
       ...(promptTransport.file ? ['--add-dir', path.dirname(promptTransport.file)] : []),
       '--log-file', logPath,
       '--print-timeout', '180s',
       '--model', options.modelId,
+      ...(options.reasoningEffort ? ['--effort', options.reasoningEffort] : []),
       '-p', promptTransport.prompt,
     ];
     if (options.agentMode === 'auto-project') args.unshift('--sandbox');
@@ -189,8 +207,9 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
       AI_SUPERAPP_AGY_BRIDGE: `"${bridge}"`,
       AI_SUPERAPP_AGY_HOOK_URL: decisionServer.url,
       AI_SUPERAPP_AGY_HOOK_TOKEN: decisionServer.token,
+      AI_SUPERAPP_UI_LANGUAGE: language,
     });
-    const text = await spawnAgy(options.exe, args, options.cwd, env, options.signal, options.onDelta);
+    const text = await spawnAgy(options.exe, args, options.cwd, env, options.signal, options.onDelta, language);
     const unreportedTools = uniquePendingTools(pending, lastPendingByConversation);
     for (const tool of unreportedTools) {
       failedTools += 1;
@@ -201,7 +220,7 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
         toolUseId: tool.id,
         phase: 'result',
         ok: false,
-        output: 'Antigravity sloot voordat de CLI een toolresultaat bevestigde.',
+        output: localizedText(language, 'Antigravity sloot voordat de CLI een toolresultaat bevestigde.', 'Antigravity closed before the CLI confirmed a tool result.'),
       });
     }
     const cleanText = text.trim();
@@ -212,11 +231,11 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
         return { text: recoveredText };
       }
       if (toolStarted) {
-        const summary = antigravityPartialSummary(completedTools, failedTools, deniedTools, unreportedTools.length);
+        const summary = antigravityPartialSummary(completedTools, failedTools, deniedTools, unreportedTools.length, language);
         options.onDelta(summary);
         return { text: summary };
       }
-      throw new Error('Antigravity sloot zonder eindantwoord.');
+      throw new Error(localizedText(language, 'Antigravity sloot zonder eindantwoord.', 'Antigravity closed without a final answer.'));
     }
     return { text: cleanText };
   } catch (error) {
@@ -251,14 +270,16 @@ async function readAntigravityFinalText(transcriptPaths: Set<string>) {
   return '';
 }
 
-async function createPromptTransport(prompt: string) {
+async function createPromptTransport(prompt: string, language: UiLanguage = 'nl') {
   if (process.platform !== 'win32' || prompt.length <= 20_000) {
     return { prompt, file: undefined as string | undefined, cleanup: async () => { } };
   }
   const file = path.join(app.getPath('temp'), `ai-superapp-agy-prompt-${crypto.randomBytes(8).toString('hex')}.txt`);
   await fs.promises.writeFile(file, prompt, { encoding: 'utf8', flag: 'wx' });
   return {
-    prompt: `Lees de volledige gebruikersopdracht uit dit UTF-8-bestand en voer die exact uit: ${file}`,
+    prompt: localizedText(language,
+      `Lees de volledige gebruikersopdracht uit dit UTF-8-bestand en voer die exact uit: ${file}`,
+      `Read the complete user request from this UTF-8 file and execute it exactly: ${file}`),
     file,
     cleanup: () => fs.promises.rm(file, { force: true }).then(() => undefined),
   };
@@ -277,7 +298,7 @@ function ensureBridgeScript(): string {
   return file;
 }
 
-async function createHookPlugin(cwd: string) {
+async function createHookPlugin(cwd: string, language: UiLanguage = 'nl') {
   const releaseMutation = await acquireHookMutation();
   const agentsDir = path.join(cwd, '.agents');
   const agentsExisted = fs.existsSync(agentsDir);
@@ -295,7 +316,7 @@ async function createHookPlugin(cwd: string) {
     try { hooks = JSON.parse(previous.toString('utf8')); }
     catch {
       releaseMutation();
-      throw new Error(`Bestaande Antigravity-hooks zijn geen geldige JSON: ${hooksPath}`);
+      throw new Error(localizedText(language, `Bestaande Antigravity-hooks zijn geen geldige JSON: ${hooksPath}`, `Existing Antigravity hooks are not valid JSON: ${hooksPath}`));
     }
   }
   const name = `ai-superapp-native-${crypto.randomBytes(6).toString('hex')}`;
@@ -373,7 +394,10 @@ async function removeIfEmpty(dir: string) {
   } catch { /* map bestond al of is niet leeg */ }
 }
 
-function startHookServer(handler: (event: AntigravityHookEvent) => Promise<Record<string, unknown>>) {
+function startHookServer(
+  handler: (event: AntigravityHookEvent) => Promise<Record<string, unknown>>,
+  language: UiLanguage = 'nl',
+) {
   const token = crypto.randomBytes(24).toString('hex');
   return new Promise<{ url: string; token: string; stop: () => void }>((resolve, reject) => {
     const server = http.createServer((req, res) => {
@@ -397,7 +421,7 @@ function startHookServer(handler: (event: AntigravityHookEvent) => Promise<Recor
       req.on('end', async () => {
         if (tooLarge) {
           res.writeHead(413, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ decision: 'deny', reason: 'Hook-payload is te groot.' }));
+          res.end(JSON.stringify({ decision: 'deny', reason: localizedText(language, 'Hook-payload is te groot.', 'The hook payload is too large.') }));
           return;
         }
         let event: AntigravityHookEvent = {};
@@ -425,6 +449,7 @@ function spawnAgy(
   env: NodeJS.ProcessEnv,
   signal: AbortSignal,
   onDelta: (delta: string) => void,
+  language: UiLanguage = 'nl',
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const spawnSpec = cliSpawnSpec(exe, args);
@@ -459,32 +484,37 @@ function spawnAgy(
       if (accepted) onDelta(accepted);
       if (accepted.length < delta.length) {
         stdoutTruncated = true;
-        const marker = '\n[Antigravity-uitvoer afgekapt na 100.000 tekens]';
+        const marker = localizedText(language, '\n[Antigravity-uitvoer afgekapt na 100.000 tekens]', '\n[Antigravity output truncated after 100,000 characters]');
         stdout += marker;
         onDelta(marker);
       }
     });
     child.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-4000); });
-    child.on('error', (error) => finish(new Error(`Antigravity native kon niet starten: ${error.message}`)));
+    child.on('error', (error) => finish(new Error(localizedText(language, `Antigravity native kon niet starten: ${error.message}`, `Antigravity native could not start: ${error.message}`))));
     child.on('close', (code) => {
-      if (code && code !== 0) finish(new Error(cleanTail(stderr) || `Antigravity eindigde met code ${code}.`));
+      if (code && code !== 0) finish(new Error(cleanTail(stderr) || localizedText(language, `Antigravity eindigde met code ${code}.`, `Antigravity exited with code ${code}.`)));
       else finish();
     });
   });
 }
 
-async function antigravityToolOutput(transcriptPath: string | undefined, stepIdx: number, error?: string): Promise<string> {
+async function antigravityToolOutput(
+  transcriptPath: string | undefined,
+  stepIdx: number,
+  error?: string,
+  language: UiLanguage = 'nl',
+): Promise<string> {
   if (error) return error;
-  if (!transcriptPath) return 'Uitgevoerd.';
+  if (!transcriptPath) return localizedText(language, 'Uitgevoerd.', 'Executed.');
   try {
     const text = await fs.promises.readFile(transcriptPath, 'utf8');
     const rows = text.split(/\r?\n/).filter(Boolean).slice(-160).map((line) => {
       try { return JSON.parse(line); } catch { return null; }
     }).filter(Boolean);
     const match = rows.find((row: any) => Number(row.step_index) >= stepIdx && row.content && row.type !== 'PLANNER_RESPONSE');
-    return String(match?.content || 'Uitgevoerd.').slice(0, 20000);
+    return String(match?.content || localizedText(language, 'Uitgevoerd.', 'Executed.')).slice(0, 20000);
   } catch {
-    return 'Uitgevoerd.';
+    return localizedText(language, 'Uitgevoerd.', 'Executed.');
   }
 }
 

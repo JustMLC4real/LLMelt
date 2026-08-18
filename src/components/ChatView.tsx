@@ -18,6 +18,7 @@ import { usePanelPresence } from './use-panel-presence';
 import { replacementForUnavailableModel } from './model-utils';
 import type { QueuedAgentApproval } from './approval-queue';
 import type { Message } from '../providers/types';
+import { normalizeUiLanguage } from '../i18n/language';
 import {
   isUtilityPanelId,
   toggledUtilityPanel,
@@ -31,7 +32,8 @@ interface ChatViewProps {
 }
 
 const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const uiLanguage = normalizeUiLanguage(i18n.resolvedLanguage || i18n.language);
   const {
     currentChatId,
     chats,
@@ -152,8 +154,8 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
     [currentRun?.nativeMessages, pendingStreamMessage, scopedMessages],
   );
   const renderItems = React.useMemo(
-    () => buildMessageRenderItems(renderedMessages, liveToolRuns, currentChatId, liveToolActivities),
-    [renderedMessages, liveToolRuns, liveToolActivities, currentChatId],
+    () => buildMessageRenderItems(renderedMessages, liveToolRuns, currentChatId, liveToolActivities, uiLanguage),
+    [renderedMessages, liveToolRuns, liveToolActivities, currentChatId, uiLanguage],
   );
 
   // Groepeer een beurt (assistent-berichten + tool-kaarten) visueel tot één geheel: alleen
@@ -460,15 +462,15 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
   if (!currentChatId) {
     const providerChips = [
       {
-        name: 'ChatGPT websessie',
+        name: t('chatView.providers.chatgptWebSession'),
         status: chatgptSessionActive === true ? 'online' : 'offline',
       },
       {
-        name: 'OpenAI API',
+        name: t('chatView.providers.openaiApi'),
         status: authStatus.openai?.authenticated && authStatus.openai.method === 'apikey' ? 'online' : 'offline',
       },
       {
-        name: 'Codex CLI',
+        name: t('chatView.providers.codexCli'),
         status: cliConnectionChipStatus({
           authenticated: !!authStatus.codex?.authenticated,
           hasLiveCatalog: models.some((model) => model.provider === 'codex'),
@@ -500,7 +502,12 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
         <div className="empty-state-text">{t('app.tagline')}</div>
         <div style={{ marginTop: 'var(--space-4)', display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap', justifyContent: 'center' }}>
           {providerChips.map(({ name, status }) => (
-            <div key={name} className="model-chip" style={{ cursor: 'default' }}>
+            <div
+              key={name}
+              className="model-chip"
+              style={{ cursor: 'default' }}
+              aria-label={`${name}: ${t(`chatView.connectionStatus.${status}`)}`}
+            >
               <span className={`status-dot ${status}`} />
               {name}
             </div>
@@ -554,24 +561,24 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
             data-utility-panel="terminal"
             className={`chat-toolbar-btn ${showTerminal ? 'active' : ''}`}
             onClick={handleTerminalToggle}
-            title="Agent terminal"
+            title={t('chatView.agentTerminal')}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
             </svg>
-            Terminal
+            {t('chatView.terminal')}
           </button>
         </div>
         {agentToolsEnabled && (currentChat?.agentMode || agentMode) !== 'ask' && (
           <span className={`agent-mode-badge ${(currentChat?.agentMode || agentMode) === 'full' ? 'danger' : 'limited'}`}>
-            {(currentChat?.agentMode || agentMode) === 'full' ? 'PC-toegang: full zonder vragen' : 'PC-toegang: auto in werkmap'}
-            {currentChat?.agentMode ? ' (deze chat)' : ''}
+            {(currentChat?.agentMode || agentMode) === 'full' ? t('chatView.pcAccess.full') : t('chatView.pcAccess.project')}
+            {currentChat?.agentMode ? t('chatView.pcAccess.thisChat') : ''}
           </span>
         )}
         <div style={{ flex: 1 }} />
         {effectiveProjectPath && (
           <span className="project-path-chip" title={effectiveProjectPath}>
-            {currentFolder ? currentFolder.name : legacyChatProjectPath ? 'Legacy chat-project' : 'Default workspace'} · {effectiveProjectPath}
+            {currentFolder ? currentFolder.name : legacyChatProjectPath ? t('chatView.projectPath.legacy') : t('chatView.projectPath.default')} · {effectiveProjectPath}
           </span>
         )}
         {autoModeActive && (
@@ -607,9 +614,9 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
                 continuation={continuationFlags[index]}
                 liveStatus={
                   item.message.id === pendingStreamMessage?.id && !item.message.content
-                    ? (visibleStreamingStatusBase || 'werkt…')
+                    ? (visibleStreamingStatusBase || t('chatView.working'))
                     : index === activeStreamHeaderIndex
-                      ? (visibleStreamingStatusBase || 'werkt…')
+                      ? (visibleStreamingStatusBase || t('chatView.working'))
                       : undefined
                 }
               />

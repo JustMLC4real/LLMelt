@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { agentShellSpawnSpec, cliSpawnSpec, clipNativeOutput } from '../electron/process-utils';
+import { agentShellSpawnSpec, cliPtySpawnSpec, cliSpawnSpec, clipNativeOutput, windowsPowerShellExecutable } from '../electron/process-utils';
 
 describe('CLI-proceshulpen', () => {
   it('start een echt executable rechtstreeks', () => {
@@ -33,6 +33,30 @@ describe('CLI-proceshulpen', () => {
       args: ['/d', '/s', '/c', '"python "map met spatie\\script.py""'],
       windowsVerbatimArguments: true,
     });
+  });
+
+  it('bouwt voor node-pty één vooraf gequote commandline voor een npm-shim', () => {
+    expect(cliPtySpawnSpec(
+      'C:\\Users\\Test User\\AppData\\Roaming\\npm\\claude.cmd',
+      ['--version'],
+      'win32',
+      'C:\\Windows\\cmd.exe',
+    )).toEqual({
+      command: 'C:\\Windows\\cmd.exe',
+      args: '/d /s /c ""C:\\Users\\Test User\\AppData\\Roaming\\npm\\claude.cmd" "--version""',
+    });
+  });
+
+  it('vindt Windows PowerShell ook wanneer System32 niet in PATH staat', () => {
+    const expected = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    expect(windowsPowerShellExecutable(
+      { SystemRoot: 'C:\\Windows', PATH: '' },
+      (candidate) => candidate === expected,
+    )).toBe(expected);
+    expect(agentShellSpawnSpec('powershell', 'Get-Date', 'win32', {
+      SystemRoot: 'C:\\Windows',
+      PATH: '',
+    }).command).toBe(expected);
   });
 
   it('voert via cmd een gequote scriptpad met spaties intact uit', async () => {

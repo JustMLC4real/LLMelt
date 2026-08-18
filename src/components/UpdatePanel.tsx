@@ -1,12 +1,18 @@
 import React, { useEffect, useState } from 'react'
 import { RefreshCw, RotateCcw } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { UpdateStatus } from '../update-status'
 import { updateProgressDetails, updateStatusLabel } from '../update-status'
 
 type BusyAction = 'check' | 'install' | null
-type UpdaterResult = { ok?: boolean; error?: string }
+type UpdaterResult = {
+  ok?: boolean
+  error?: string
+  reason?: 'installed-only' | 'no-failed-download' | 'download-first'
+}
 
 const UpdatePanel: React.FC = () => {
+  const { t, i18n } = useTranslation()
   const [status, setStatus] = useState<UpdateStatus>({ state: 'idle' })
   const [currentVersion, setCurrentVersion] = useState('')
   const [supported, setSupported] = useState(true)
@@ -35,7 +41,10 @@ const UpdatePanel: React.FC = () => {
     try {
       const result = await request()
       if (result && !result.ok) {
-        setStatus({ state: 'error', error: result.error || 'Onbekende updatefout.' })
+        const localizedError = result.reason
+          ? t(`updates.errors.${result.reason}`)
+          : result.error || t('updates.unknownError')
+        setStatus({ state: 'error', error: localizedError })
       }
     } catch (error) {
       setStatus({
@@ -49,7 +58,8 @@ const UpdatePanel: React.FC = () => {
 
   const check = () => run('check', () => window.electronAPI?.updater?.check?.())
   const install = () => run('install', () => window.electronAPI?.updater?.install?.())
-  const progressDetails = updateProgressDetails(status)
+  const locale = i18n.resolvedLanguage?.startsWith('nl') ? 'nl-NL' : 'en-US'
+  const progressDetails = updateProgressDetails(status, locale, t('updates.of'))
   const isDownloading = status.state === 'downloading'
   const isInstalling = status.state === 'installing'
 
@@ -63,24 +73,24 @@ const UpdatePanel: React.FC = () => {
     <div className="glass-card">
       <div className="flex items-center gap-2 mb-2">
         <RefreshCw size={18} />
-        <span className="font-semibold">App-updates</span>
+        <span className="font-semibold">{t('updates.title')}</span>
         <div style={{ flex: 1 }} />
         <span className="text-xs text-muted">v{currentVersion || '—'}</span>
       </div>
 
       {!supported ? (
-        <div className="text-sm text-muted">Updates werken alleen in de geïnstalleerde app (niet in dev-modus).</div>
+        <div className="text-sm text-muted">{t('updates.installedOnly')}</div>
       ) : (
         <>
           <div className="text-sm mb-3" style={{ color: tone }}>
-            {updateStatusLabel(status, currentVersion)}
+            {updateStatusLabel(status, currentVersion, (key, options) => t(key, options))}
           </div>
 
           {isDownloading && (
             <div style={{ marginBottom: 'var(--space-3)' }}>
               <div
                 role="progressbar"
-                aria-label="Downloadvoortgang van app-update"
+                aria-label={t('updates.progressAria')}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={status.percent}
@@ -101,7 +111,7 @@ const UpdatePanel: React.FC = () => {
                 />
               </div>
               <div className="text-xs text-muted" style={{ marginTop: 'var(--space-2)' }}>
-                {progressDetails || 'Download voorbereiden…'}
+                {progressDetails || t('updates.preparing')}
               </div>
             </div>
           )}
@@ -113,7 +123,11 @@ const UpdatePanel: React.FC = () => {
               disabled={busyAction !== null || isDownloading || isInstalling}
             >
               <RefreshCw size={15} className={busyAction === 'check' ? 'spin' : undefined} />
-              {busyAction === 'check' ? 'Zoeken…' : status.state === 'error' ? 'Opnieuw proberen' : 'Zoek naar updates'}
+              {busyAction === 'check'
+                ? t('updates.searching')
+                : status.state === 'error'
+                  ? t('updates.retry')
+                  : t('updates.check')}
             </button>
             {status.state === 'downloaded' && (
               <button
@@ -122,7 +136,7 @@ const UpdatePanel: React.FC = () => {
                 disabled={busyAction !== null}
               >
                 <RotateCcw size={15} />
-                {busyAction === 'install' ? 'Installeren…' : 'Nu installeren & herstarten'}
+                {busyAction === 'install' ? t('updates.installing') : t('updates.installRestart')}
               </button>
             )}
           </div>

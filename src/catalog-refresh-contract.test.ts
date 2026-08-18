@@ -38,4 +38,14 @@ describe('first-start modelcataloguscontract', () => {
     expect(input).toContain('isStreaming || isRefreshingModels ||');
     expect(input).toContain('!activeModelId || isRefreshingModels');
   });
+
+  it('publiceert na ChatGPT-login één snapshot naar onboarding én de globale store', () => {
+    const handlers = read('../electron/ipc-handlers.ts');
+    const onboarding = read('./components/OnboardingGuide.tsx');
+    const settings = read('./components/Settings.tsx');
+    expect(handlers).toContain('return { success: true, models, versions, sessionStatus };');
+    expect(onboarding).toContain("providerStore.setChatgptSessionActive(loginSnapshot.sessionStatus.active)");
+    expect(settings).toContain('setProviderChatgptSessionActive(result.sessionStatus.active === true)');
+    expect(settings).toContain('setProviderChatgptSessionActive(!!session?.active)');
+  });
 });

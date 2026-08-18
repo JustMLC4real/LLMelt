@@ -26,4 +26,10 @@ describe('Antigravity output recovery', () => {
       'Antigravity leverde geen apart eindantwoord; 1 toolactie is afgerond, 1 toolactie heeft geen bevestigd resultaat. Controleer de mislukte toolkaart(en) voordat je verdergaat.',
     );
   });
+
+  it('reports partial completion in English-mode', () => {
+    expect(antigravityPartialSummary(1, 1, 0, 1, 'en')).toBe(
+      'Antigravity did not provide a separate final answer; 1 tool action is complete, 1 tool action has no confirmed result. Check the failed tool card(s) before continuing.',
+    );
+  });
 });

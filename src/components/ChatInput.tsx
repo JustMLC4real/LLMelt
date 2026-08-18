@@ -1,15 +1,30 @@
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, ChevronDown, FileText, Loader2, Paperclip, Pause, Play, RefreshCw, Send, Settings2, Shield, ShieldAlert, ShieldCheck, Sparkles, Square, Terminal, X } from 'lucide-react';
+import { Check, ChevronDown, FileText, Loader2, Paperclip, Pause, Play, Send, Settings2, Shield, ShieldAlert, ShieldCheck, Sparkles, Square, Terminal, X } from 'lucide-react';
 import { useChatStore } from '../stores/chat-store';
 import { useProviderStore } from '../stores/provider-store';
 import ModelSelector from './ModelSelector';
-import type { AgentApprovalMode, AttachmentRef, Message, ReasoningEffort, TokenDashboard } from '../providers/types';
-import { codexEffortForModel, codexEffortsForModel, codexRunConfig, modelDisplayName, providerLabel, reasoningEffortLabel, serviceTierLabel, serviceTiersForModel } from './model-utils';
-import { FlipText, IconButton, ProviderBadge, QuotaBadge, SelectField } from './ui';
-import { COMMAND_PRESETS, applyCommandPreset, clearCommandConfig, commandLabel, parseCommandInput, type CommandPreset } from './command-presets';
+import type { AgentApprovalMode, AttachmentRef, Message, NativeProviderCommand, ReasoningEffort, TokenDashboard } from '../providers/types';
+import { mergeUsageSources } from '../providers/token-usage';
+import { codexEffortForModel, codexRunConfig, modelDisplayName, providerLabel } from './model-utils';
+import { IconButton, ProviderBadge, QuotaBadge, SelectField } from './ui';
+import {
+  applyCommandPreset,
+  clearCommandConfig,
+  composerCommandPreset,
+  commandLabel,
+  commandLanguage,
+  commandPresetMatchesQuery,
+  commandPresetsForModel,
+  hasSelectableNativeRunControls,
+  nativeRunControls,
+  nativeCommandPresets,
+  parseCommandInput,
+  type CommandPreset,
+  type CommandPresetId,
+} from './command-presets';
 import { COMPOSER_FOCUS_EVENT } from './composer-focus';
-import { approvalTitle, deferredAgentApprovalsForChat, type QueuedAgentApproval } from './approval-queue';
+import { deferredAgentApprovalsForChat, type QueuedAgentApproval } from './approval-queue';
 import { chatScopedList } from './chat-scope';
 import { shouldAcceptOwnedRequestEvent } from './command-run-utils';
 import { shouldApplyChatRunResult } from './chat-run-state';
@@ -17,25 +32,26 @@ import { chatFromVisibleOrDraft } from './draft-chat';
 import { ensureChatMaterialized, isDraftChatId } from './new-chat';
 import { usePanelPresence } from './use-panel-presence';
 import { requestUtilityPanelToggle } from './utility-panels';
+import { normalizeUiLanguage } from '../i18n/language';
 
-const AGENT_MODE_OPTIONS: Array<{ value: AgentApprovalMode; description: string }> = [
-  { value: 'ask', description: 'Vraag per bestand lezen/maken/wijzigen en commando om goedkeuring.' },
-  { value: 'auto-project', description: 'Bestandstools binnen de werkmap gaan automatisch; shellcommando’s blijven vragen.' },
-  { value: 'full', description: 'Geen approval-popups voor deze chat. Riskant, maar snel.' },
+const AGENT_MODE_OPTIONS: Array<{ value: AgentApprovalMode; descriptionKey: string }> = [
+  { value: 'ask', descriptionKey: 'chat.access.askDescription' },
+  { value: 'auto-project', descriptionKey: 'chat.access.autoProjectDescription' },
+  { value: 'full', descriptionKey: 'chat.access.fullDescription' },
 ];
 
 function isAgentApprovalMode(value: unknown): value is AgentApprovalMode {
   return value === 'ask' || value === 'auto-project' || value === 'full';
 }
 
-function approvalModeMeta(mode: AgentApprovalMode) {
+function approvalModeMeta(mode: AgentApprovalMode, t: ReturnType<typeof useTranslation>['t']) {
   if (mode === 'full') {
-    return { label: 'Volledige toegang', shortLabel: 'Volledige toegang', tone: 'danger', Icon: ShieldAlert };
+    return { label: t('chat.access.full'), shortLabel: t('chat.access.full'), tone: 'danger', Icon: ShieldAlert };
   }
   if (mode === 'auto-project') {
-    return { label: 'Auto in werkmap', shortLabel: 'Auto in werkmap', tone: 'warn', Icon: ShieldCheck };
+    return { label: t('chat.access.autoProject'), shortLabel: t('chat.access.autoProject'), tone: 'warn', Icon: ShieldCheck };
   }
-  return { label: 'Goedkeuring aanvragen', shortLabel: 'Goedkeuring vragen', tone: 'safe', Icon: Shield };
+  return { label: t('chat.access.ask'), shortLabel: t('chat.access.askShort'), tone: 'safe', Icon: Shield };
 }
 
 interface ChatInputProps {
@@ -44,7 +60,7 @@ interface ChatInputProps {
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [input, setInput] = useState(() => {
     const id = useChatStore.getState().currentChatId;
     return id ? (useChatStore.getState().messageDrafts[id] ?? '') : '';
@@ -56,9 +72,13 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
   const [agentToolsEnabled, setAgentToolsEnabled] = useState(false);
   const [contextUsage, setContextUsage] = useState<TokenDashboard['context'] | null>(null);
   const [composerError, setComposerError] = useState('');
+  const [nativeCommands, setNativeCommands] = useState<NativeProviderCommand[]>([]);
+  const [nativeCommandsLoading, setNativeCommandsLoading] = useState(false);
+  const [pendingCommandId, setPendingCommandId] = useState<CommandPresetId | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const accessMenuRef = useRef<HTMLDivElement>(null);
   const runSettingsRef = useRef<HTMLDivElement>(null);
+  const pendingCommandByChatRef = useRef(new Map<string, CommandPresetId>());
   const accessMenuPresence = usePanelPresence(showAccessMenu);
   const runSettingsPresence = usePanelPresence(showRunSettings);
   // De store-update volgt pas bij de volgende render. Deze map voorkomt een dubbele
@@ -158,9 +178,28 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
   }, [input]);
   const chatAgentMode = currentChat?.agentMode || null;
   const effectiveAgentMode = chatAgentMode || defaultAgentMode;
-  const accessMeta = approvalModeMeta(effectiveAgentMode);
+  const accessMeta = approvalModeMeta(effectiveAgentMode, t);
   const activeModel = models.find((model) => model.provider === activeProvider && model.id === activeModelId);
-  const baseModelLabel = modelDisplayName(activeModel) || activeModelId || 'Geen model';
+  const activeCommandLanguage = commandLanguage(i18n.resolvedLanguage || i18n.language);
+  const llmeltCommandPresets = useMemo(
+    () => commandPresetsForModel(activeCommandLanguage, activeProvider, activeModel),
+    [activeCommandLanguage, activeModel, activeProvider],
+  );
+  const providerCommandPresets = useMemo(() => nativeCommandPresets(nativeCommands), [nativeCommands]);
+  const providerRunActions = useMemo(
+    () => providerCommandPresets.filter((preset) => preset.nativeCommand?.kind !== 'skill'),
+    [providerCommandPresets],
+  );
+  const commandPresets = useMemo(
+    () => [...providerCommandPresets, ...llmeltCommandPresets],
+    [llmeltCommandPresets, providerCommandPresets],
+  );
+  const runControls = useMemo(() => nativeRunControls(activeModel), [activeModel]);
+  const hasNativeRunSettings = useMemo(
+    () => hasSelectableNativeRunControls(activeModel) || nativeCommands.length > 0,
+    [activeModel, nativeCommands.length],
+  );
+  const baseModelLabel = modelDisplayName(activeModel, normalizeUiLanguage(i18n.resolvedLanguage || i18n.language)) || activeModelId || t('models.noModel');
   // For ChatGPT, also show the chosen Inspanning (e.g. "Langer") in the label.
   const chatgptEffortValue = activeProvider === 'openai' && activeModelId.startsWith('chatgpt:') ? activeRunConfig?.chatgptThinkingEffort : undefined;
   const chatgptEffortLabel = chatgptEffortValue
@@ -168,19 +207,33 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
     : '';
   const activeModelLabel = chatgptEffortLabel ? `${baseModelLabel} · ${chatgptEffortLabel}` : baseModelLabel;
   const activeEffort = activeProvider === 'codex'
-    ? codexEffortForModel(activeModel, activeRunConfig?.reasoningEffort || activeModel?.runConfig?.reasoningEffort)
-    : activeRunConfig?.reasoningEffort || activeModel?.runConfig?.reasoningEffort || activeModel?.defaultReasoningEffort || 'high';
+    ? codexEffortForModel(activeModel, activeRunConfig?.reasoningEffort) || ''
+    : activeRunConfig?.reasoningEffort
+      || '';
   const slashInput = input.trimStart();
   const commandMatches = useMemo(() => {
     if (!slashInput.startsWith('/')) return [];
     const query = slashInput.slice(1).toLowerCase();
     if (query.includes(' ')) return [];
-    return COMMAND_PRESETS.filter((preset) =>
-      preset.slash.slice(1).includes(query) || preset.label.toLowerCase().includes(query),
-    );
-  }, [slashInput]);
+    return commandPresets.filter((preset) => commandPresetMatchesQuery(preset, query));
+  }, [commandPresets, slashInput]);
 
-  const activeCommandLabel = commandLabel(activeRunConfig?.commandPresetId);
+  const selectedCommandPreset = composerCommandPreset(
+    commandPresets,
+    activeRunConfig?.commandPresetId,
+    pendingCommandId,
+  );
+  const activeCommandLabel = selectedCommandPreset?.label
+    || commandLabel(activeRunConfig?.commandPresetId, activeCommandLanguage);
+  const ActiveCommandIcon = selectedCommandPreset?.icon;
+
+  const setPendingCommandForCurrentChat = useCallback((id: CommandPresetId | null) => {
+    if (currentChatId) {
+      if (id) pendingCommandByChatRef.current.set(currentChatId, id);
+      else pendingCommandByChatRef.current.delete(currentChatId);
+    }
+    setPendingCommandId(id);
+  }, [currentChatId]);
 
   const focusComposer = useCallback(() => {
     requestAnimationFrame(() => {
@@ -205,6 +258,31 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const loadNativeCommands = async () => {
+      if (!activeModelId || !window.electronAPI?.providers?.listNativeCommands) {
+        setNativeCommands([]);
+        return;
+      }
+      setNativeCommandsLoading(true);
+      try {
+        const commands = await window.electronAPI.providers.listNativeCommands({
+          chatId: currentChatId || undefined,
+          modelRef: { provider: activeProvider, modelId: activeModelId },
+          language: normalizeUiLanguage(i18n.resolvedLanguage || i18n.language),
+        });
+        if (!cancelled) setNativeCommands(Array.isArray(commands) ? commands : []);
+      } catch {
+        if (!cancelled) setNativeCommands([]);
+      } finally {
+        if (!cancelled) setNativeCommandsLoading(false);
+      }
+    };
+    void loadNativeCommands();
+    return () => { cancelled = true; };
+  }, [activeModelId, activeProvider, currentChatId, i18n.language, i18n.resolvedLanguage]);
+
+  useEffect(() => {
     focusComposer();
   }, [currentChatId, focusComposer]);
 
@@ -222,7 +300,12 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
   useEffect(() => {
     setShowAccessMenu(false);
     setShowRunSettings(false);
+    setPendingCommandId(currentChatId ? pendingCommandByChatRef.current.get(currentChatId) || null : null);
   }, [currentChatId]);
+
+  useEffect(() => {
+    if (!hasNativeRunSettings && showRunSettings) setShowRunSettings(false);
+  }, [hasNativeRunSettings, showRunSettings]);
 
   useEffect(() => {
     if (!showAccessMenu && !showRunSettings) return;
@@ -300,42 +383,126 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
     return next;
   }, [activeModel, activeProvider, activeRunConfig, setActiveRunConfig]);
 
+  const setNativeRunControl = useCallback((patch: Partial<NonNullable<typeof activeRunConfig>>) => {
+    if (!activeModel) return;
+    const next = {
+      ...(activeProvider === 'codex' ? {} : activeModel.runConfig || {}),
+      ...(activeRunConfig || {}),
+      ...patch,
+    };
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === '') delete next[key as keyof typeof next];
+    }
+    setActiveRunConfig(activeProvider === 'codex' ? codexRunConfig(activeModel, next) : next);
+  }, [activeModel, activeProvider, activeRunConfig, setActiveRunConfig]);
+
   const handleCommandPick = useCallback((preset: CommandPreset) => {
-    if (preset.id === 'goal') {
-      setInputValue('/doel ');
+    if (preset.nativeCommand?.kind === 'goal') {
+      setActiveRunConfig(clearCommandConfig(activeRunConfig, activeModel));
+      setPendingCommandForCurrentChat(preset.id);
+      setInputValue('');
       requestAnimationFrame(() => textareaRef.current?.focus());
       return;
     }
+    setPendingCommandForCurrentChat(null);
     applyPreset(preset);
-    setInputValue('');
+    // Sluit het palet na een keuze. Review blijft als uitvoerbare slash in het
+    // tekstveld staan; de spatie voorkomt dat het palet meteen opnieuw opent.
+    setInputValue(preset.nativeCommand?.kind === 'review' ? `${preset.slash} ` : '');
     requestAnimationFrame(() => textareaRef.current?.focus());
-  }, [applyPreset, setInputValue]);
+  }, [activeModel, activeRunConfig, applyPreset, setActiveRunConfig, setInputValue, setPendingCommandForCurrentChat]);
 
   const resetCommand = useCallback(() => {
-    setActiveRunConfig(clearCommandConfig(activeRunConfig));
-  }, [activeRunConfig, setActiveRunConfig]);
+    setPendingCommandForCurrentChat(null);
+    setActiveRunConfig(clearCommandConfig(activeRunConfig, activeModel));
+  }, [activeModel, activeRunConfig, setActiveRunConfig, setPendingCommandForCurrentChat]);
 
   const handleSend = useCallback(async () => {
     if (!input.trim() || !currentChatId || isStreaming || isRefreshingModels || requestInFlightByChatRef.current.has(currentChatId) || !activeModelId || !activeModel) return;
+
+    if (pendingCommandId) {
+      const pendingPreset = commandPresets.find((preset) => preset.id === pendingCommandId);
+      if (pendingPreset) {
+        if (pendingPreset.nativeCommand?.kind === 'goal') {
+          try {
+            await ensureChatMaterialized(currentChatId);
+            await window.electronAPI?.providers.setNativeGoal({
+              chatId: currentChatId,
+              modelRef: { provider: activeProvider, modelId: activeModelId, runConfig: activeRunConfig },
+              objective: input.trim(),
+              language: normalizeUiLanguage(i18n.resolvedLanguage || i18n.language),
+            });
+            setActiveRunConfig({
+              ...(clearCommandConfig(activeRunConfig, activeModel) || {}),
+              commandPresetId: pendingPreset.id,
+              commandGoal: input.trim(),
+            });
+            setPendingCommandForCurrentChat(null);
+            setInputValue('');
+          } catch (error: any) {
+            setComposerError(error?.message || String(error));
+          }
+          return;
+        }
+        const applied = applyCommandPreset(
+          pendingPreset,
+          activeProvider,
+          activeModel,
+          activeRunConfig,
+          input.trim(),
+        );
+        setActiveRunConfig(applied);
+        setPendingCommandForCurrentChat(null);
+        setInputValue('');
+        return;
+      }
+    }
+
     const runChatId = currentChatId;
     const requestId = crypto.randomUUID();
     let streamCleanup: (() => void) | undefined;
     let usageModel = { provider: activeProvider, modelId: activeModelId };
     let promptText = input.trim();
     let requestRunConfig = activeRunConfig;
-    const command = parseCommandInput(promptText);
+    const command = parseCommandInput(promptText, commandPresets);
     setComposerError('');
 
     if (command) {
       if (command.preset.id === 'reset') {
-        setActiveRunConfig(clearCommandConfig(activeRunConfig));
+        setActiveRunConfig(clearCommandConfig(activeRunConfig, activeModel));
         setInputValue('');
         return;
       }
 
       const commandArgs = command.args.trim();
+      if (command.preset.nativeCommand?.kind === 'goal') {
+        if (!commandArgs) {
+          setPendingCommandForCurrentChat(command.preset.id);
+          setInputValue('');
+          return;
+        }
+        try {
+          await ensureChatMaterialized(runChatId);
+          await window.electronAPI?.providers.setNativeGoal({
+            chatId: runChatId,
+            modelRef: { provider: activeProvider, modelId: activeModelId, runConfig: activeRunConfig },
+            objective: commandArgs,
+            language: normalizeUiLanguage(i18n.resolvedLanguage || i18n.language),
+          });
+          setActiveRunConfig({
+            ...(clearCommandConfig(activeRunConfig, activeModel) || {}),
+            commandPresetId: command.preset.id,
+            commandGoal: commandArgs,
+          });
+          setInputValue('');
+        } catch (error: any) {
+          setComposerError(error?.message || String(error));
+        }
+        return;
+      }
       const applied = applyCommandPreset(command.preset, activeProvider, activeModel, activeRunConfig, commandArgs);
       setActiveRunConfig(applied);
+      setPendingCommandForCurrentChat(null);
 
       if (command.preset.id === 'goal') {
         setInputValue('');
@@ -343,17 +510,26 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
       }
 
       requestRunConfig = applied;
-      promptText = command.rest.trim();
+      promptText = command.preset.nativeCommand?.kind === 'review'
+        ? (command.rest.trim() || command.preset.slash)
+        : command.rest.trim();
       if (!promptText) {
         setInputValue('');
         return;
       }
     }
 
+    // Native provideracties zijn beurtgebonden. De request houdt zijn snapshot,
+    // maar de volgende gewone beurt mag niet opnieuw Review/Skill/Mode starten.
+    if (requestRunConfig?.nativeProviderCommand) {
+      setActiveRunConfig(clearCommandConfig(requestRunConfig, activeModel));
+      setPendingCommandForCurrentChat(null);
+    }
+
     try {
       await ensureChatMaterialized(runChatId);
     } catch (error: any) {
-      setComposerError(`Gesprek kon niet worden gestart: ${error?.message || String(error)}`);
+      setComposerError(t('chat.startFailed', { error: error?.message || String(error) }));
       requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
       return;
     }
@@ -401,7 +577,9 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
           }
 
           if (event.type === 'model_switch') {
-            setChatRunStatus(runChatId, requestId, `Schakelt naar ${event.to?.modelId || 'volgend model'}...`);
+          setChatRunStatus(runChatId, requestId, t('chat.switchingModel', {
+            model: event.to?.modelId || t('chat.nextModel'),
+          }));
             if (event.to) {
               usageModel = { provider: event.to.provider, modelId: event.to.modelId };
               setChatRunModel(runChatId, requestId, {
@@ -445,6 +623,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
               totalTokens,
               cachedTokens: (currentUsage.cachedTokens || 0) + (event.usage.cachedTokens || 0),
               reasoningTokens: (currentUsage.reasoningTokens || 0) + (event.usage.reasoningTokens || 0),
+              source: mergeUsageSources(currentUsage.source, event.usage.source),
               contextWindowSize: event.usage.contextWindowSize,
               contextUsedPercent: event.usage.contextWindowSize ? Math.round((totalTokens / event.usage.contextWindowSize) * 100) : 0,
             });
@@ -461,7 +640,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
           }
 
           if (event.type === 'error') {
-            appendChatRunContent(runChatId, requestId, `\n\nFout: ${event.error || 'Providerverzoek mislukt.'}`);
+          appendChatRunContent(runChatId, requestId, `\n\n${t('common.error')}: ${event.error || t('chat.providerRequestFailed')}`);
             setChatRunStatus(runChatId, requestId, '');
             await reloadMessages(runChatId, requestId);
             clearLiveToolStateForChat(runChatId, requestId);
@@ -484,9 +663,10 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
           input: promptText,
           attachmentIds: attachments.map((attachment) => attachment.id),
           systemPrompt: useChatStore.getState().systemPrompt || undefined,
+          language: normalizeUiLanguage(i18n.resolvedLanguage || i18n.language),
         });
       } else {
-        const demoResponse = `Demoantwoord van ${activeModelId} (${activeProvider}). Start de Electron-app en voeg API-keys of lokale CLI's toe voor echte providercalls.`;
+        const demoResponse = t('chat.demoResponse', { model: activeModelId, provider: activeProvider });
         for (let i = 0; i < demoResponse.length; i += 4) {
           await new Promise((resolve) => setTimeout(resolve, 15));
           appendChatRunContent(runChatId, requestId, demoResponse.slice(i, i + 4));
@@ -505,7 +685,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
         });
       }
     } catch (error: any) {
-      appendChatRunContent(runChatId, requestId, `\n\nError: ${error.message || String(error)}`);
+      appendChatRunContent(runChatId, requestId, `\n\n${t('common.error')}: ${error.message || String(error)}`);
     } finally {
       if (requestInFlightByChatRef.current.get(runChatId) === requestId) {
         requestInFlightByChatRef.current.delete(runChatId);
@@ -526,7 +706,12 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
     activeModelId,
     activeProvider,
     activeRunConfig,
+    commandPresets,
+    pendingCommandId,
     activeModel,
+    i18n.language,
+    i18n.resolvedLanguage,
+    t,
     attachments,
     addMessage,
     confirmPersistedUserMessage,
@@ -535,6 +720,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
     finishChatRun,
     reloadMessages,
     setActiveRunConfig,
+    setPendingCommandForCurrentChat,
     setChatRunModel,
     setChatRunStatus,
     setInputValue,
@@ -597,19 +783,19 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
           <div className="approval-dock-icon"><Terminal size={16} /></div>
           <div className="approval-dock-content">
             <div className="approval-dock-title">
-              <span>Wacht op jouw goedkeuring: {approvalTitle(deferredApproval)}</span>
+              <span>{t('chat.approval.waiting', { action: localizedApprovalTitle(deferredApproval, t) })}</span>
               <span className="approval-dock-count">
-                {deferredApprovals.length > 1 ? `1 van ${deferredApprovals.length}` : 'Uitgesteld'}
+                {deferredApprovals.length > 1 ? t('chat.approval.position', { current: 1, total: deferredApprovals.length }) : t('chat.approval.deferred')}
               </span>
             </div>
             <code className="approval-dock-command" title={deferredApproval.command}>{deferredApproval.command}</code>
           </div>
           <div className="approval-dock-actions">
             <button className="btn btn-primary" onClick={() => onRespondApproval(deferredApproval, true)}>
-              <Check size={14} /> Toestaan
+               <Check size={14} /> {t('chat.approval.allow')}
             </button>
             <button className="btn btn-secondary" onClick={() => onRespondApproval(deferredApproval, false)}>
-              <X size={14} /> Weigeren
+               <X size={14} /> {t('chat.approval.deny')}
             </button>
           </div>
         </div>
@@ -621,35 +807,43 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
           </div>
           <div className="auto-mode-composer-copy">
             <div className="auto-mode-composer-title">
-              <strong>Auto Mode</strong>
-              <span>{autoModeStatus === 'paused' ? 'Gepauzeerd' : autoModeDetail || 'Bezig'}</span>
+              <strong>{t('autoMode.title')}</strong>
+              <span>{autoModeStatus === 'paused' ? t('autoMode.paused') : autoModeDetail || t('autoMode.running')}</span>
               <small>
                 {autoModeMaxIterations === 0
-                  ? `ronde ${autoModeIteration + (autoModePhase === 'waiting' ? 0 : 1)} / ∞`
-                  : `ronde ${Math.min(autoModeIteration + (autoModePhase === 'waiting' ? 0 : 1), autoModeMaxIterations)} / ${autoModeMaxIterations}`}
+                  ? t('autoMode.roundInfinite', { current: autoModeIteration + (autoModePhase === 'waiting' ? 0 : 1) })
+                  : t('autoMode.round', { current: Math.min(autoModeIteration + (autoModePhase === 'waiting' ? 0 : 1), autoModeMaxIterations), max: autoModeMaxIterations })}
               </small>
             </div>
             {autoModeLastPromptPreview && <p title={autoModeLastPromptPreview}>{autoModeLastPromptPreview}</p>}
           </div>
           <div className="auto-mode-composer-actions">
             {autoModeStatus === 'running' ? (
-              <button type="button" className="btn-icon" onClick={() => updateAutoMode('pause')} title="Auto Mode pauzeren" aria-label="Auto Mode pauzeren"><Pause size={15} /></button>
+              <button type="button" className="btn-icon" onClick={() => updateAutoMode('pause')} title={t('autoMode.pause')} aria-label={t('autoMode.pause')}><Pause size={15} /></button>
             ) : (
-              <button type="button" className="btn-icon" onClick={() => updateAutoMode('resume')} title="Auto Mode hervatten" aria-label="Auto Mode hervatten"><Play size={15} /></button>
+              <button type="button" className="btn-icon" onClick={() => updateAutoMode('resume')} title={t('autoMode.resume')} aria-label={t('autoMode.resume')}><Play size={15} /></button>
             )}
-            <button type="button" className="btn-icon danger" onClick={() => updateAutoMode('stop')} title="Auto Mode stoppen" aria-label="Auto Mode stoppen"><Square size={14} /></button>
+            <button type="button" className="btn-icon danger" onClick={() => updateAutoMode('stop')} title={t('autoMode.stop')} aria-label={t('autoMode.stop')}><Square size={14} /></button>
           </div>
         </div>
       )}
       <div className="chat-input-wrapper">
-        {(attachments.length > 0 || activeCommandLabel || activeRunConfig?.commandGoal) && (
-          <div className="chat-input-top">
-            {(activeCommandLabel || activeRunConfig?.commandGoal) && (
-              <div className="command-state-chip">
-                <FlipText text={activeCommandLabel || 'Command'} />
-                {activeRunConfig?.commandGoal && <strong>{activeRunConfig.commandGoal}</strong>}
-                <button type="button" className="attachment-remove" onClick={resetCommand} aria-label="Command resetten">
-                  <X size={13} />
+        {(attachments.length > 0 || (selectedCommandPreset && ActiveCommandIcon)) && (
+          <div className={`chat-input-top ${attachments.length === 0 ? 'command-only' : ''}`}>
+            {selectedCommandPreset && ActiveCommandIcon && (
+              <div
+                className={`composer-command-chip ${pendingCommandId ? 'pending' : ''}`}
+                title={activeRunConfig?.commandGoal || selectedCommandPreset.description}
+              >
+                <ActiveCommandIcon size={14} />
+                <span>{activeCommandLabel || t('chat.command')}</span>
+                <button
+                  type="button"
+                  className="composer-command-remove"
+                  onClick={resetCommand}
+                  aria-label={t('chat.resetCommand')}
+                >
+                  <X size={12} />
                 </button>
               </div>
             )}
@@ -671,7 +865,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
         <textarea
           ref={textareaRef}
           className="chat-input-textarea"
-          placeholder={t('chat.placeholder')}
+          placeholder={selectedCommandPreset?.nativeCommand?.kind === 'goal' ? t('chat.goalPlaceholder') : t('chat.placeholder')}
           value={input}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
@@ -680,16 +874,29 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
 
         {commandMatches.length > 0 && (
           <div className="command-palette motion-panel">
-            {commandMatches.map((preset) => {
-              const Icon = preset.icon;
+            {(['provider-native', 'llmelt-workflow'] as const).map((source) => {
+              const matches = commandMatches.filter((preset) => preset.source === source);
+              if (!matches.length) return null;
               return (
-                <button key={preset.id} type="button" className="command-palette-item" onClick={() => handleCommandPick(preset)}>
-                  <Icon size={16} />
-                  <span>
-                    <strong>{preset.slash}</strong>
-                    <small>{preset.description}</small>
-                  </span>
-                </button>
+                <React.Fragment key={source}>
+                  <div className="command-palette-section-label">
+                    {source === 'provider-native'
+                      ? t('runSettings.providerNative')
+                      : t('runSettings.appWorkflows')}
+                  </div>
+                  {matches.map((preset) => {
+                    const Icon = preset.icon;
+                    return (
+                      <button key={preset.id} type="button" className="command-palette-item" onClick={() => handleCommandPick(preset)}>
+                        <Icon size={16} />
+                        <span>
+                          <strong>{preset.slash}</strong>
+                          <small>{preset.description}</small>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </React.Fragment>
               );
             })}
           </div>
@@ -712,10 +919,16 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
               className="composer-model-chip"
               onClick={() => setShowModelSelector(true)}
               disabled={isRefreshingModels}
-              title={isRefreshingModels ? 'De live modelcatalogus wordt nog gecontroleerd' : undefined}
+              title={isRefreshingModels ? t('models.catalogChecking') : undefined}
             >
-              <span className="composer-model-label">{activeModelId ? `${providerLabel(activeProvider)}: ${activeModelLabel}` : 'Geen model'}</span>
-              {activeModel && <QuotaBadge model={activeModel} />}
+              <span className="composer-model-label">
+                {isRefreshingModels
+                  ? t('models.refreshing')
+                  : activeModelId
+                    ? `${providerLabel(activeProvider)}: ${activeModelLabel}`
+                    : t('models.noModel')}
+              </span>
+              {activeModel && !isRefreshingModels && <QuotaBadge model={activeModel} />}
             </button>
             <div ref={accessMenuRef} className="composer-access-control">
               <button
@@ -726,18 +939,18 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
                   setShowRunSettings(false);
                   setShowAccessMenu((value) => !value);
                 }}
-                title={chatAgentMode ? 'PC-toegang voor deze chat' : 'PC-toegang volgt Settings'}
+                title={chatAgentMode ? t('chat.access.thisChat') : t('chat.access.followsSettings')}
               >
                 <accessMeta.Icon size={14} />
-                <span>{agentToolsEnabled ? accessMeta.shortLabel : 'PC-tools uit'}</span>
-                {chatAgentMode && <span className="composer-access-dot" title="Alleen deze chat" />}
+                <span>{agentToolsEnabled ? accessMeta.shortLabel : t('chat.access.toolsOff')}</span>
+                {chatAgentMode && <span className="composer-access-dot" title={t('chat.access.onlyThisChat')} />}
                 <ChevronDown size={14} />
               </button>
               {accessMenuPresence.mounted && (
                 <div className={`access-mode-popover motion-panel dismissible-popover ${accessMenuPresence.phase}`}>
                   <div className="access-mode-header">
-                    <span>Hoe moeten AI-acties worden goedgekeurd?</span>
-                    <small>{chatAgentMode ? 'Alleen deze chat' : 'Volgt instellingen'}</small>
+                    <span>{t('chat.access.question')}</span>
+                    <small>{chatAgentMode ? t('chat.access.onlyThisChat') : t('chat.access.followsSettings')}</small>
                   </div>
                   <button
                     type="button"
@@ -746,13 +959,13 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
                   >
                     <Shield size={16} />
                     <span>
-                      <strong>Standaard uit instellingen</strong>
-                      <small>Nu: {approvalModeMeta(defaultAgentMode).label}</small>
+                      <strong>{t('chat.access.settingsDefault')}</strong>
+                      <small>{t('chat.access.current', { mode: approvalModeMeta(defaultAgentMode, t).label })}</small>
                     </span>
                     {!chatAgentMode && <Check size={15} />}
                   </button>
                   {AGENT_MODE_OPTIONS.map((option) => {
-                    const meta = approvalModeMeta(option.value);
+                    const meta = approvalModeMeta(option.value, t);
                     const active = chatAgentMode === option.value;
                     return (
                       <button
@@ -764,7 +977,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
                         <meta.Icon size={16} />
                         <span>
                           <strong>{meta.label}</strong>
-                          <small>{option.description}</small>
+                          <small>{t(option.descriptionKey)}</small>
                         </span>
                         {active && <Check size={15} />}
                       </button>
@@ -772,23 +985,16 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
                   })}
                   {!agentToolsEnabled && (
                     <div className="access-mode-note">
-                      PC-tools staan globaal uit in Settings. Deze keuze wordt alvast voor deze chat bewaard.
+                      {t('chat.access.globallyOffNote')}
                     </div>
                   )}
                 </div>
               )}
             </div>
-            {isRefreshingModels && (
-              <span className="model-refresh-hint" title="Modellen verversen…">
-                <RefreshCw size={11} className="spin-slow" />
-                verversen…
-              </span>
-            )}
-
-            {activeModelId && (
+            {activeModelId && hasNativeRunSettings && (
               <div ref={runSettingsRef} className="run-settings">
                 <IconButton
-                  label="Run settings"
+                  label={t('runSettings.title', { defaultValue: 'Run settings' })}
                   icon={Settings2}
                   active={showRunSettings}
                   onClick={() => {
@@ -799,55 +1005,112 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
                 {runSettingsPresence.mounted && (
                   <div className={`run-settings-popover motion-panel dismissible-popover ${runSettingsPresence.phase}`}>
                     <div className="run-settings-header">
-                      <ProviderBadge provider={activeProvider} label={activeProvider === 'codex' ? 'Codex run settings' : 'Run settings'} />
+                      <ProviderBadge
+                        provider={activeProvider}
+                        label={t('runSettings.title')}
+                      />
                       {activeModel && <QuotaBadge model={activeModel} />}
                     </div>
-                    {activeProvider === 'codex' && (
-                      <div className="run-settings-grid">
-                        <SelectField
-                          label="Inspanning"
-                          value={activeEffort}
-                          onChange={(value) =>
-                            setActiveRunConfig(codexRunConfig(activeModel, {
-                              ...(activeRunConfig || {}),
-                              reasoningEffort: value as ReasoningEffort,
-                            }))
-                          }
-                          options={codexEffortsForModel(activeModel).map((effort) => ({
-                            value: effort,
-                            label: reasoningEffortLabel(effort),
-                          }))}
-                        />
-                        <SelectField
-                          label="Snelheid"
-                          value={activeRunConfig?.serviceTier || activeModel?.runConfig?.serviceTier || serviceTiersForModel(activeModel)[0] || ''}
-                          onChange={(value) =>
-                            setActiveRunConfig(codexRunConfig(activeModel, {
-                              ...(activeRunConfig || {}),
-                              serviceTier: value,
-                            }))
-                          }
-                          options={serviceTiersForModel(activeModel).map((tier) => ({ value: tier, label: serviceTierLabel(tier) }))}
-                        />
+                    <div className="run-settings-grid">
+                        {runControls.reasoningEfforts.length > 1 && (
+                          <SelectField
+                            label={t('runSettings.effort')}
+                            value={activeEffort}
+                            onChange={(value) => setNativeRunControl({ reasoningEffort: value as ReasoningEffort })}
+                            options={[
+                              ...(activeModel?.defaultReasoningEffort ? [] : [{ value: '', label: t('models.standard') }]),
+                              ...runControls.reasoningEfforts.map((effort) => ({
+                                value: effort,
+                                label: localizedReasoningEffortLabel(t, effort),
+                              })),
+                            ]}
+                          />
+                        )}
+                        {runControls.chatgptThinkingEfforts.length > 1 && (
+                          <SelectField
+                            label={t('runSettings.intelligence')}
+                            value={activeRunConfig?.chatgptThinkingEffort
+                              || activeModel?.runConfig?.chatgptThinkingEffort
+                              || runControls.chatgptThinkingEfforts[0].value}
+                            onChange={(value) => setNativeRunControl({ chatgptThinkingEffort: value })}
+                            options={runControls.chatgptThinkingEfforts.map((effort) => ({
+                              value: effort.value,
+                              label: effort.label,
+                            }))}
+                          />
+                        )}
+                        {runControls.serviceTiers.length > 0 && (
+                          <SelectField
+                            label={t('runSettings.speed')}
+                            value={activeRunConfig?.serviceTier || ''}
+                            onChange={(value) => setNativeRunControl({ serviceTier: value })}
+                            options={[
+                              { value: '', label: t('models.standard') },
+                              ...runControls.serviceTiers.map((tier) => ({
+                                value: tier,
+                                label: localizedServiceTierLabel(t, tier),
+                              })),
+                            ]}
+                          />
+                        )}
+                    </div>
+                    {providerRunActions.length > 0 && (
+                      <div className="run-settings-native-actions">
+                        <div className="run-settings-section-label">
+                          {t('runSettings.providerNativeActions')}
+                        </div>
+                        <div className="run-settings-native-grid">
+                          {providerRunActions.map((preset) => {
+                            const Icon = preset.icon;
+                            return (
+                              <button
+                                key={preset.id}
+                                type="button"
+                                className="run-settings-native-action"
+                                title={preset.description}
+                                onClick={() => {
+                                  handleCommandPick(preset);
+                                  setShowRunSettings(false);
+                                }}
+                              >
+                                <Icon size={15} />
+                                <span>{preset.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
-                    <div className="command-button-grid">
-                      {COMMAND_PRESETS.map((preset) => {
-                        const Icon = preset.icon;
-                        const active = activeRunConfig?.commandPresetId === preset.id;
-                        return (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            className={`command-preset-button ${active ? 'active' : ''}`}
-                            onClick={() => handleCommandPick(preset)}
-                          >
-                            <Icon size={15} />
-                            <span>{preset.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
+                    {llmeltCommandPresets.length > 0 && (
+                      <div className="run-settings-native-actions run-settings-workflow-actions">
+                        <div className="run-settings-section-label">
+                          {t('runSettings.appWorkflows')}
+                        </div>
+                        <div className="run-settings-native-grid">
+                          {llmeltCommandPresets.map((preset) => {
+                            const Icon = preset.icon;
+                            return (
+                              <button
+                                key={preset.id}
+                                type="button"
+                                className="run-settings-native-action"
+                                title={preset.description}
+                                onClick={() => {
+                                  handleCommandPick(preset);
+                                  setShowRunSettings(false);
+                                }}
+                              >
+                                <Icon size={15} />
+                                <span>{preset.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {nativeCommandsLoading && (
+                      <div className="run-settings-native-loading"><Loader2 size={13} /> {t('models.refreshing')}</div>
+                    )}
                   </div>
                 )}
               </div>
@@ -876,27 +1139,81 @@ const ChatInput: React.FC<ChatInputProps> = ({ approvals, onRespondApproval }) =
 };
 
 function ContextMeter({ context, fallbackTotal }: { context: TokenDashboard['context'] | null; fallbackTotal: number }) {
+  const { t } = useTranslation();
   const total = context?.total || fallbackTotal || 0;
   const used = context?.used || 0;
-  const percent = context?.percent || 0;
+  const percent = total > 0 ? Math.max(0, used / total * 100) : 0;
   const source = context?.source || (total ? 'estimate' : 'unknown');
+  const windowSource = context?.windowSource || (fallbackTotal ? 'estimate' : 'unknown');
+  const sourceLabel = contextMeterSourceLabel(source, t);
+  const windowSourceLabel = contextMeterSourceLabel(windowSource, t);
 
   return (
-    <div className="composer-context-meter" title={`Contextbron: ${source}`}>
+    <div
+      className="composer-context-meter"
+      title={`${t('tokens.contextCountSource', { source: sourceLabel })} · ${t('tokens.contextWindowSource', { source: windowSourceLabel })}`}
+    >
       <div className="context-mini-bar">
         <div className={`context-mini-fill ${percent > 80 ? 'warning' : ''}`} style={{ width: `${Math.min(percent, 100)}%` }} />
       </div>
-      <span>{formatTokens(used)} / {total ? formatTokens(total) : 'unknown'}</span>
-      <span>{percent}%</span>
-      <span>{source}</span>
+      <span>{formatTokens(used)} / {total ? formatTokens(total) : '—'}</span>
+      <span>{formatContextPercent(percent)}</span>
+      <span>{sourceLabel}</span>
     </div>
   );
+}
+
+function contextMeterSourceLabel(source: string, t: ReturnType<typeof useTranslation>['t']) {
+  if (source === 'provider') return t('tokens.providerMeasured');
+  if (source === 'cli') return t('tokens.cliMeasured');
+  if (source === 'local') return t('tokens.localMeasured');
+  if (source === 'estimate') return t('tokens.usageEstimated');
+  return t('tokens.usageUnknown');
+}
+
+function localizedApprovalTitle(
+  approval: QueuedAgentApproval,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  const knownLabels: Record<string, string> = {
+    'bestand lezen': t('chat.approval.fileRead'),
+    'bestand maken': t('chat.approval.fileCreate'),
+    'bestand wijzigen': t('chat.approval.fileEdit'),
+    'commando uitvoeren': t('chat.approval.runCommand'),
+  };
+  if (approval.label) return knownLabels[approval.label.trim().toLowerCase()] || approval.label;
+  if (approval.kind === 'file-read') return t('chat.approval.fileRead');
+  if (approval.kind === 'file-create') return t('chat.approval.fileCreate');
+  if (approval.kind === 'file-edit') return t('chat.approval.fileEdit');
+  return t('chat.approval.runCommand');
+}
+
+function formatContextPercent(percent: number) {
+  if (!Number.isFinite(percent) || percent <= 0) return '0%';
+  if (percent < 0.1) return '<0.1%';
+  return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
 }
 
 function formatTokens(tokens: number) {
   if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`;
   if (tokens >= 1000) return `${Math.round(tokens / 1000)}K`;
   return String(tokens);
+}
+
+function localizedReasoningEffortLabel(t: ReturnType<typeof useTranslation>['t'], effort: string) {
+  return t(`models.efforts.${effort}`, { defaultValue: effort });
+}
+
+function localizedServiceTierLabel(t: ReturnType<typeof useTranslation>['t'], tier: string) {
+  const normalized = tier.trim().toLowerCase();
+  if (normalized === 'standard' || normalized === 'default' || !normalized) {
+    return t('models.serviceTiers.standard');
+  }
+  if (normalized === 'fast' || normalized === 'priority') {
+    return t('models.serviceTiers.fast');
+  }
+  if (normalized === 'flex') return t('models.serviceTiers.flex');
+  return tier;
 }
 
 export default ChatInput;

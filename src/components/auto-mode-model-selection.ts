@@ -6,6 +6,7 @@ import type {
   ModelRunConfig,
   ReasoningEffort,
   ServiceTier,
+  UiLanguage,
 } from '../providers/types';
 import { configuredModelRef, surfaceLabel } from './model-utils';
 
@@ -15,12 +16,12 @@ export interface AutoModeChatgptChoice {
   preset?: ChatgptIntelligencePreset;
 }
 
-export function autoModeSurfaces(models: AIModel[]) {
-  return [...new Set(models.map(surfaceLabel))];
+export function autoModeSurfaces(models: AIModel[], language: UiLanguage = 'nl') {
+  return [...new Set(models.map((model) => surfaceLabel(model, language)))];
 }
 
-export function autoModeModelsForSurface(models: AIModel[], surface: string) {
-  return models.filter((model) => surfaceLabel(model) === surface);
+export function autoModeModelsForSurface(models: AIModel[], surface: string, language: UiLanguage = 'nl') {
+  return models.filter((model) => surfaceLabel(model, language) === surface);
 }
 
 export function autoModeModelKey(model: AIModel) {
@@ -161,22 +162,22 @@ export function autoModeModelRef(model: AIModel, current?: ModelRef | null): Mod
 }
 
 export function withAutoModeReasoningEffort(ref: ModelRef, value: string): ModelRef {
+  const runConfig = { ...(ref.runConfig || {}) };
+  if (value) runConfig.reasoningEffort = value as ReasoningEffort;
+  else delete runConfig.reasoningEffort;
   return {
     ...ref,
-    runConfig: {
-      ...(ref.runConfig || {}),
-      reasoningEffort: value as ReasoningEffort,
-    },
+    runConfig: Object.keys(runConfig).length ? runConfig : undefined,
   };
 }
 
 export function withAutoModeServiceTier(ref: ModelRef, value: string): ModelRef {
+  const runConfig = { ...(ref.runConfig || {}) };
+  if (value) runConfig.serviceTier = value as ServiceTier;
+  else delete runConfig.serviceTier;
   return {
     ...ref,
-    runConfig: {
-      ...(ref.runConfig || {}),
-      serviceTier: value as ServiceTier,
-    },
+    runConfig: Object.keys(runConfig).length ? runConfig : undefined,
   };
 }
 

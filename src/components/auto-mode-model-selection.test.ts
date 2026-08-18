@@ -12,6 +12,7 @@ import {
   availableAutoModeChatgptVersions,
   normalizeAutoModeChatgptRef,
   withAutoModeReasoningEffort,
+  withAutoModeServiceTier,
 } from './auto-mode-model-selection';
 
 function model(overrides: Partial<AIModel>): AIModel {
@@ -79,6 +80,15 @@ describe('Auto Mode-modelkeuze', () => {
     ]);
   });
 
+  it('lokaliseert bekende provideroppervlakken zonder de modelkoppeling te verliezen', () => {
+    const ollama = model({ id: 'qwen3:8b', provider: 'ollama', surfaceLabel: 'Ollama local' });
+
+    expect(autoModeSurfaces([ollama], 'nl')).toEqual(['Ollama lokaal']);
+    expect(autoModeSurfaces([ollama], 'en')).toEqual(['Ollama local']);
+    expect(autoModeModelsForSurface([ollama], 'Ollama local', 'en').map(autoModeModelKey))
+      .toEqual(['ollama:qwen3:8b']);
+  });
+
   it('bewaart alleen een inspanning die het gekozen live model ondersteunt', () => {
     const claude = model({
       id: 'claude-cli:opus',
@@ -89,6 +99,18 @@ describe('Auto Mode-modelkeuze', () => {
     const selected = autoModeModelRef(claude);
     expect(selected.runConfig?.reasoningEffort).toBe('high');
     expect(withAutoModeReasoningEffort(selected, 'low').runConfig?.reasoningEffort).toBe('low');
+    expect(withAutoModeReasoningEffort(selected, '').runConfig?.reasoningEffort).toBeUndefined();
+  });
+
+  it('kan een expliciete servicetier terugzetten naar de providerdefault', () => {
+    const selected: ModelRef = {
+      provider: 'codex',
+      modelId: 'future-model',
+      runConfig: { baseModelId: 'future-model', serviceTier: 'burst-v3' },
+    };
+
+    expect(withAutoModeServiceTier(selected, '').runConfig)
+      .toEqual({ baseModelId: 'future-model' });
   });
 
   it('toont bij ChatGPT alleen werkelijk beschikbare niveaus en versies', () => {

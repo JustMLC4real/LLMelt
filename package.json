@@ -1,6 +1,6 @@
 {
   "name": "LLMelt",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Justin Laponder",
   "license": "MIT",
   "description": "LLMelt - ChatGPT, Claude, Gemini, Codex, Antigravity en lokale LLM's in één app",
@@ -60,7 +60,7 @@
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.5.2",
     "@vitest/coverage-v8": "^4.1.10",
-    "brace-expansion-secure": "npm:brace-expansion@5.0.8",
+    "brace-expansion-secure": "npm:brace-expansion@5.0.9",
     "electron": "^43.1.0",
     "electron-builder": "^26.15.3",
     "eslint": "^10.7.0",

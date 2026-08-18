@@ -6,6 +6,8 @@ import os from 'os';
 import path from 'path';
 import * as pty from 'node-pty';
 import type { AgentShell } from '../src/providers/types';
+import { configuredExecutable } from './provider-native-commands';
+import { cliPtySpawnSpec } from './process-utils';
 
 type TerminalSession = {
   id: string;
@@ -15,12 +17,14 @@ type TerminalSession = {
   process: pty.IPty;
 };
 
+export type ProviderCliTerminal = 'codex' | 'claude' | 'antigravity';
+
 const sessions = new Map<string, TerminalSession>();
 const MAX_TERMINAL_SESSIONS_PER_RENDERER = 8;
 
 export function registerTerminalIpcHandlers(ipcMain: IpcMain, getDefaultCwd?: () => string) {
   ipcMain.handle('terminal:listShells', async () => listAvailableShells());
-  ipcMain.handle('terminal:create', async (event, options?: { shell?: AgentShell; cwd?: string; cols?: number; rows?: number }) => {
+  ipcMain.handle('terminal:create', async (event, options?: { shell?: AgentShell; providerCli?: ProviderCliTerminal; cwd?: string; cols?: number; rows?: number }) => {
     const owner = event.sender;
     const ownedCount = [...sessions.values()].filter((session) => session.ownerId === owner.id).length;
     if (ownedCount >= MAX_TERMINAL_SESSIONS_PER_RENDERER) {
@@ -30,7 +34,16 @@ export function registerTerminalIpcHandlers(ipcMain: IpcMain, getDefaultCwd?: ()
     const cwd = resolveCwd(options?.cwd, getDefaultCwd);
     const cols = clampNumber(options?.cols, 20, 300, 100);
     const rows = clampNumber(options?.rows, 5, 100, 30);
-    const spec = shellSpec(shell);
+    const providerExecutable = options?.providerCli
+      ? await configuredExecutable(options.providerCli)
+      : undefined;
+    if (options?.providerCli && !providerExecutable) {
+      throw new Error(`${options.providerCli} CLI niet gevonden.`);
+    }
+    const providerSpec = providerExecutable ? cliPtySpawnSpec(providerExecutable, []) : null;
+    const spec = providerSpec
+      ? { file: providerSpec.command, args: providerSpec.args }
+      : shellSpec(shell);
     const id = crypto.randomUUID();
 
     const term = pty.spawn(spec.file, spec.args, {
@@ -51,7 +64,7 @@ export function registerTerminalIpcHandlers(ipcMain: IpcMain, getDefaultCwd?: ()
     });
 
     owner.once('destroyed', () => killOwnedSessions(owner));
-    return { id, shell, cwd, pid: term.pid };
+    return { id, shell, providerCli: options?.providerCli, cwd, pid: term.pid };
   });
   ipcMain.handle('terminal:write', async (event, id: string, data: string) => {
     const session = ownedSession(event.sender, id);

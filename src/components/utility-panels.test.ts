@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isUtilityPanelId, toggledUtilityPanel } from './utility-panels';
+import { isUtilityPanelId, toggledUtilityPanel, utilityPanelsAvailableInView } from './utility-panels';
 
 describe('utility-panelrouter', () => {
   it('houdt altijd hoogstens één werkpaneel actief', () => {
@@ -16,5 +16,11 @@ describe('utility-panelrouter', () => {
     expect(isUtilityPanelId('auto-mode')).toBe(true);
     expect(isUtilityPanelId('settings')).toBe(false);
     expect(isUtilityPanelId(null)).toBe(false);
+  });
+
+  it('toont werkpanelen uitsluitend in de chatweergave', () => {
+    expect(utilityPanelsAvailableInView('chat')).toBe(true);
+    expect(utilityPanelsAvailableInView('settings')).toBe(false);
+    expect(utilityPanelsAvailableInView('tokens')).toBe(false);
   });
 });
