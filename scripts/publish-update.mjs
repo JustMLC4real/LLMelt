@@ -27,15 +27,21 @@ for (const file of files) {
 }
 
 const installer = files[0];
-const signature = execFileSync('powershell.exe', [
-  '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-  '(Get-AuthenticodeSignature -LiteralPath $env:AI_SUPERAPP_INSTALLER).Status',
-], {
-  encoding: 'utf8',
-  env: { ...process.env, AI_SUPERAPP_INSTALLER: resolve(installer) },
-}).trim();
+let signature = '';
+try {
+  signature = execFileSync('powershell.exe', [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+    '(Get-AuthenticodeSignature -LiteralPath $env:AI_SUPERAPP_INSTALLER).Status',
+  ], {
+    encoding: 'utf8',
+    env: { ...process.env, AI_SUPERAPP_INSTALLER: resolve(installer) },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+} catch {
+  console.warn('Authenticode: statuscontrole niet beschikbaar; deze release wordt bewust unsigned toegestaan.');
+}
 if (signature === 'Valid') console.log('Authenticode: geldig ondertekend.');
-else console.warn(`Authenticode: ${signature || 'onbekend'}; deze release wordt bewust unsigned toegestaan.`);
+else if (signature) console.warn(`Authenticode: ${signature}; deze release wordt bewust unsigned toegestaan.`);
 
 const manifest = readFileSync('release/latest.yml', 'utf8');
 const manifestHash = manifest.match(/^sha512:\s*(\S+)/m)?.[1];
