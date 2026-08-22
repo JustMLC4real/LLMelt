@@ -7,6 +7,7 @@ const NATIVE_TOOL_RESPONSE_INSTRUCTIONS_NL = [
   'Maximaal 120 woorden en maximaal 6 korte bullets.',
   'Noem alleen resultaat, relevante bestandsnamen en resterende waarschuwingen.',
   'Plak geen volledige code, bestandsinhoud, diff of terminaluitvoer: de app toont die al in toolkaarten.',
+  'Maak geen extra presentatiebestand en overschrijf een al succesvol uitgevoerde versie niet alleen om code of uitvoer opnieuw te tonen.',
   'Geef tijdens het uitvoeren geen tussennarratie of herhaling van de opdracht.',
 ].join('\n');
 
@@ -16,6 +17,7 @@ const NATIVE_TOOL_RESPONSE_INSTRUCTIONS_EN = [
   'Use at most 120 words and at most 6 short bullet points.',
   'Mention only the outcome, relevant file names, and any remaining warnings.',
   'Do not paste full code, file contents, diffs, or terminal output: the app already shows them in tool cards.',
+  'Do not create an extra presentation artifact or rewrite an already successfully executed version merely to show code or output again.',
   'Do not provide interim narration or repeat the task while tools are running.',
 ].join('\n');
 

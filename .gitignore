@@ -8,6 +8,7 @@ release/
 out/
 build/
 coverage/
+test-results/
 
 # Logs (kunnen ook na redactie gebruikersinhoud bevatten — nooit committen)
 *.log
@@ -28,6 +29,8 @@ tmp/
 .tmp-readme-profile/
 .tmp-readme-recording/
 .tmp-readme-review/
+.tmp-ui-layout-profile/
+.tmp-packaged-fresh-profile/
 
 # Electron / OS
 .DS_Store

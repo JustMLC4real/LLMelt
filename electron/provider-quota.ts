@@ -10,6 +10,30 @@ import type {
 
 export const LIVE_QUOTA_MAX_AGE_MS = 10 * 60_000;
 const DELAYED_SOURCE_MAX_AGE_MS = 30 * 60_000;
+const REQUIRED_QUOTA_SURFACES = [
+  'codex:cli',
+  'anthropic:cli',
+  'antigravity:cli',
+  'google:api',
+  'openai:subscription-web',
+  'ollama:local',
+] as const;
+
+export function quotaSnapshotSetIsFresh(
+  snapshots: ProviderQuotaSnapshot[],
+  now = Date.now(),
+  maxAgeMs = 5 * 60_000,
+) {
+  if (!snapshots.length) return false;
+  return REQUIRED_QUOTA_SURFACES.every((key) => snapshots.some((snapshot) => {
+    if (`${snapshot.provider}:${snapshot.surface}` !== key) return false;
+    const observedAt = new Date(snapshot.observedAt).getTime();
+    if (!Number.isFinite(observedAt) || now - observedAt >= maxAgeMs) return false;
+    if (!snapshot.staleAfter) return true;
+    const staleAfter = new Date(snapshot.staleAfter).getTime();
+    return Number.isFinite(staleAfter) && staleAfter > now;
+  }));
+}
 
 export function quotaSnapshotId(provider: ProviderType, surface: ProviderSurface, limitGroupKey: string) {
   return `${provider}:${surface}:${limitGroupKey}`;

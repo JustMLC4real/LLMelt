@@ -28,7 +28,7 @@ app.setPath('userData', path.join(app.getPath('appData'), 'ai-superapp'));
 // Alleen voor lokale end-to-endtests: hiermee kan een volledig leeg profiel
 // starten zonder de echte chats, keys, sessies of instellingen aan te raken.
 const testUserDataDir = process.env.AI_SUPERAPP_TEST_USER_DATA_DIR?.trim();
-if (!app.isPackaged && testUserDataDir) {
+if (testUserDataDir) {
   const isolatedUserData = path.resolve(testUserDataDir);
   fs.mkdirSync(isolatedUserData, { recursive: true });
   app.setPath('userData', isolatedUserData);
@@ -274,6 +274,33 @@ function registerWindowControls() {
   });
   trustedIpcMain.handle('window:close', () => mainWindow?.close());
   trustedIpcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false);
+  if (!app.isPackaged && testUserDataDir) {
+    trustedIpcMain.handle('window:testSetBounds', async (_event, width: unknown, height: unknown) => {
+      if (!mainWindow || !Number.isFinite(width) || !Number.isFinite(height)) return false;
+      // De layoutcontracten meten de renderer-viewport. setSize() stuurt de
+      // buitenmaat en kan op Windows per DPI/titlebar een andere innerWidth geven;
+      // setContentSize() maakt de gemeten viewport deterministisch.
+      if (mainWindow.isMaximized()) {
+        mainWindow.unmaximize();
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 300);
+          mainWindow?.once('unmaximize', () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      }
+      const targetWidth = Math.max(900, Number(width));
+      const targetHeight = Math.max(600, Number(height));
+      // Op sommige Windows/VM-combinaties wordt de eerste content-resize tijdens
+      // een native resizecyclus genegeerd. Een buitenmaat gevolgd door de exacte
+      // contentmaat voorkomt dat de visuele suite de vorige viewport blijft meten.
+      const bounds = mainWindow.getBounds();
+      mainWindow.setBounds({ ...bounds, width: targetWidth, height: targetHeight });
+      mainWindow.setContentSize(targetWidth, targetHeight);
+      return true;
+    });
+  }
 }
 
 // Eenmalige diagnose: verstuurt ÉÉN kort bericht via een expliciet doorgegeven

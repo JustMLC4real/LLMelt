@@ -1,10 +1,31 @@
-import { type IpcMain, BrowserWindow, app, clipboard, dialog, shell } from 'electron';
+import { type IpcMain, BrowserWindow, app, clipboard, shell } from 'electron';
 import { spawn, spawnSync } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { selectDefaultWorkspacePath } from './default-workspace';
+import {
+  cleanupStalePendingAttachments,
+  forgetImportedAttachment,
+  getAttachmentById,
+  getAttachments,
+  hydrateAttachments,
+  hydrateMessageAttachments,
+  removeManagedAttachmentPath,
+  selectAndImportFiles,
+  selectDirectory,
+} from './attachment-service';
+import {
+  expandPath,
+  getChatById,
+  insertMessage,
+  normalizeAgentApprovalMode,
+  normalizeProjectPath,
+  registerDatabaseIpcHandlers,
+  serializeRunConfig,
+  updateChat,
+} from './chat-database';
 
 const AGENT_DIAGNOSTICS_ENABLED = process.env.AI_SUPERAPP_DIAGNOSTICS === '1';
 
@@ -67,7 +88,13 @@ import {
   fileReadDetail,
   fileUnchangedDetail,
 } from './file-tool-language';
-import { autoModePromptPreview, mergeAutoModeState, validateAutoModeConfig } from '../src/components/auto-mode-utils';
+import {
+  autoModePromptPreview,
+  buildAutoModePrompterSystemPrompt,
+  mergeAutoModeState,
+  parseAutoModePrompterDecision,
+  validateAutoModeConfig,
+} from '../src/components/auto-mode-utils';
 import {
   type AdapterChatResult,
   type AttachmentRecord,
@@ -109,7 +136,13 @@ import { boundedString, buildRendererSettingsSnapshot, sanitizeRendererSettingVa
 import { assertRealPathInsideRoot, canAutoApproveAgentAction, isRealPathInsideRoot } from './path-security';
 import { credentialPreflightFallbackReason, normalizeFallbackSwitchState } from './fallback-policy';
 import { linkedTimeoutSignal, shouldPersistProviderFailure } from './request-lifecycle';
-import { finalNativeAssistantText, nativeToolLedgerSignature } from './native-tool-loop-utils';
+import { finalNativeAssistantText } from './native-tool-loop-utils';
+import {
+  duplicateTurnAction,
+  executionLedgerResumePrompt,
+  markPendingTurnActionsUncertain,
+  recordTurnExecutionActivity,
+} from './turn-execution-ledger';
 import { nativeToolResponseInstructions } from './native-response-instructions';
 import { agentToolEnvironmentInstructions, agentToolInstructions } from './agent-tool-instructions';
 import { localizedText, normalizeUiLanguage } from '../src/i18n/language';
@@ -121,7 +154,7 @@ import {
 } from './ollama-runtime-start';
 import { isChatGptSubscriptionModel, providerPreflightSurface } from './provider-routing';
 import { providerLimitUpdateBindings } from './sqlite-bindings';
-import { blockingQuotaForModel, makeUnknownQuota } from './provider-quota';
+import { blockingQuotaForModel, makeUnknownQuota, quotaSnapshotSetIsFresh } from './provider-quota';
 import { collectProviderQuotaSnapshots } from './quota-collectors';
 import { hasRecordableUsage, mergeUsageSources, normalizeUsageSource, usageSourceFromRows } from '../src/providers/token-usage';
 import { normalizeLegacyModelId } from '../src/providers/model-ref-normalization';
@@ -170,7 +203,6 @@ import type {
   AIModel,
   AgentApprovalMode,
   AgentShell,
-  AttachmentKind,
   AttachmentRef,
   AutoModeConfig,
   AutoModeState,
@@ -182,7 +214,6 @@ import type {
   CredentialStatus,
   FallbackConfig,
   FallbackReason,
-  Folder,
   Message,
   ModelRunConfig,
   ModelRef,
@@ -209,11 +240,7 @@ const activeRequests = new Map<string, AbortController>();
 // Elk stream-event krijgt via requestId zijn oorspronkelijke chatId. Zonder deze
 // routing kan een renderer die intussen van chat wisselt een late delta verkeerd tonen.
 const activeRequestChatIds = new Map<string, string>();
-const importedAttachmentIds = new Set<string>();
 const ollamaModelPullControllers = new Map<string, AbortController>();
-const MAX_ATTACHMENT_COUNT = 10;
-const MAX_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
-const MAX_EXTRACTED_TEXT_CHARS = 2_000_000;
 const MAX_COMMAND_OUTPUT_CHARS = 100_000;
 const RENDERER_SETTING_KEYS = new Set([
   'profile.avatarDataUrl',
@@ -260,7 +287,6 @@ function publishAutoModeState(win: BrowserWindow | null, patch: Partial<AutoMode
 }
 
 type AgentApprovalKind = 'file-read' | 'file-create' | 'file-edit' | 'command';
-const AGENT_APPROVAL_MODES: AgentApprovalMode[] = ['ask', 'auto-project', 'full'];
 const AGENT_SHELLS: AgentShell[] = ['powershell', 'cmd', 'pwsh'];
 const AGENT_COMMAND_TIMEOUT_MS = 120000;
 const FILE_READ_TOOL_MAX_BYTES = 2 * 1024 * 1024;
@@ -623,7 +649,7 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
   ipcMain.handle('chat:cancel', async (_event, requestId?: string) => cancelRequest(requestId));
   ipcMain.handle('chat:stopGeneration', async () => cancelRequest());
 
-  registerDbHandlers(ipcMain);
+  registerDatabaseIpcHandlers(ipcMain);
 
   ipcMain.handle('tokens:getDashboard', async (_event, chatId?: string) => getTokenDashboard(chatId));
   ipcMain.handle('tokens:getUsage', async () => getTokenDashboard());
@@ -813,7 +839,7 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
     const pending = getDb().prepare('SELECT path FROM attachments WHERE id = ? AND messageId IS NULL').get(attachmentId) as { path?: string } | undefined;
     if (pending?.path) await removeManagedAttachmentPath(pending.path);
     const result = getDb().prepare('DELETE FROM attachments WHERE id = ? AND messageId IS NULL').run(attachmentId);
-    importedAttachmentIds.delete(attachmentId);
+    forgetImportedAttachment(attachmentId);
     return result.changes > 0;
   });
 
@@ -865,127 +891,6 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
     if (!(id in fingerprints)) return false;
     delete fingerprints[id];
     store.set('sshHostFingerprints', fingerprints);
-    return true;
-  });
-}
-
-function registerDbHandlers(ipcMain: IpcMain) {
-  ipcMain.handle('db:getChats', async () => getDb().prepare('SELECT * FROM chats ORDER BY updatedAt DESC').all().map(mapChatRow));
-  ipcMain.handle('db:getChat', async (_event, id: string) => getChatById(id));
-  ipcMain.handle('db:createChat', async (_event, title: string, folderId?: string, id?: string) => {
-    const chat = createChat(title, folderId, id);
-    notifyChatsChanged();
-    return chat;
-  });
-  ipcMain.handle('db:updateChat', async (_event, id: string, data: Partial<Chat>) => {
-    const chat = updateChat(id, data);
-    notifyChatsChanged();
-    return chat;
-  });
-  ipcMain.handle('db:deleteChat', async (_event, id: string) => {
-    await removeManagedAttachmentFilesForChat(id);
-    getDb().prepare('DELETE FROM chats WHERE id = ?').run(id);
-    notifyChatsChanged();
-    return true;
-  });
-
-  ipcMain.handle('db:getMessages', async (_event, chatId: string) =>
-    getDb().prepare('SELECT * FROM messages WHERE chatId = ? ORDER BY createdAt ASC').all(chatId),
-  );
-  ipcMain.handle('db:addMessage', async (_event, msg: Message) => insertMessage(msg));
-  ipcMain.handle('db:deleteMessage', async (_event, id: string) => {
-    await removeManagedAttachmentFilesForMessage(id);
-    getDb().prepare('DELETE FROM attachments WHERE messageId = ?').run(id);
-    getDb().prepare('DELETE FROM messages WHERE id = ?').run(id);
-    return true;
-  });
-
-  ipcMain.handle('db:getFolders', async () => getDb().prepare('SELECT * FROM folders ORDER BY sortOrder ASC').all());
-  ipcMain.handle('db:createFolder', async (_event, name: string, parentId?: string) => {
-    const folder = {
-      id: crypto.randomUUID(),
-      name: String(name || '').trim() || 'Nieuwe map',
-      parentId: parentId || null,
-      projectPath: null,
-      sortOrder: (getDb().prepare('SELECT COUNT(*) as count FROM folders').get() as { count: number }).count,
-      createdAt: new Date().toISOString(),
-    };
-    getDb()
-      .prepare('INSERT INTO folders (id, name, parentId, projectPath, sortOrder, createdAt) VALUES (@id, @name, @parentId, @projectPath, @sortOrder, @createdAt)')
-      .run(folder);
-    return folder;
-  });
-  ipcMain.handle('db:updateFolder', async (_event, id: string, nameOrData: string | Partial<Folder>) => {
-    const data = typeof nameOrData === 'string' ? { name: nameOrData } : (nameOrData || {});
-    const clean: Record<string, any> = {};
-    if (Object.prototype.hasOwnProperty.call(data, 'name')) clean.name = String(data.name || '').trim() || 'Map';
-    if (Object.prototype.hasOwnProperty.call(data, 'projectPath')) clean.projectPath = normalizeProjectPath((data as any).projectPath);
-    if (Object.keys(clean).length) {
-      const updates = Object.keys(clean).map((key) => `${key} = @${key}`).join(', ');
-      getDb().prepare(`UPDATE folders SET ${updates} WHERE id = @id`).run({ ...clean, id });
-    }
-    return getDb().prepare('SELECT * FROM folders WHERE id = ?').get(id);
-  });
-  ipcMain.handle('db:deleteFolder', async (_event, id: string) => {
-    const db = getDb();
-    const chatRows = db.prepare('SELECT id FROM chats WHERE folderId = ?').all(id) as Array<{ id: string }>;
-    for (const chat of chatRows) await removeManagedAttachmentFilesForChat(chat.id);
-    // Een project verwijderen wist ook z'n gesprekken. Zonder de expliciete DELETE
-    // zou de FK (ON DELETE SET NULL) ze losmaken en als "los gesprek" laten staan.
-    // De berichten van die chats gaan mee via ON DELETE CASCADE.
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      db.prepare('DELETE FROM chats WHERE folderId = ?').run(id);
-      db.prepare("DELETE FROM memories WHERE type = 'project' AND scopeId = ?").run(id);
-      db.prepare('DELETE FROM folders WHERE id = ?').run(id);
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
-    notifyChatsChanged();
-    return true;
-  });
-
-  ipcMain.handle('db:getMemory', async (_event, type?: string, scopeId?: string) => {
-    let query = 'SELECT * FROM memories WHERE 1=1';
-    const params: any[] = [];
-    if (type) {
-      query += ' AND type = ?';
-      params.push(type);
-    }
-    if (scopeId) {
-      query += ' AND scopeId = ?';
-      params.push(scopeId);
-    }
-    return getDb().prepare(query).all(...params);
-  });
-  ipcMain.handle('db:addMemory', async (_event, mem: any) => {
-    const memory = {
-      id: mem.id || crypto.randomUUID(),
-      type: mem.type,
-      scopeId: mem.scopeId || null,
-      title: String(mem.title || '').trim() || 'Memory',
-      content: String(mem.content || ''),
-      maxTokens: Number(mem.maxTokens || 1000),
-      enabled: mem.enabled === false ? 0 : 1,
-      createdAt: mem.createdAt || new Date().toISOString(),
-    };
-    getDb()
-      .prepare('INSERT INTO memories (id, type, scopeId, title, content, maxTokens, enabled, createdAt) VALUES (@id, @type, @scopeId, @title, @content, @maxTokens, @enabled, @createdAt)')
-      .run(memory);
-    return memory;
-  });
-  ipcMain.handle('db:updateMemory', async (_event, id: string, data: any) => updateMemory(id, data));
-  ipcMain.handle('db:deleteMemory', async (_event, id: string) => {
-    getDb().prepare('DELETE FROM memories WHERE id = ?').run(id);
-    return true;
-  });
-
-  ipcMain.handle('db:getPresets', async () => getDb().prepare('SELECT * FROM prompt_presets ORDER BY updatedAt DESC').all());
-  ipcMain.handle('db:savePreset', async (_event, preset: any) => savePromptPreset(preset));
-  ipcMain.handle('db:deletePreset', async (_event, id: string) => {
-    getDb().prepare('DELETE FROM prompt_presets WHERE id = ?').run(id);
     return true;
   });
 }
@@ -2599,8 +2504,17 @@ async function executeWithFallback(
   },
 ) {
   const candidates = await fallbackCandidates(options.initialModelRef);
-  const knownQuotas = getStoredQuotaSnapshots();
-  void ensureRecentQuotaSnapshots().catch(() => []);
+  const storedQuotas = getStoredQuotaSnapshots();
+  const quotaRefresh = ensureRecentQuotaSnapshots().catch(() => storedQuotas);
+  // Een verse cache is direct beschikbaar. Bij een koude/stale cache geven we
+  // collectors kort de kans om een bekende cooldown te vinden, zonder een chat
+  // op trage externe quota-endpoints te laten wachten.
+  const knownQuotas = quotaSnapshotSetIsFresh(storedQuotas)
+    ? storedQuotas
+    : await Promise.race([
+      quotaRefresh,
+      new Promise<typeof storedQuotas>((resolve) => setTimeout(() => resolve(storedQuotas), 350)),
+    ]);
   let lastError: unknown;
   let fallbackFrom: string | null = null;
   let lastModelRef: ModelRef = options.initialModelRef;
@@ -2650,7 +2564,7 @@ async function executeWithFallback(
           'This fallback model has no native local tools; do not claim file or command actions succeeded.',
         ) : '',
       ].filter(Boolean).join(' ');
-      const resumeInstructions = index > 0 ? executionLedgerResumePrompt(options.requestId, options.language) : '';
+      const resumeInstructions = index > 0 ? executionLedgerResumePrompt(getDb(), options.requestId, options.language) : '';
       if (fallbackWarning) sendStreamEvent(win, { requestId: options.requestId, type: 'status', status: fallbackWarning });
       if (prepared.omitted > 0) {
         sendStreamEvent(win, {
@@ -2687,7 +2601,7 @@ async function executeWithFallback(
         requireToolUse: options.requireToolUse && nativeCapabilitiesAvailable,
         requestPermission: options.requestPermission
           ? async (toolName, input) => {
-            const duplicate = duplicateTurnAction(options.requestId, toolName, input, options.cwd);
+            const duplicate = duplicateTurnAction(getDb(), options.requestId, toolName, input, options.cwd);
             if (duplicate?.status === 'completed') return { allow: false, message: localizedText(options.language, 'Deze exacte actie is in deze beurt al voltooid en wordt niet opnieuw uitgevoerd.', 'This exact action already completed during this turn and will not be run again.') };
             if (duplicate?.status === 'uncertain') return { allow: false, message: localizedText(options.language, 'De uitkomst van deze exacte actie is onzeker. Controleer de toestand eerst met een leesactie.', 'The outcome of this exact action is uncertain. Check the current state with a read action first.') };
             return options.requestPermission!(toolName, input);
@@ -2695,14 +2609,14 @@ async function executeWithFallback(
           : undefined,
         executeTool: options.executeTool
           ? async (toolName, input, toolUseId) => {
-            const duplicate = duplicateTurnAction(options.requestId, toolName, input, options.cwd);
+            const duplicate = duplicateTurnAction(getDb(), options.requestId, toolName, input, options.cwd);
             if (duplicate?.status === 'completed') return { ok: false, denied: true, output: localizedText(options.language, 'Deze exacte actie is al voltooid; niet opnieuw uitgevoerd.', 'This exact action already completed; it was not run again.') };
             if (duplicate?.status === 'uncertain') return { ok: false, denied: true, output: localizedText(options.language, 'Onzekere eerdere actie; controleer de toestand eerst met read_file of een ander read-only commando.', 'Earlier action is uncertain; check the current state first with read_file or another read-only command.') };
             return options.executeTool!(toolName, input, toolUseId);
           }
           : undefined,
         onToolActivity: (activity) => {
-          recordTurnExecutionActivity(options.requestId, activity, options.cwd);
+          recordTurnExecutionActivity(getDb(), options.requestId, activity, options.cwd);
           options.onToolActivity?.(activity);
         },
         language: options.language,
@@ -2719,7 +2633,7 @@ async function executeWithFallback(
         fallbackFrom,
       };
     } catch (error) {
-      markPendingTurnActionsUncertain(options.requestId, modelRef.provider);
+      markPendingTurnActionsUncertain(getDb(), options.requestId, modelRef.provider);
       lastError = error;
       const classified = classifyProviderError(error, options.language);
       agentLog('fallback', { failedModel: `${modelRef.provider}:${modelRef.modelId}`, reason: classified.reason, message: (classified.message || '').slice(0, 400) });
@@ -3438,11 +3352,6 @@ function normalizeServiceTier(value: unknown): ServiceTier | undefined {
   return /^[a-z][a-z0-9._-]*$/i.test(tier) ? tier : undefined;
 }
 
-function serializeRunConfig(runConfig?: ModelRunConfig) {
-  if (!runConfig || !Object.keys(runConfig).length) return null;
-  return JSON.stringify(runConfig);
-}
-
 function appendRuntimeMetadata(systemPrompt: string | undefined, modelRef: ModelRef, language: UiLanguage = 'en') {
   const runConfig = modelRef.runConfig || {};
   const metadata = (language === 'nl' ? [
@@ -3468,123 +3377,6 @@ function appendRuntimeMetadata(systemPrompt: string | undefined, modelRef: Model
   ]).filter(Boolean).join('\n');
 
   return systemPrompt ? `${metadata}\n\n${systemPrompt}` : metadata;
-}
-
-function mapChatRow(row: any): Chat | undefined {
-  if (!row) return undefined;
-  let activeRunConfig: ModelRunConfig | null = null;
-  if (row.activeRunConfig) {
-    try { activeRunConfig = JSON.parse(row.activeRunConfig); } catch { activeRunConfig = null; }
-  }
-  return { ...row, activeRunConfig, agentMode: normalizeAgentApprovalMode(row.agentMode) || null };
-}
-
-function getChatById(id: string) {
-  return mapChatRow(getDb().prepare('SELECT * FROM chats WHERE id = ?').get(id));
-}
-
-function createChat(title: string, folderId?: string, requestedId?: string) {
-  const now = new Date().toISOString();
-  const id = String(requestedId || '').trim();
-  if (id && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(id)) {
-    throw new Error('Ongeldig gesprek-id.');
-  }
-  const chat: Chat = {
-    id: id || crypto.randomUUID(),
-    title: String(title || '').trim() || 'New chat',
-    folderId: folderId || null,
-    projectPath: null,
-    systemPrompt: null,
-    activeModelId: null,
-    activeProvider: null,
-    activeRunConfig: null,
-    agentMode: null,
-    createdAt: now,
-    updatedAt: now,
-  };
-  getDb()
-    .prepare('INSERT INTO chats (id, title, folderId, projectPath, systemPrompt, activeModelId, activeProvider, activeRunConfig, agentMode, createdAt, updatedAt) VALUES (@id, @title, @folderId, @projectPath, @systemPrompt, @activeModelId, @activeProvider, @activeRunConfig, @agentMode, @createdAt, @updatedAt)')
-    .run({ ...chat, activeRunConfig: null, agentMode: null });
-  return chat;
-}
-
-function updateChat(id: string, data: Partial<Chat>) {
-  const allowed = ['title', 'folderId', 'projectPath', 'systemPrompt', 'activeModelId', 'activeProvider', 'agentMode'] as const;
-  const clean: Record<string, any> = {};
-  for (const key of allowed) {
-    if (!Object.prototype.hasOwnProperty.call(data, key)) continue;
-    if (key === 'projectPath') {
-      clean[key] = normalizeProjectPath((data as any)[key]);
-    } else if (key === 'agentMode') {
-      clean[key] = normalizeAgentApprovalMode((data as any)[key]) || null;
-    } else {
-      clean[key] = (data as any)[key] ?? null;
-    }
-  }
-  // activeRunConfig is an object → store as JSON text.
-  if (Object.prototype.hasOwnProperty.call(data, 'activeRunConfig')) {
-    clean.activeRunConfig = serializeRunConfig(data.activeRunConfig || undefined);
-  }
-  if (Object.keys(clean).length) {
-    const updates = Object.keys(clean).map((key) => `${key} = @${key}`).join(', ');
-    getDb()
-      .prepare(`UPDATE chats SET ${updates}, updatedAt = @updatedAt WHERE id = @id`)
-      .run({ ...clean, id, updatedAt: new Date().toISOString() });
-  }
-  return getChatById(id);
-}
-
-function insertMessage(message: Message) {
-  const normalized = {
-    id: message.id || crypto.randomUUID(),
-    chatId: message.chatId,
-    role: message.role,
-    content: message.content,
-    modelId: message.modelId || null,
-    provider: message.provider || null,
-    inputTokens: Number(message.inputTokens || 0),
-    outputTokens: Number(message.outputTokens || 0),
-    fallbackFrom: message.fallbackFrom || null,
-    attachments: message.attachments || null,
-    runConfig: message.runConfig || null,
-    toolRun: message.toolRun || null,
-    createdAt: message.createdAt || new Date().toISOString(),
-  };
-  getDb()
-    .prepare('INSERT INTO messages (id, chatId, role, content, modelId, provider, inputTokens, outputTokens, fallbackFrom, attachments, runConfig, toolRun, createdAt) VALUES (@id, @chatId, @role, @content, @modelId, @provider, @inputTokens, @outputTokens, @fallbackFrom, @attachments, @runConfig, @toolRun, @createdAt)')
-    .run(normalized);
-  getDb().prepare('UPDATE chats SET updatedAt = ? WHERE id = ?').run(new Date().toISOString(), normalized.chatId);
-  return normalized;
-}
-
-function updateMemory(id: string, data: any) {
-  const allowed = ['type', 'scopeId', 'title', 'content', 'maxTokens', 'enabled'] as const;
-  const clean: Record<string, any> = {};
-  for (const key of allowed) {
-    if (Object.prototype.hasOwnProperty.call(data, key)) clean[key] = data[key];
-  }
-  if (clean.enabled !== undefined) clean.enabled = clean.enabled ? 1 : 0;
-  if (Object.keys(clean).length) {
-    const updates = Object.keys(clean).map((key) => `${key} = @${key}`).join(', ');
-    getDb().prepare(`UPDATE memories SET ${updates} WHERE id = @id`).run({ ...clean, id });
-  }
-  return getDb().prepare('SELECT * FROM memories WHERE id = ?').get(id);
-}
-
-function savePromptPreset(preset: any) {
-  const now = new Date().toISOString();
-  const row = {
-    id: preset.id || crypto.randomUUID(),
-    name: String(preset.name || '').trim() || 'Prompt preset',
-    content: String(preset.content || ''),
-    isDefault: preset.isDefault ? 1 : 0,
-    createdAt: preset.createdAt || now,
-    updatedAt: now,
-  };
-  getDb()
-    .prepare('INSERT INTO prompt_presets (id, name, content, isDefault, createdAt, updatedAt) VALUES (@id, @name, @content, @isDefault, @createdAt, @updatedAt) ON CONFLICT(id) DO UPDATE SET name = excluded.name, content = excluded.content, isDefault = excluded.isDefault, updatedAt = excluded.updatedAt')
-    .run(row);
-  return row;
 }
 
 async function assemblePromptContext(chat: Chat, explicitSystemPrompt?: string) {
@@ -3649,13 +3441,6 @@ function ensureDefaultWorkspacePath() {
   } catch {
     return process.cwd();
   }
-}
-
-function normalizeProjectPath(value: unknown) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return path.resolve(expandPath(trimmed));
 }
 
 function getChatMessages(chatId: string): ChatMessage[] {
@@ -3736,13 +3521,17 @@ function messageAttachmentRefs(attachments: AttachmentRecord[]): AttachmentRef[]
   }));
 }
 
+function findChat(chatId: string) {
+  return getDb().prepare('SELECT * FROM chats WHERE id = ?').get(chatId) as Chat | undefined;
+}
+
 function requireChat(chatId: string) {
-  const chat = getDb().prepare('SELECT * FROM chats WHERE id = ?').get(chatId) as Chat | undefined;
+  const chat = findChat(chatId);
   if (!chat) throw new Error(`Chat not found: ${chatId}`);
   return chat;
 }
 
-function recordUsage(chatId: string, messageId: string, modelRef: ModelRef, usage: TokenUsage) {
+function recordUsage(chatId: string, messageId: string | null, modelRef: ModelRef, usage: TokenUsage) {
   // Een lege placeholder betekent dat de provider geen usage heeft geleverd;
   // sla die niet op alsof er werkelijk nul tokens zijn verbruikt.
   if (!hasRecordableUsage(usage)) return;
@@ -3948,86 +3737,9 @@ function providerSurfaceForRef(modelRef: ModelRef): import('../src/providers/typ
   return 'api';
 }
 
-type TurnActionStatus = 'requested' | 'approved' | 'completed' | 'failed' | 'denied' | 'uncertain';
-
-function recordTurnExecutionActivity(turnId: string, activity: NativeToolActivity, cwd?: string) {
-  const signature = nativeToolLedgerSignature(activity.toolName, activity.input, cwd);
-  const now = new Date().toISOString();
-  const status: TurnActionStatus = activity.phase === 'result'
-    ? (activity.ok ? 'completed' : 'failed')
-    : activity.phase === 'denied'
-      ? 'denied'
-      : activity.phase;
-  const id = crypto.createHash('sha256').update(`${turnId}\0${activity.provider}\0${activity.toolUseId || ''}\0${signature}`).digest('hex');
-  getDb().prepare(`
-    INSERT INTO turn_execution_actions
-      (id, turnId, provider, toolUseId, toolName, signature, status, inputJson, output, createdAt, updatedAt)
-    VALUES
-      (@id, @turnId, @provider, @toolUseId, @toolName, @signature, @status, @inputJson, @output, @createdAt, @updatedAt)
-    ON CONFLICT(id) DO UPDATE SET status=excluded.status, output=excluded.output, updatedAt=excluded.updatedAt
-  `).run({
-    id, turnId, provider: activity.provider, toolUseId: activity.toolUseId || null,
-    toolName: activity.toolName, signature, status, inputJson: stableJson(activity.input),
-    output: activity.output || activity.detail || null, createdAt: now, updatedAt: now,
-  });
-}
-
-function duplicateTurnAction(turnId: string, toolName: string, input: Record<string, unknown>, cwd?: string) {
-  return getDb().prepare(`
-    SELECT status, provider, output FROM turn_execution_actions
-    WHERE turnId = ? AND signature = ? AND status IN ('completed', 'uncertain')
-    ORDER BY updatedAt DESC LIMIT 1
-  `).get(turnId, nativeToolLedgerSignature(toolName, input, cwd)) as { status: TurnActionStatus; provider: string; output?: string } | undefined;
-}
-
-function markPendingTurnActionsUncertain(turnId: string, provider: ProviderType) {
-  getDb().prepare(`
-    UPDATE turn_execution_actions SET status = 'uncertain', updatedAt = ?
-    WHERE turnId = ? AND provider = ? AND status IN ('requested', 'approved')
-  `).run(new Date().toISOString(), turnId, provider);
-}
-
-function executionLedgerResumePrompt(turnId: string, language: UiLanguage = 'nl') {
-  const rows = getDb().prepare(`
-    SELECT toolName, inputJson, status, output FROM turn_execution_actions
-    WHERE turnId = ? AND status IN ('completed', 'uncertain') ORDER BY createdAt
-  `).all(turnId) as Array<{ toolName: string; inputJson: string; status: TurnActionStatus; output?: string }>;
-  if (!rows.length) return '';
-  const completed = rows.filter((row) => row.status === 'completed');
-  const uncertain = rows.filter((row) => row.status === 'uncertain');
-  return language === 'en'
-    ? [
-      'SAFE RESUMPTION OF THE SAME TURN:',
-      'Do not repeat exact actions that already completed; the app also blocks duplicates technically.',
-      ...completed.map((row) => `- COMPLETED ${row.toolName} ${row.inputJson}${row.output ? ` -> ${boundedString(row.output, 300, 'Tool output')}` : ''}`),
-      ...(uncertain.length ? ['Check uncertain actions read-only first; do not repeat them blindly.'] : []),
-      ...uncertain.map((row) => `- UNCERTAIN ${row.toolName} ${row.inputJson}`),
-      'New mutating actions go through the normal approval flow again.',
-    ].join('\n')
-    : [
-      'VEILIGE HERVATTING VAN DEZELFDE BEURT:',
-      'Voer voltooide exacte acties niet opnieuw uit; de app blokkeert duplicaten ook technisch.',
-      ...completed.map((row) => `- VOLTOOID ${row.toolName} ${row.inputJson}${row.output ? ` -> ${boundedString(row.output, 300, 'Tooluitvoer')}` : ''}`),
-      ...(uncertain.length ? ['Controleer onzekere acties eerst read-only; voer ze niet blind opnieuw uit.'] : []),
-      ...uncertain.map((row) => `- ONZEKER ${row.toolName} ${row.inputJson}`),
-      'Nieuwe muterende acties doorlopen de normale goedkeuring opnieuw.',
-    ].join('\n');
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
 async function ensureRecentQuotaSnapshots() {
   const stored = getStoredQuotaSnapshots();
-  const newest = Math.max(0, ...stored.map((snapshot) => new Date(snapshot.observedAt).getTime()));
-  if (stored.length && Date.now() - newest < 5 * 60_000) return stored;
+  if (quotaSnapshotSetIsFresh(stored)) return stored;
   try {
     return await refreshProviderQuotas();
   } catch {
@@ -4118,7 +3830,12 @@ function persistQuotaSnapshots(snapshots: import('../src/providers/types').Provi
 }
 
 async function getContextUsage(chatId: string, requestedModelRef?: ModelRef) {
-  const chat = requireChat(chatId);
+  // Een verwijderde chat is hier een normale toestand: het dashboard kan er nog
+  // om vragen zolang de renderer de verwijdering nog verwerkt. Zonder chat is er
+  // simpelweg geen context — dat is geen fout die de rest van het dashboard mag
+  // meeslepen.
+  const chat = findChat(chatId);
+  if (!chat) return { used: 0, total: 0, percent: 0, source: 'unknown' as const };
   const messages = getChatMessages(chatId);
   const fallbackModel = await firstDiscoveredChatModel();
   const modelRef = normalizeModelRef(
@@ -4192,176 +3909,6 @@ async function getStoredRateLimits() {
   return [...stored, ...dynamic.filter((snapshot) => !knownKeys.has(rateLimitKey(snapshot)))];
 }
 
-async function selectAndImportFiles(chatId?: string) {
-  const result = await dialog.showOpenDialog({
-    properties: ['openFile', 'multiSelections'],
-    filters: [
-      { name: 'Supported Files', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'pdf', 'txt', 'csv', 'json', 'md', 'py', 'js', 'ts', 'jsx', 'tsx', 'html', 'css'] },
-      { name: 'All Files', extensions: ['*'] },
-    ],
-  });
-
-  if (result.canceled) return [];
-  if (result.filePaths.length > MAX_ATTACHMENT_COUNT) throw new Error(`Selecteer maximaal ${MAX_ATTACHMENT_COUNT} bestanden tegelijk.`);
-  const stats = await Promise.all(result.filePaths.map((filePath) => fs.promises.stat(filePath)));
-  const totalBytes = stats.reduce((sum, stat) => sum + stat.size, 0);
-  if (totalBytes > MAX_ATTACHMENT_TOTAL_BYTES) throw new Error('Bijlagen mogen samen maximaal 50 MB zijn.');
-  const imported: AttachmentRef[] = [];
-  for (const filePath of result.filePaths) {
-    imported.push(await importAttachment(filePath, chatId));
-  }
-  return imported;
-}
-
-async function selectDirectory() {
-  // Nieuwe installaties starten in Documents/LLMelt; een bestaande legacywerkmap
-  // blijft intact zodat opgeslagen projecten en bestanden niet onverwacht verhuizen.
-  // i.p.v. de standaard Downloads-map.
-  const defaultPath = ensureDefaultWorkspacePath();
-  const result = await dialog.showOpenDialog({
-    properties: ['openDirectory', 'createDirectory'],
-    defaultPath,
-  });
-  if (result.canceled) return null;
-  return result.filePaths[0] || null;
-}
-
-async function importAttachment(filePath: string, chatId?: string) {
-  const stat = await fs.promises.stat(filePath);
-  if (!stat.isFile()) throw new Error('Alleen bestanden kunnen worden geïmporteerd.');
-  if (stat.size > 25 * 1024 * 1024) throw new Error('Dit bestand is te groot. De limiet is 25 MB.');
-
-  const ext = path.extname(filePath).toLowerCase();
-  const buffer = await fs.promises.readFile(filePath);
-  const id = crypto.randomUUID();
-  const mimeType = mimeFromExt(ext);
-  const kind = kindFromExt(ext);
-  let textContent: string | null = null;
-  const base64Content: string | null = null;
-  let storedPath = filePath;
-
-  if (kind === 'text') textContent = buffer.toString('utf8');
-  if (kind === 'pdf') {
-    const { PDFParse } = await import('pdf-parse');
-    const parser = new PDFParse({ data: buffer });
-    const parsed = await parser.getText();
-    textContent = (parsed.text || '').slice(0, MAX_EXTRACTED_TEXT_CHARS);
-  }
-  if (kind === 'image') {
-    const managedDir = managedAttachmentDirectory();
-    await fs.promises.mkdir(managedDir, { recursive: true });
-    storedPath = path.join(managedDir, `${id}${ext}`);
-    await fs.promises.writeFile(storedPath, buffer, { flag: 'wx' });
-  }
-
-  const row = {
-    id,
-    chatId: chatId || null,
-    messageId: null,
-    name: path.basename(filePath),
-    path: storedPath,
-    mimeType,
-    kind,
-    size: stat.size,
-    tokenEstimate: estimateTokens(textContent || ''),
-    textContent,
-    base64Content,
-    createdAt: new Date().toISOString(),
-  };
-  getDb()
-    .prepare('INSERT INTO attachments (id, chatId, messageId, name, path, mimeType, kind, size, tokenEstimate, textContent, base64Content, createdAt) VALUES (@id, @chatId, @messageId, @name, @path, @mimeType, @kind, @size, @tokenEstimate, @textContent, @base64Content, @createdAt)')
-    .run(row);
-  importedAttachmentIds.add(id);
-  return toAttachmentRef(row);
-}
-
-function getAttachmentById(id: string) {
-  if (!importedAttachmentIds.has(id)) {
-    const found = getDb().prepare('SELECT id FROM attachments WHERE id = ?').get(id);
-    if (!found) throw new Error('Attachment is not available.');
-  }
-  const row = getDb().prepare('SELECT * FROM attachments WHERE id = ?').get(id) as AttachmentRecord | undefined;
-  if (!row) throw new Error('Attachment not found.');
-  return toAttachmentRef(row);
-}
-
-function getAttachments(ids: string[], chatId: string) {
-  if (!ids.length) return [];
-  const placeholders = ids.map(() => '?').join(',');
-  // Een bijlage die bij een nog onzichtbaar concept is gekozen heeft bewust nog
-  // geen chatId. Bij de eerste verzending wordt het gesprek eerst gematerialiseerd
-  // en wordt de bijlage hieronder aan dat gesprek gekoppeld.
-  const rows = getDb()
-    .prepare(`SELECT * FROM attachments WHERE (chatId = ? OR chatId IS NULL) AND id IN (${placeholders})`)
-    .all(chatId, ...ids) as unknown as AttachmentRecord[];
-  if (rows.length !== new Set(ids).size) throw new Error('Een of meer bijlagen horen niet bij dit gesprek.');
-  return rows;
-}
-
-async function hydrateMessageAttachments(messages: ChatMessage[]) {
-  return Promise.all(messages.map(async (message) => ({
-    ...message,
-    attachments: message.attachments ? await hydrateAttachments(message.attachments as AttachmentRecord[]) : undefined,
-  })));
-}
-
-async function hydrateAttachments(attachments: AttachmentRecord[]) {
-  return Promise.all(attachments.map(async (attachment) => {
-    if (attachment.kind !== 'image' || attachment.base64Content || !attachment.path) return attachment;
-    const buffer = await fs.promises.readFile(attachment.path);
-    if (buffer.length > 25 * 1024 * 1024) throw new Error(`Afbeelding ${attachment.name} is groter dan 25 MB.`);
-    return { ...attachment, base64Content: buffer.toString('base64') };
-  }));
-}
-
-function managedAttachmentDirectory() {
-  return path.join(app.getPath('userData'), 'attachments');
-}
-
-async function removeManagedAttachmentPath(filePath: string) {
-  if (!isPathInsideRoot(managedAttachmentDirectory(), filePath)) return;
-  await fs.promises.rm(filePath, { force: true }).catch(() => { });
-}
-
-async function removeManagedAttachmentFilesForChat(chatId: string) {
-  const rows = getDb().prepare('SELECT path FROM attachments WHERE chatId = ?').all(chatId) as unknown as Array<{ path?: string }>;
-  await Promise.all(rows.map((row) => row.path ? removeManagedAttachmentPath(row.path) : undefined));
-}
-
-async function removeManagedAttachmentFilesForMessage(messageId: string) {
-  const rows = getDb().prepare('SELECT path FROM attachments WHERE messageId = ?').all(messageId) as unknown as Array<{ path?: string }>;
-  await Promise.all(rows.map((row) => row.path ? removeManagedAttachmentPath(row.path) : undefined));
-}
-
-async function cleanupStalePendingAttachments() {
-  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const rows = getDb().prepare(
-    'SELECT id, path FROM attachments WHERE messageId IS NULL AND createdAt < ?',
-  ).all(cutoff) as unknown as Array<{ id: string; path?: string }>;
-  await Promise.all(rows.map((row) => row.path ? removeManagedAttachmentPath(row.path) : undefined));
-  const remove = getDb().prepare('DELETE FROM attachments WHERE id = ? AND messageId IS NULL');
-  for (const row of rows) {
-    remove.run(row.id);
-    importedAttachmentIds.delete(row.id);
-  }
-}
-
-function toAttachmentRef(row: AttachmentRecord): AttachmentRef {
-  return {
-    id: row.id,
-    chatId: row.chatId,
-    messageId: row.messageId,
-    name: row.name,
-    path: row.path,
-    mimeType: row.mimeType,
-    kind: row.kind,
-    size: row.size,
-    tokenEstimate: row.tokenEstimate,
-    contentPreview: row.textContent ? row.textContent.slice(0, 500) : undefined,
-    createdAt: row.createdAt,
-  };
-}
-
 async function validateKeyBatch(win: BrowserWindow | null, keys: Array<{ key: string; provider?: ProviderType }>) {
   const language = await resolvedUiLanguage();
   const unique = Array.from(new Map(keys.filter((item) => item.key).map((item) => [item.key.trim(), item])).values());
@@ -4391,10 +3938,6 @@ async function validateKeyBatch(win: BrowserWindow | null, keys: Array<{ key: st
 
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
   return results;
-}
-
-function normalizeAgentApprovalMode(mode: unknown): AgentApprovalMode | undefined {
-  return AGENT_APPROVAL_MODES.includes(mode as AgentApprovalMode) ? mode as AgentApprovalMode : undefined;
 }
 
 async function getAgentConfig(source?: { agentMode?: AgentApprovalMode | null } | string | null): Promise<{ mode: AgentApprovalMode; workingDir: string; toolsEnabled: boolean; defaultShell: AgentShell }> {
@@ -5784,13 +5327,7 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
       error: undefined,
     });
     const goal = (config.goal || '').trim();
-    const prompterSystemPrompt = goal
-      ? localizedText(
-        language,
-        `Je stuurt dit gesprek naar het doel van de gebruiker: "${goal}". Schrijf op basis van het gesprek precies het volgende gebruikersbericht dat de meeste voortgang naar dat doel maakt. Wees concreet en bouw voort op eerdere antwoorden. Geef ALLEEN de prompttekst terug, zonder inleiding.`,
-        `You are driving this conversation toward the user's goal: "${goal}". Based on the conversation so far, write the single next user message that makes the most progress toward that goal. Be concrete and build on previous answers. Return ONLY the prompt text, no preamble.`,
-      )
-      : localizedText(language, 'Genereer de volgende nuttige gebruikersprompt voor dit gesprek. Geef alleen de prompttekst terug.', 'Generate the next useful user prompt for this conversation. Return only the prompt text.');
+    const prompterSystemPrompt = buildAutoModePrompterSystemPrompt(goal, language);
     let promptResult: AdapterChatResult;
     let promptDraft = '';
     let lastPreviewUpdate = 0;
@@ -5816,7 +5353,27 @@ async function runAutoModeLoop(win: BrowserWindow | null, config: AutoModeConfig
     }
 
     if (autoModeRunId !== runId || autoModeStopRequested) return;
-    const promptText = promptResult.text.trim();
+    const decision = goal
+      ? parseAutoModePrompterDecision(promptResult.text)
+      : { status: 'continue' as const, prompt: promptResult.text.trim() };
+    if (decision.status === 'complete') {
+      const summary = decision.summary?.trim()
+        ? autoModePromptPreview(decision.summary)
+        : undefined;
+      completionDetail = summary
+        ? localizedText(language, `Doel voltooid: ${summary}`, `Goal completed: ${summary}`)
+        : localizedText(language, 'Doel voltooid volgens de prompter.', 'Goal completed according to the prompter.');
+      recordUsage(config.chatId, null, config.prompterModelRef, promptResult.usage);
+      sendUsageUpdate(win, config.chatId);
+      publishAutoModeState(win, {
+        totalTokens: autoModeState.totalTokens + promptResult.usage.totalTokens,
+        phase: 'completed',
+        detail: completionDetail,
+        lastPromptPreview: summary ? autoModePromptPreview(summary) : '',
+      });
+      break;
+    }
+    const promptText = decision.prompt.trim();
     if (!promptText) throw new Error(localizedText(language, 'De prompter gaf een lege prompt terug. Kies een ander promptermodel of probeer opnieuw.', 'The prompter returned an empty prompt. Choose another prompter model or try again.'));
     const promptPreview = autoModePromptPreview(promptText);
 
@@ -5995,15 +5552,6 @@ async function readAntigravityStatuslineState() {
   return null;
 }
 
-function expandPath(value: string) {
-  const home = process.env.USERPROFILE || process.env.HOME || '';
-  return value
-    .replace(/^~(?=$|[\\/])/, home)
-    .replace(/%USERPROFILE%/gi, home)
-    .replace(/%LOCALAPPDATA%/gi, process.env.LOCALAPPDATA || '')
-    .replace(/%APPDATA%/gi, process.env.APPDATA || '');
-}
-
 function stringOrUndefined(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -6035,36 +5583,6 @@ function maskKey(key: string) {
 
 function estimateTokens(text: string) {
   return Math.max(1, Math.ceil(text.length / 4));
-}
-
-function mimeFromExt(ext: string) {
-  const map: Record<string, string> = {
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.webp': 'image/webp',
-    '.gif': 'image/gif',
-    '.pdf': 'application/pdf',
-    '.json': 'application/json',
-    '.csv': 'text/csv',
-    '.md': 'text/markdown',
-    '.txt': 'text/plain',
-    '.py': 'text/x-python',
-    '.js': 'text/javascript',
-    '.ts': 'text/typescript',
-    '.jsx': 'text/javascript',
-    '.tsx': 'text/typescript',
-    '.html': 'text/html',
-    '.css': 'text/css',
-  };
-  return map[ext] || 'application/octet-stream';
-}
-
-function kindFromExt(ext: string): AttachmentKind {
-  if (['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext)) return 'image';
-  if (ext === '.pdf') return 'pdf';
-  if (['.txt', '.csv', '.json', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css'].includes(ext)) return 'text';
-  return 'binary';
 }
 
 function delay(ms: number) {

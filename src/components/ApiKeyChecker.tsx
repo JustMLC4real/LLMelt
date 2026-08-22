@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ClipboardPaste, KeyRound, Loader2, ShieldCheck, UploadCloud } from 'lucide-react';
 import type { ProviderType, ValidationResult } from '../providers/types';
 
 interface KeyResult extends ValidationResult {
@@ -93,56 +94,78 @@ const ApiKeyChecker: React.FC = () => {
   };
 
   return (
-    <div className="settings-page">
-      <h2 className="font-semibold" style={{ fontSize: 'var(--font-size-xl)', marginBottom: 'var(--space-2)' }}>
-        {t('keyChecker.title')}
-      </h2>
-      <p className="text-sm text-muted mb-4">{t('keyChecker.description')}</p>
+    <div className="settings-page api-key-checker-page">
+      <div className="api-key-checker-inner">
+        <header className="api-key-checker-header">
+          <div className="api-key-checker-title-icon"><KeyRound size={22} /></div>
+          <div className="api-key-checker-heading">
+            <h2>{t('keyChecker.title')}</h2>
+            <p>{t('keyChecker.description')}</p>
+          </div>
+          <span className="api-key-security-badge"><ShieldCheck size={14} /> {t('keyChecker.masked')}</span>
+        </header>
 
-      <div className="glass-card mb-4">
-        <div className="settings-row-label mb-2">{t('keyChecker.pasteLabel')}</div>
-        <textarea
-          className="textarea"
-          rows={5}
-          value={manualText}
-          onChange={(event) => setManualText(event.target.value)}
-          placeholder={t('keyChecker.pastePlaceholder')}
-        />
-        <div className="flex items-center justify-between mt-3">
-          <div className="text-xs text-muted">{t('keyChecker.smokeTestHelp')}</div>
-          <button className="btn btn-primary" onClick={handleManualValidate} disabled={isValidating || !parseKeys(manualText, 'manual.txt').length}>
-            {isValidating ? t('keyChecker.validating') : t('keyChecker.testPasted')}
+        <div className="api-key-input-grid">
+          <section className="glass-card api-key-input-card">
+            <div className="api-key-card-heading">
+              <span className="api-key-card-icon"><ClipboardPaste size={18} /></span>
+              <div>
+                <h3>{t('keyChecker.pasteLabel')}</h3>
+                <p>{t('keyChecker.pasteDescription')}</p>
+              </div>
+            </div>
+            <textarea
+              className="textarea api-key-textarea"
+              rows={6}
+              value={manualText}
+              onChange={(event) => setManualText(event.target.value)}
+              placeholder={t('keyChecker.pastePlaceholder')}
+            />
+            <div className="api-key-card-actions">
+              <span>{t('keyChecker.supportedProviders')}</span>
+              <button className="btn btn-primary" onClick={handleManualValidate} disabled={isValidating || !parseKeys(manualText, 'manual.txt').length}>
+                {isValidating && <Loader2 size={15} className="spinner" />}
+                {isValidating ? t('keyChecker.validating') : t('keyChecker.testPasted')}
+              </button>
+            </div>
+          </section>
+
+          <button
+            type="button"
+            className={`file-drop-zone api-key-upload-card ${dragActive ? 'active' : ''}`}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragActive(true);
+            }}
+            onDragLeave={() => setDragActive(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <span className="api-key-upload-icon"><UploadCloud size={25} /></span>
+            <strong>{t('keyChecker.upload')}</strong>
+            <span>{t('keyChecker.uploadDescription')}</span>
+            <span className="api-key-file-types"><span>JSON</span><span>TXT</span><span>ENV</span></span>
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.txt,.env"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) handleFile(file);
+            }}
+            style={{ display: 'none' }}
+          />
         </div>
-      </div>
 
-      <div
-        className={`file-drop-zone ${dragActive ? 'active' : ''}`}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragActive(true);
-        }}
-        onDragLeave={() => setDragActive(false)}
-        onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
-      >
-        <div>{t('keyChecker.upload')}</div>
-        <div className="text-xs text-muted mt-2">JSON, TXT, ENV</div>
-      </div>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".json,.txt,.env"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleFile(file);
-        }}
-        style={{ display: 'none' }}
-      />
+        <div className="api-key-smoke-test-note">
+          <ShieldCheck size={16} />
+          <span>{t('keyChecker.smokeTestHelp')}</span>
+        </div>
 
-      {results.length > 0 && (
-        <div className="key-checker-results">
-          <div className="flex items-center justify-between mb-4">
+        {results.length > 0 && (
+          <section className="key-checker-results">
+            <div className="api-key-results-header">
             <span className="font-semibold text-sm">
               {results.filter((result) => result.status === 'valid').length}/{results.length} {t('keyChecker.valid')}
               {results.some((result) => result.status === 'limited') &&
@@ -153,7 +176,7 @@ const ApiKeyChecker: React.FC = () => {
             </button>
           </div>
 
-          <div className="glass-card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div className="glass-card api-key-results-table">
             <table className="data-table">
               <thead>
                 <tr>
@@ -202,8 +225,9 @@ const ApiKeyChecker: React.FC = () => {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+          </section>
+        )}
+      </div>
     </div>
   );
 };

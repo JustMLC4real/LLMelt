@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { connectCdp, pause, waitForElectronPage } from './lib/electron-cdp.mjs';
 
 const root = process.cwd();
 const electronExecutable = path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe');
@@ -91,64 +92,11 @@ try {
 }
 
 async function waitForTarget(timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
-      const targets = await response.json();
-      const target = targets.find((candidate) =>
-        candidate.type === 'page' && /LLMelt|index\.html/i.test(`${candidate.title} ${candidate.url}`));
-      if (target?.webSocketDebuggerUrl) return target;
-    } catch {
-      // Electron is nog aan het opstarten.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  throw new Error('De geïsoleerde LLMelt-renderer werd niet op tijd gevonden.');
-}
-
-async function connectCdp(url) {
-  const socket = new WebSocket(url);
-  const pending = new Map();
-  const eventListeners = new Map();
-  let requestId = 0;
-
-  await new Promise((resolve, reject) => {
-    socket.addEventListener('open', resolve, { once: true });
-    socket.addEventListener('error', () => reject(new Error('CDP-verbinding kon niet worden geopend.')), { once: true });
-  });
-
-  socket.addEventListener('message', (event) => {
-    const message = JSON.parse(String(event.data));
-    if (!message.id) {
-      for (const listener of eventListeners.get(message.method) || []) listener(message.params || {});
-      return;
-    }
-    const request = pending.get(message.id);
-    if (!request) return;
-    pending.delete(message.id);
-    if (message.error) request.reject(new Error(message.error.message));
-    else request.resolve(message.result);
-  });
-
-  return {
-    send(method, params = {}) {
-      const id = ++requestId;
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        socket.send(JSON.stringify({ id, method, params }));
-      });
-    },
-    close() {
-      socket.close();
-    },
-    on(method, listener) {
-      const listeners = eventListeners.get(method) || new Set();
-      listeners.add(listener);
-      eventListeners.set(method, listeners);
-      return () => listeners.delete(listener);
-    },
-  };
+  return waitForElectronPage(
+    debugPort,
+    (candidate) => /LLMelt|index\.html/i.test(`${candidate.title} ${candidate.url}`),
+    timeoutMs,
+  );
 }
 
 async function waitForText(client, text, timeoutMs = 15_000) {
@@ -501,10 +449,6 @@ async function renderChatRecordingGif(frames) {
   ], { cwd: root, stdio: 'ignore', windowsHide: true });
   if (result.status !== 0) throw new Error('ffmpeg kon de vloeiende chatopname niet naar GIF omzetten.');
   return true;
-}
-
-function pause(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function captureChatDemo(client) {

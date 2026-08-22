@@ -16,6 +16,7 @@ import { chatFromVisibleOrDraft } from './draft-chat';
 import { startNewChat } from './new-chat';
 import { usePanelPresence } from './use-panel-presence';
 import { replacementForUnavailableModel } from './model-utils';
+import { visibleStreamingContent } from './streaming-content';
 import type { QueuedAgentApproval } from './approval-queue';
 import type { Message } from '../providers/types';
 import { normalizeUiLanguage } from '../i18n/language';
@@ -126,6 +127,13 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
   );
   const isStreaming = !!currentRun;
   const streamingContent = currentRun?.streamingContent || '';
+  const displayedStreamingContent = currentRun
+    ? visibleStreamingContent({
+        provider: currentRun.provider,
+        modelId: currentRun.modelId,
+        content: streamingContent,
+      })
+    : '';
   const streamingStatus = currentRun?.streamingStatus || '';
   const streamingStatusStartedAt = currentRun?.streamingStatusStartedAt || null;
   const nativeStreamId = currentRun?.nativeStreamId || null;
@@ -135,7 +143,7 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
       id: `streaming-${currentRun.requestId}`,
       chatId: currentChatId,
       role: 'assistant',
-      content: streamingContent,
+      content: displayedStreamingContent,
       modelId: currentRun.modelId,
       provider: currentRun.provider,
       inputTokens: 0,
@@ -143,7 +151,7 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
       runConfig: currentRun.runConfig ? JSON.stringify(currentRun.runConfig) : null,
       createdAt: new Date().toISOString(),
     };
-  }, [currentChatId, currentRun, nativeStreamId, streamingContent]);
+  }, [currentChatId, currentRun, displayedStreamingContent, nativeStreamId]);
   const renderedMessages = React.useMemo(
     () => {
       const persistedIds = new Set(scopedMessages.map((message) => message.id));
@@ -545,7 +553,7 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2" /><path d="M9 20h6" /><path d="M12 4v16" />
             </svg>
-            {t('chat.systemPrompt')}
+            <span className="chat-toolbar-label">{t('chat.systemPrompt')}</span>
           </button>
           <button
             className={`chat-toolbar-btn ${showAutoModePanel || autoModeActive ? 'active' : ''}`}
@@ -555,7 +563,7 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 2v4" /><path d="m16.2 7.8 2.9-2.9" /><path d="M18 12h4" /><path d="m16.2 16.2 2.9 2.9" /><path d="M12 18v4" /><path d="m4.9 19.1 2.9-2.9" /><path d="M2 12h4" /><path d="m4.9 4.9 2.9 2.9" />
             </svg>
-            {t('autoMode.title')}
+            <span className="chat-toolbar-label">{t('autoMode.title')}</span>
           </button>
           <button
             data-utility-panel="terminal"
@@ -566,7 +574,7 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
             </svg>
-            {t('chatView.terminal')}
+            <span className="chat-toolbar-label">{t('chatView.terminal')}</span>
           </button>
         </div>
         {agentToolsEnabled && (currentChat?.agentMode || agentMode) !== 'ask' && (
@@ -575,7 +583,7 @@ const ChatView: React.FC<ChatViewProps> = ({ approvals, onRespondApproval }) => 
             {currentChat?.agentMode ? t('chatView.pcAccess.thisChat') : ''}
           </span>
         )}
-        <div style={{ flex: 1 }} />
+        <div className="chat-toolbar-spacer" />
         {effectiveProjectPath && (
           <span className="project-path-chip" title={effectiveProjectPath}>
             {currentFolder ? currentFolder.name : legacyChatProjectPath ? t('chatView.projectPath.legacy') : t('chatView.projectPath.default')} · {effectiveProjectPath}

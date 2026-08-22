@@ -63,10 +63,10 @@ integration('Antigravity native integratie', () => {
     );
     if (!liveModels.length) throw new Error('Antigravity gaf geen live modellen terug.');
     testModel = process.env.AGY_TEST_MODEL
-      || liveModels.find((model) => /(?:^|[-_( ])low(?:\)?$)/i.test(model))
-      || liveModels[0];
+      || liveModels.find((model) => /(?:^|[-_( ])low(?:\)?$)/i.test(model.id))?.id
+      || liveModels[0].id;
     complexTestModel = process.env.AGY_COMPLEX_TEST_MODEL
-      || liveModels.find((model) => /(?:^|[-_( ])high(?:\)?$)/i.test(model))
+      || liveModels.find((model) => /(?:^|[-_( ])high(?:\)?$)/i.test(model.id))?.id
       || testModel;
     root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ai-superapp-agy-integration-'));
     mockedPaths.temp = root;

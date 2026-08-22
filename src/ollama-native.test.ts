@@ -166,6 +166,44 @@ describe('Ollama native tools', () => {
     expect(result.text).toContain('Gecontroleerd');
   });
 
+  it('herstelt een afgekapt vervolg na echte voortgang zonder een tool te dupliceren', async () => {
+    let round = 0;
+    const received: any[] = [];
+    const replies = [
+      ollamaToolResponse(toolCall('write-1', 'write_file', { path: 'een.py', content: 'print(1)' })),
+      { message: { role: 'assistant', content: 'onvolledige tweede call' }, done: true, done_reason: 'length' },
+      ollamaToolResponse(toolCall('write-2', 'write_file', { path: 'twee.py', content: 'print(2)' })),
+      ollamaTextResponse('Beide bestanden zijn gemaakt.'),
+      ollamaTextResponse('Gecontroleerd: beide bestanden zijn klaar.'),
+    ];
+    const baseUrl = await serve((body, res) => {
+      received.push(body);
+      sendNdjson(res, replies[round++]);
+    });
+    const calls: Array<{ name: string; path?: unknown }> = [];
+
+    const result = await runOllamaNative({
+      baseUrl,
+      model: 'tool-model',
+      messages: [{ role: 'user', content: 'Maak twee scripts: een.py en twee.py.' }],
+      signal: new AbortController().signal,
+      requireToolUse: true,
+      supportsThinking: false,
+      onDelta: () => {},
+      executeTool: async (name, input) => {
+        calls.push({ name, path: input.path });
+        return { ok: true, output: `created ${String(input.path)}` };
+      },
+    });
+
+    expect(calls).toEqual([
+      { name: 'write_file', path: 'een.py' },
+      { name: 'write_file', path: 'twee.py' },
+    ]);
+    expect(received[2].messages.at(-1).content).toContain('afgekapt toolplan-herstel');
+    expect(result.text).toContain('Gecontroleerd');
+  });
+
   it('weigert directory- en wildcardpaden vóór echte uitvoering', () => {
     expect(nativeToolInputProtocolError('read_file', { path: '.' })).toMatch(/geen map/i);
     expect(nativeToolInputProtocolError('read_file', { path: 'src/' })).toMatch(/geen map/i);
@@ -370,7 +408,7 @@ describe('Ollama native tools', () => {
     expect(received[0].messages[0]).toMatchObject({ role: 'system' });
     expect(received[0].messages[0].content).toContain('errorCode');
     expect(received[0].think).toBe(false);
-    expect(received[0].options).toEqual({ temperature: 0, num_predict: 2_048 });
+    expect(received[0].options).toEqual({ temperature: 0, num_predict: 4_096 });
     expect(received[0].tools.map((tool: any) => tool.function.name)).toContain('run_command');
     expect(received[1].messages.find((message: any) => message.role === 'assistant')).toMatchObject({
       thinking: 'Eerst het bestand lezen.',
@@ -435,8 +473,10 @@ describe('Ollama native tools', () => {
       }
     });
     let executions = 0;
+    const activities: NativeToolActivity[] = [];
 
     const result = await run(baseUrl, {
+      onToolActivity: (activity) => activities.push(activity),
       executeTool: async () => {
         executions += 1;
         return { ok: true, output: 'skyline uitgevoerd' };
@@ -444,6 +484,7 @@ describe('Ollama native tools', () => {
     });
 
     expect(executions).toBe(1);
+    expect(activities.map((activity) => activity.phase)).toEqual(['requested', 'result']);
     expect(received).toHaveLength(4);
     expect(JSON.parse(received[2].messages.at(-1).content)).toMatchObject({
       ok: false,

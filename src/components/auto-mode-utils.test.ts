@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { AutoModeConfig } from '../providers/types';
-import { autoModePhaseInfo, autoModePromptPreview, autoModeStepState, mergeAutoModeState, validateAutoModeConfig } from './auto-mode-utils';
+import {
+  autoModePhaseInfo,
+  autoModePromptPreview,
+  autoModeStepState,
+  buildAutoModePrompterSystemPrompt,
+  mergeAutoModeState,
+  parseAutoModePrompterDecision,
+  validateAutoModeConfig,
+} from './auto-mode-utils';
 
 const valid: AutoModeConfig = {
   chatId: 'chat-1',
@@ -46,5 +54,49 @@ describe('Auto Mode-taal', () => {
   it('levert Engelse validatie en fasetekst', () => {
     expect(autoModePhaseInfo('waiting', 'en')).toMatchObject({ label: 'Waiting', title: 'Round completed' });
     expect(() => validateAutoModeConfig({ ...valid, language: 'en', delayMs: 0 })).toThrow(/delay must be between/i);
+  });
+});
+
+describe('Auto Mode-voltooiingscontract', () => {
+  it('stopt alleen bij een volledig gesloten voltooiingstag', () => {
+    expect(parseAutoModePrompterDecision(
+      '<AUTO_MODE_COMPLETE>Alle gevraagde bestanden zijn gemaakt en getest.</AUTO_MODE_COMPLETE>',
+    )).toEqual({
+      status: 'complete',
+      summary: 'Alle gevraagde bestanden zijn gemaakt en getest.',
+    });
+    expect(parseAutoModePrompterDecision('Het werk is complete, controleer nu de tests.')).toEqual({
+      status: 'continue',
+      prompt: 'Het werk is complete, controleer nu de tests.',
+    });
+    expect(parseAutoModePrompterDecision('<AUTO_MODE_COMPLETE>nog niet gesloten')).toEqual({
+      status: 'continue',
+      prompt: '<AUTO_MODE_COMPLETE>nog niet gesloten',
+    });
+  });
+
+  it('haalt de volgende prompt uit een providerneutrale tag', () => {
+    expect(parseAutoModePrompterDecision(
+      '  <AUTO_MODE_NEXT>\nVoer nu de integratietests uit en herstel alle fouten.\n</AUTO_MODE_NEXT>  ',
+    )).toEqual({
+      status: 'continue',
+      prompt: 'Voer nu de integratietests uit en herstel alle fouten.',
+    });
+  });
+
+  it('blijft compatibel met modellen die nog gewone prompttekst teruggeven', () => {
+    expect(parseAutoModePrompterDecision('Maak nu het ontbrekende rapport.')).toEqual({
+      status: 'continue',
+      prompt: 'Maak nu het ontbrekende rapport.',
+    });
+  });
+
+  it('instrueert elk promptermodel om voortgang te controleren en exact één contracttag te gebruiken', () => {
+    const nl = buildAutoModePrompterSystemPrompt('Bouw en test de app.', 'nl');
+    const en = buildAutoModePrompterSystemPrompt('Build and test the app.', 'en');
+    expect(nl).toContain('<AUTO_MODE_COMPLETE>');
+    expect(nl).toContain('<AUTO_MODE_NEXT>');
+    expect(nl).toContain('<USER_GOAL>\nBouw en test de app.\n</USER_GOAL>');
+    expect(en).toMatch(/evaluate the entire conversation/i);
   });
 });

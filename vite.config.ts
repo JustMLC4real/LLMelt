@@ -19,7 +19,7 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['electron-store', 'ssh2', 'pdf-parse', 'node-pty'],
+              external: ['@anthropic-ai/claude-agent-sdk', 'electron-store', 'ssh2', 'pdf-parse', 'node-pty'],
               onwarn: suppressElectronPlatformWarning,
             },
           },

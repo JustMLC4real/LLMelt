@@ -17,6 +17,7 @@ import type { NativePermissionHandler, NativeToolActivity } from './native-tools
 import { antigravityFinalTranscriptText, antigravityPartialSummary } from './antigravity-output';
 import { cliSpawnSpec, clipNativeOutput, terminateProcessTree } from './process-utils';
 import { agentCommandEnvironment } from './agent-command-environment';
+import { recoverUnreportedAntigravityTool } from './antigravity-tool-recovery';
 
 export interface RunAntigravityNativeOptions {
   exe: string;
@@ -86,6 +87,7 @@ process.stdin.on('end', () => {
 
 let bridgePath: string | null = null;
 let hookMutationTail: Promise<void> = Promise.resolve();
+const MAX_STOP_CONTINUATIONS = 2;
 
 export async function runAntigravityNative(options: RunAntigravityNativeOptions): Promise<RunAntigravityNativeResult> {
   if (options.signal.aborted) throw new Error('cancelled');
@@ -114,7 +116,7 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
         ? !!(await readAntigravityFinalText(new Set([event.transcriptPath])))
         : false;
       const unresolved = uniquePendingTools(pending, lastPendingByConversation).length;
-      if (stopContinuations < 2 && (unresolved > 0 || (toolStarted && !hasFinalText))) {
+      if (stopContinuations < MAX_STOP_CONTINUATIONS && (unresolved > 0 || (toolStarted && !hasFinalText))) {
         stopContinuations += 1;
         const reason = unresolved > 0
           ? localizedText(language,
@@ -212,15 +214,17 @@ export async function runAntigravityNative(options: RunAntigravityNativeOptions)
     const text = await spawnAgy(options.exe, args, options.cwd, env, options.signal, options.onDelta, language);
     const unreportedTools = uniquePendingTools(pending, lastPendingByConversation);
     for (const tool of unreportedTools) {
-      failedTools += 1;
+      const recovered = await recoverUnreportedAntigravityTool(tool, options.cwd, language);
+      if (recovered?.ok) completedTools += 1;
+      else failedTools += 1;
       options.onToolActivity?.({
         provider: 'antigravity',
         toolName: tool.name,
         input: tool.input,
         toolUseId: tool.id,
         phase: 'result',
-        ok: false,
-        output: localizedText(language, 'Antigravity sloot voordat de CLI een toolresultaat bevestigde.', 'Antigravity closed before the CLI confirmed a tool result.'),
+        ok: recovered?.ok === true,
+        output: recovered?.output || localizedText(language, 'Antigravity sloot voordat de CLI een toolresultaat bevestigde.', 'Antigravity closed before the CLI confirmed a tool result.'),
       });
     }
     const cleanText = text.trim();

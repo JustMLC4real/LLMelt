@@ -16,6 +16,7 @@ import {
   serviceTierLabel,
   serviceTiersForModel,
   chatgptEffortsForModel,
+  chatgptRunLevels,
   isChatgptPickerModel,
   parseClaudeCliModel,
   claudeCliModels,
@@ -35,6 +36,7 @@ import {
   parseGoogleModelChoice,
   replacementForUnavailableModel,
   surfaceLabel,
+  selectableModels,
 } from './model-utils';
 
 // Minimal ChatGPT model factory (only the fields the helpers read).
@@ -184,6 +186,58 @@ describe('chatgptEffortsForModel', () => {
     expect(chatgptEffortsForModel(cg('GPT-5.5', 'gpt-5-5'))).toEqual([]);
     expect(chatgptEffortsForModel(undefined)).toEqual([]);
   });
+
+  it('uses the exact live intelligence names from the main ChatGPT selector', () => {
+    const thinking = cg('GPT-5.6 Sol', 'gpt-5-6-thinking', {
+      chatgptConfigurableEffort: true,
+      chatgptThinkingEfforts: [
+        { value: 'standard', label: 'Standaard' },
+        { value: 'extended', label: 'Uitgebreid' },
+      ],
+    });
+    const versions = [{
+      id: 'sol',
+      title: 'GPT-5.6 Sol',
+      enabled: true,
+      slugs: ['gpt-5-6-thinking'],
+      presets: [
+        { title: 'Gemiddeld', modelSlug: 'gpt-5-6-thinking', thinkingEffort: 'standard', available: true },
+        { title: 'Hoog', modelSlug: 'gpt-5-6-thinking', thinkingEffort: 'extended', available: true },
+      ],
+    }];
+
+    expect(chatgptEffortsForModel(thinking, versions)).toEqual([
+      { value: 'standard', label: 'Gemiddeld' },
+      { value: 'extended', label: 'Hoog' },
+    ]);
+  });
+});
+
+describe('chatgptRunLevels', () => {
+  it('returns the complete live selector row without duplicate inferred labels', () => {
+    const versions = [{
+      id: 'sol',
+      title: 'GPT-5.6 Sol',
+      enabled: true,
+      slugs: ['gpt-5-6-thinking'],
+      presets: [
+        { title: 'Direct', modelSlug: 'gpt-5-5-instant', thinkingEffort: 'minimal', available: true },
+        { title: 'Gemiddeld', modelSlug: 'gpt-5-6-thinking', thinkingEffort: 'standard', available: true },
+        { title: 'Hoog', modelSlug: 'gpt-5-6-thinking', thinkingEffort: 'extended', available: true },
+        { title: 'Zeer Hoog', modelSlug: 'gpt-5-6-thinking', thinkingEffort: 'intensive', available: true },
+        { title: 'Pro', modelSlug: 'gpt-5-6-pro', available: false },
+      ],
+    }];
+
+    expect(chatgptRunLevels(versions, 'chatgpt:gpt-5-6-thinking', 'standard', 'sol'))
+      .toEqual([
+        { key: 'chatgpt:gpt-5-5-instant|minimal', label: 'Direct', modelId: 'chatgpt:gpt-5-5-instant', thinkingEffort: 'minimal', available: true, versionId: 'sol' },
+        { key: 'chatgpt:gpt-5-6-thinking|standard', label: 'Gemiddeld', modelId: 'chatgpt:gpt-5-6-thinking', thinkingEffort: 'standard', available: true, versionId: 'sol' },
+        { key: 'chatgpt:gpt-5-6-thinking|extended', label: 'Hoog', modelId: 'chatgpt:gpt-5-6-thinking', thinkingEffort: 'extended', available: true, versionId: 'sol' },
+        { key: 'chatgpt:gpt-5-6-thinking|intensive', label: 'Zeer Hoog', modelId: 'chatgpt:gpt-5-6-thinking', thinkingEffort: 'intensive', available: true, versionId: 'sol' },
+        { key: 'chatgpt:gpt-5-6-pro', label: 'Pro', modelId: 'chatgpt:gpt-5-6-pro', thinkingEffort: undefined, available: false, versionId: 'sol' },
+      ]);
+  });
 });
 
 describe('Claude CLI picker helpers', () => {
@@ -200,8 +254,9 @@ describe('Claude CLI picker helpers', () => {
     expect(parseClaudeCliModel(models[1])).toEqual({ family: 'Sonnet', version: '5' });
   });
 
-  it('orders families by capability with Fable on top', () => {
-    expect(claudeCliFamilies(models)).toEqual(['Fable', 'Opus', 'Sonnet', 'Haiku']);
+  it('behoudt de live catalogusvolgorde zonder een eigen modellenrangorde', () => {
+    models.forEach((model, index) => { model.catalogPriority = index; });
+    expect(claudeCliFamilies(models)).toEqual(['Opus', 'Sonnet', 'Haiku', 'Fable']);
     expect(claudeCliVersionsFor(models, 'Sonnet')).toEqual(['5', '4.6']);
     expect(claudeCliModelFor(models, 'Sonnet', '4.6')?.id).toBe('claude-cli:claude-sonnet-4-6');
   });
@@ -239,7 +294,7 @@ describe('Claude CLI picker helpers', () => {
       .toEqual({ baseModelId: 'future-codex', reasoningEffort: 'eco-v2', serviceTier: 'burst-v3' });
   });
 
-  it('kiest niet stil het creditgebonden Fable als eerste/default CLI-model', () => {
+  it('kiest het eerste live catalogusmodel zonder eigen allowlist', () => {
     expect(claudeCliModels(models)[0]?.id).toBe('claude-cli:claude-opus-4-8');
   });
 });
@@ -286,7 +341,7 @@ describe('Engelse modelhulplabels', () => {
     };
     expect(surfaceLabel(ollama, 'nl')).toBe('Ollama lokaal');
     expect(surfaceLabel(ollama, 'en')).toBe('Ollama local');
-    expect(parseClaudeCliModel(claudeCli('Claude', 'claude'), 'en').version).toBe('Standard');
+    expect(parseClaudeCliModel(claudeCli('Claude', 'claude'), 'en').version).toBe('');
     expect(parseAntigravityModel(agy('Claude-sonnet-4-6'), 'en').mode).toBe('Standard');
     expect(parseGoogleModelChoice({ ...ollama, provider: 'google', id: 'gemini', name: 'Gemini' }, 'en'))
       .toEqual({ family: 'Gemini', version: 'Other', variant: 'Standard' });
@@ -538,5 +593,15 @@ describe('parseGoogleModelChoice', () => {
   it('plaatst modellen zonder versienummer onder Overig', () => {
     expect(parseGoogleModelChoice(googleModel('gemini-pro-latest', 'Gemini Pro Latest')))
       .toEqual({ family: 'Gemini', version: 'Overig', variant: 'Pro Latest' });
+  });
+});
+
+describe('selectableModels', () => {
+  it('negeert corrupte catalogusregels zodat de modelselector niet kan crashen', () => {
+    const valid = codex('Codex 5.6', 'gpt-5.6');
+    const missingId = { ...valid, id: undefined } as unknown as AIModel;
+    const missingName = { ...valid, name: undefined } as unknown as AIModel;
+
+    expect(selectableModels([missingId, valid, missingName])).toEqual([valid]);
   });
 });

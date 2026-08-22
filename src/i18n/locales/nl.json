@@ -307,6 +307,7 @@
     "responder": "Antwoord model",
     "iterations": "Iteraties",
     "infinite": "Oneindig",
+    "infiniteHelp": "Geen vaste iteratielimiet; de prompter stopt wel automatisch zodra het doel is voltooid.",
     "delay": "Vertraging",
     "seconds": "seconden",
     "start": "Start",
@@ -319,12 +320,12 @@
     "iteration": "Iteratie {{current}}/{{max}}",
     "iterationInfinite": "Iteratie {{current}}/oneindig",
     "totalTokens": "Totaal tokens: {{count}}",
-    "unlimitedConfirm": "Auto Mode staat op oneindig zonder tokenbudget. Weet je zeker dat je wilt starten?",
+    "unlimitedConfirm": "Auto Mode heeft geen vaste iteratie- of tokenlimiet. De prompter stopt wanneer het doel voltooid is, maar dit kan veel tokens gebruiken. Weet je zeker dat je wilt starten?",
     "collapse": "Auto Mode inklappen",
     "lastPrompt": "Laatste gemaakte prompt",
     "goal": "Doel / opdracht voor de prompter",
     "goalPlaceholder": "Bijv. ‘Bouw stap voor stap een marketingplan voor een nieuwe app’ - de prompter stuurt het gesprek hierop aan.",
-    "prompterHelp": "Bedenkt steeds de volgende concrete opdracht.",
+    "prompterHelp": "Beoordeelt of het doel klaar is en bedenkt anders de volgende concrete opdracht.",
     "responderHelp": "Voert die opdracht uit in dit gesprek.",
     "tokenBudget": "Tokenbudget (0 = geen limiet)",
     "roundInfinite": "Ronde {{current}} / oneindig",
@@ -341,7 +342,7 @@
       "responder": { "label": "Antwoord maken", "title": "Het antwoordmodel reageert nu", "description": "De gemaakte prompt wordt door het antwoordmodel verwerkt." },
       "waiting": { "label": "Wachten", "title": "Ronde afgerond", "description": "Auto Mode wacht op de volgende ronde." },
       "paused": { "label": "Gepauzeerd", "title": "Auto Mode is gepauzeerd", "description": "Hervat om verder te gaan." },
-      "completed": { "label": "Klaar", "title": "Auto Mode is klaar", "description": "Alle ingestelde rondes zijn afgerond." },
+      "completed": { "label": "Klaar", "title": "Auto Mode is klaar", "description": "Het doel is voltooid of een ingestelde limiet is bereikt." },
       "stopped": { "label": "Gestopt", "title": "Auto Mode is gestopt", "description": "Start opnieuw wanneer je verder wilt." },
       "error": { "label": "Fout", "title": "Auto Mode is gestopt door een fout", "description": "Bekijk de fout hieronder." }
     }
@@ -446,7 +447,7 @@
   },
   "keyChecker": {
     "title": "API Key Checker",
-    "description": "Upload een bestand met API keys om ze te valideren",
+    "description": "Controleer veilig of OpenAI-, Anthropic- en Gemini-keys echt werken.",
     "upload": "Upload JSON, TXT of ENV bestand",
     "validate": "Valideer alle keys",
     "validating": "Bezig met valideren...",
@@ -465,7 +466,12 @@
     "limitedCount": "{{count}} beperkt",
     "status": "Status",
     "testedModel": "Getest: {{model}}",
-    "limited": "Beperkt"
+    "limited": "Beperkt",
+    "masked": "Keys blijven gemaskeerd",
+    "pasteDescription": "Plak één of meerdere keys; elke regel en gangbare lijstindeling wordt herkend.",
+    "supportedProviders": "OpenAI · Anthropic · Gemini",
+    "uploadDescription": "Sleep een bestand hierheen of klik om het te kiezen.",
+    "uploadTypes": "Ondersteunde bestanden: JSON, TXT en ENV"
   },
   "memory": {
     "title": "Geheugen",
@@ -900,6 +906,15 @@
     }
   },
   "updates": {
+    "channel": {
+      "label": "Updatekanaal",
+      "stable": "Stabiel",
+      "prerelease": "Prerelease",
+      "stableDescription": "Alleen volledig uitgebrachte versies.",
+      "prereleaseDescription": "Ook testversies, zodra ze verschijnen.",
+      "buildHint": "Deze installatie komt van het {{channel}}-kanaal.",
+      "overridden": "Je volgt {{channel}} in plaats van het kanaal van deze installatie."
+    },
     "title": "App-updates",
     "installedOnly": "Updates werken alleen in de geïnstalleerde app (niet in dev-modus).",
     "unknownError": "Onbekende updatefout.",
@@ -926,6 +941,7 @@
       "upToDateVersion": "Je hebt de nieuwste versie ({{version}}).",
       "upToDate": "Je hebt de nieuwste versie.",
       "error": "Update mislukt: {{error}}",
+      "noRelease": "Geen updates op kanaal {{channel}}.",
       "current": "Huidige versie: {{version}}"
     }
   },
@@ -944,9 +960,16 @@
   },
   "runSettings": {
     "title": "Run-instellingen",
+    "model": "Model",
     "effort": "Inspanning",
     "intelligence": "Intelligentie",
     "speed": "Snelheid",
+    "quick": "Snel kiezen",
+    "advanced": "Geavanceerd",
+    "faster": "Sneller",
+    "smarter": "Slimmer",
+    "profile": "Uitvoerprofiel",
+    "normal": "Normaal",
     "providerNative": "Provider-native",
     "providerNativeActions": "Provider-native actions",
     "appWorkflows": "LLMelt workflows"

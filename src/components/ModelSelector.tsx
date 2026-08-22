@@ -405,6 +405,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onClose }) => {
     if (!model) return;
     applySelection(model.id, 'openai', {
       ...(model.runConfig || {}),
+      chatgptVersionId: activeVersion.id,
       ...(level?.effort ? { chatgptThinkingEffort: level.effort } : {}),
     });
     requestClose();

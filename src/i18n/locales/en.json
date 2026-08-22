@@ -307,6 +307,7 @@
     "responder": "Responder model",
     "iterations": "Iterations",
     "infinite": "Infinite",
+    "infiniteHelp": "No fixed iteration limit; the prompter still stops automatically when the goal is complete.",
     "delay": "Delay",
     "seconds": "seconds",
     "start": "Start",
@@ -319,12 +320,12 @@
     "iteration": "Iteration {{current}}/{{max}}",
     "iterationInfinite": "Iteration {{current}}/infinite",
     "totalTokens": "Total tokens: {{count}}",
-    "unlimitedConfirm": "Auto Mode is set to infinite without a token budget. Are you sure you want to start?",
+    "unlimitedConfirm": "Auto Mode has no fixed iteration or token limit. The prompter stops when the goal is complete, but this can use many tokens. Are you sure you want to start?",
     "collapse": "Collapse Auto Mode",
     "lastPrompt": "Last generated prompt",
     "goal": "Goal / task for the prompter",
     "goalPlaceholder": "For example, ‘Build a marketing plan for a new app step by step’ — the prompter will steer the chat toward this goal.",
-    "prompterHelp": "Keeps creating the next concrete task.",
+    "prompterHelp": "Checks whether the goal is complete and otherwise creates the next concrete task.",
     "responderHelp": "Performs that task in this chat.",
     "tokenBudget": "Token budget (0 = no limit)",
     "roundInfinite": "Round {{current}} / infinite",
@@ -341,7 +342,7 @@
       "responder": { "label": "Creating response", "title": "The responder model is responding", "description": "The responder model is processing the generated prompt." },
       "waiting": { "label": "Waiting", "title": "Round complete", "description": "Auto Mode is waiting for the next round." },
       "paused": { "label": "Paused", "title": "Auto Mode is paused", "description": "Resume to continue." },
-      "completed": { "label": "Done", "title": "Auto Mode is complete", "description": "All configured rounds are complete." },
+      "completed": { "label": "Done", "title": "Auto Mode is complete", "description": "The goal is complete or a configured limit was reached." },
       "stopped": { "label": "Stopped", "title": "Auto Mode has stopped", "description": "Start again when you want to continue." },
       "error": { "label": "Error", "title": "Auto Mode stopped because of an error", "description": "Review the error below." }
     }
@@ -446,7 +447,7 @@
   },
   "keyChecker": {
     "title": "API Key Checker",
-    "description": "Upload a file with API keys to validate them",
+    "description": "Safely check whether OpenAI, Anthropic, and Gemini keys actually work.",
     "upload": "Upload JSON, TXT or ENV file",
     "validate": "Validate all keys",
     "validating": "Validating...",
@@ -465,7 +466,12 @@
     "limitedCount": "{{count}} limited",
     "status": "Status",
     "testedModel": "Tested: {{model}}",
-    "limited": "Limited"
+    "limited": "Limited",
+    "masked": "Keys stay masked",
+    "pasteDescription": "Paste one or more keys; each line and common list format is recognized.",
+    "supportedProviders": "OpenAI · Anthropic · Gemini",
+    "uploadDescription": "Drop a file here or click to choose one.",
+    "uploadTypes": "Supported files: JSON, TXT, and ENV"
   },
   "memory": {
     "title": "Memory",
@@ -900,6 +906,15 @@
     }
   },
   "updates": {
+    "channel": {
+      "label": "Update channel",
+      "stable": "Stable",
+      "prerelease": "Pre-release",
+      "stableDescription": "Only fully released versions.",
+      "prereleaseDescription": "Also test versions, as soon as they appear.",
+      "buildHint": "This installation came from the {{channel}} channel.",
+      "overridden": "You are following {{channel}} instead of this installation's own channel."
+    },
     "title": "App updates",
     "installedOnly": "Updates only work in the installed app (not in development mode).",
     "unknownError": "Unknown update error.",
@@ -926,6 +941,7 @@
       "upToDateVersion": "You have the latest version ({{version}}).",
       "upToDate": "You have the latest version.",
       "error": "Update failed: {{error}}",
+      "noRelease": "No updates on the {{channel}} channel.",
       "current": "Current version: {{version}}"
     }
   },
@@ -944,9 +960,16 @@
   },
   "runSettings": {
     "title": "Run settings",
+    "model": "Model",
     "effort": "Effort",
     "intelligence": "Intelligence",
     "speed": "Speed",
+    "quick": "Quick select",
+    "advanced": "Advanced",
+    "faster": "Faster",
+    "smarter": "Smarter",
+    "profile": "Run profile",
+    "normal": "Normal",
     "providerNative": "Provider-native",
     "providerNativeActions": "Provider-native actions",
     "appWorkflows": "LLMelt workflows"

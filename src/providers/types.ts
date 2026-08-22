@@ -105,6 +105,9 @@ export interface ModelRunConfig {
   // ChatGPT browser: the chosen thinking effort value (e.g. 'standard' | 'extended'),
   // taken live from the model's thinking_efforts — not hardcoded.
   chatgptThinkingEffort?: string;
+  // Presentation identity of the selected live versions[] row. This is needed
+  // because two rows can point at the same model slug (for example Direct).
+  chatgptVersionId?: string;
   nativeProviderCommand?: NativeProviderCommandSelection;
 }
 

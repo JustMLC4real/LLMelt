@@ -3,14 +3,13 @@ import crypto from 'crypto';
 import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
+import { query as queryClaudeCode, type ModelInfo as ClaudeModelInfo } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AgentApprovalMode,
   AIModel,
-  AttachmentRef,
   ChatMessage,
+  ContextSource,
   FallbackReason,
-  ModelRef,
-  ModelRunConfig,
   ProviderType,
   RateLimitSnapshot,
   ReasoningEffort,
@@ -26,21 +25,44 @@ import { getCredential, saveCredential } from './credential-store';
 import { getStore } from './settings-store';
 import { chatgptScraper } from './chatgpt-scraper';
 import { claudeCliEnvironment, runClaudeNative } from './claude-native';
-import { claudeCliModelsFromHelp } from './claude-cli-catalog';
+import { claudeCliModelsFromHelp, claudeCliModelsFromSupportedModels } from './claude-cli-catalog';
+import {
+  additionalRegistryModels,
+  catalogAnchor,
+  catalogWindowBytes,
+  findRegistryModel,
+  parseClaudeModelCatalog,
+  reasoningEffortsFromCapabilities,
+  type ClaudeRegistryModel,
+} from './claude-model-registry';
 import { claudeCliLoggedInFromStatus } from './claude-cli-status';
 import { cliOptionChoicesFromHelp, reasoningEffortsFromCliHelp } from './cli-run-capabilities';
 import { runCodexNative } from './codex-native';
 import { codexAppServer } from './codex-app-server';
-import { parseAntigravityModelCatalog } from './antigravity-model-catalog';
+import { normalizeAntigravityModelCatalog, parseAntigravityModelCatalog } from './antigravity-model-catalog';
 import { runOllamaNative } from './ollama-native';
 import { ollamaChatRequestBody, parseOllamaNdjson } from './ollama-stream';
 import { runGeminiApiNative, type GeminiContent } from './gemini-api-native';
 import { runAntigravityNative } from './antigravity-native';
-import type {
-  NativePermissionHandler,
-  NativeToolActivity,
-  NativeToolExecutor,
-} from './native-tools';
+import {
+  ProviderRuntimeError,
+  type AdapterChatRequest,
+  type AdapterChatResult,
+  type AttachmentRecord,
+  type CredentialValidationOptions,
+  type ProviderAdapter,
+} from './provider-runtime';
+import type { NativeToolActivity } from './native-tools';
+export {
+  ProviderRuntimeError,
+  classifyProviderError,
+  rateLimitKey,
+  type AdapterChatRequest,
+  type AdapterChatResult,
+  type AttachmentRecord,
+  type CredentialValidationOptions,
+  type ProviderAdapter,
+} from './provider-runtime';
 import {
   antigravityExecutableCandidates,
   claudeExecutableCandidates,
@@ -50,69 +72,7 @@ import {
 import { codexCliServiceTier, codexRecoveredPreflightArgs, codexSafePreflightArgs, codexServiceTiersFromCatalog } from '../src/components/codex-utils';
 import { cliSpawnSpec, terminateProcessTree } from './process-utils';
 import { agentCommandEnvironment } from './agent-command-environment';
-
-export class ProviderRuntimeError extends Error {
-  reason: FallbackReason;
-  status?: number;
-  rateLimit?: RateLimitSnapshot;
-
-  constructor(message: string, reason: FallbackReason = 'provider_error', status?: number, rateLimit?: RateLimitSnapshot) {
-    super(message);
-    this.name = 'ProviderRuntimeError';
-    this.reason = reason;
-    this.status = status;
-    this.rateLimit = rateLimit;
-  }
-}
-
-export interface AdapterChatRequest {
-  chatId?: string;
-  modelRef: ModelRef;
-  messages: ChatMessage[];
-  systemPrompt?: string;
-  attachments: AttachmentRecord[];
-  signal: AbortSignal;
-  onDelta: (delta: string) => void;
-  onStatus?: (status: string) => void;
-  // Native provider-tools. De runner vertaalt zijn eigen protocol naar gedeelde events;
-  // approvals en app-side tools lopen via deze callbacks naar de IPC-laag.
-  cwd?: string;
-  agentMode?: AgentApprovalMode;
-  nativeTools?: boolean;
-  requireToolUse?: boolean;
-  requestPermission?: NativePermissionHandler;
-  executeTool?: NativeToolExecutor;
-  onToolActivity?: (activity: NativeToolActivity) => void;
-  /** UI-taal voor providerstatussen en verborgen hostinstructies. */
-  language?: UiLanguage;
-}
-
-export interface AttachmentRecord extends AttachmentRef {
-  textContent?: string | null;
-  base64Content?: string | null;
-}
-
-export interface AdapterChatResult {
-  text: string;
-  usage: TokenUsage;
-  rateLimit?: RateLimitSnapshot;
-  runConfig?: ModelRunConfig;
-}
-
-export interface CredentialValidationOptions {
-  probeGeneration?: boolean;
-  language?: UiLanguage;
-}
-
-export interface ProviderAdapter {
-  id: ProviderType;
-  listModels(): Promise<AIModel[]>;
-  invalidateModelCache?(): void;
-  validateCredential(secret?: string, options?: CredentialValidationOptions): Promise<ValidationResult>;
-  sendChat(request: AdapterChatRequest): Promise<AdapterChatResult>;
-  countTokens(modelId: string, messages: ChatMessage[], systemPrompt?: string): Promise<number>;
-  getRateLimitState(modelId?: string): Promise<RateLimitSnapshot>;
-}
+import { runCodexAgent, runProviderProcess as runProcess } from './provider-process';
 
 const DEFAULT_CONTEXT: Record<ProviderType, number> = {
   openai: 128000,
@@ -1518,7 +1478,154 @@ export function claudeCliChatArgs(
     ...(effort && supportedEfforts.includes(effort as ReasoningEffort) ? ['--effort', effort] : []),
   ];
 }
+
+async function readClaudeSupportedModels(executable: string): Promise<ClaudeModelInfo[]> {
+  let finishIdlePrompt: (() => void) | undefined;
+  const idlePrompt: AsyncIterable<never> = {
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => new Promise<IteratorResult<never>>((resolve) => {
+          finishIdlePrompt = () => resolve({ done: true, value: undefined as never });
+        }),
+      };
+    },
+  };
+  const abortController = new AbortController();
+  const cleanEnvironment = Object.fromEntries(
+    Object.entries(claudeCliEnvironment()).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
+  const sdkExecutable = claudeAgentSdkExecutable(executable);
+  const sdkQuery = queryClaudeCode({
+    prompt: idlePrompt,
+    options: {
+      abortController,
+      cwd: os.homedir(),
+      env: cleanEnvironment,
+      pathToClaudeCodeExecutable: sdkExecutable,
+      permissionMode: 'plan',
+      persistSession: false,
+      settingSources: [],
+    },
+  });
+  let timeout: NodeJS.Timeout | undefined;
+
+  try {
+    return await Promise.race([
+      sdkQuery.supportedModels(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Claude supportedModels timed out')), 15_000);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    finishIdlePrompt?.();
+    abortController.abort();
+    sdkQuery.close();
+  }
+}
+
+function claudeAgentSdkExecutable(executable: string) {
+  if (process.platform !== 'win32' || executable.toLowerCase().endsWith('.exe')) return executable;
+
+  // npm installeert Claude Code op Windows als shellshim naast de echte binary.
+  // De Agent SDK spawnt zonder shell en heeft daarom de aangrenzende .exe nodig.
+  const npmBinary = path.join(
+    path.dirname(executable),
+    'node_modules',
+    '@anthropic-ai',
+    'claude-code',
+    'bin',
+    'claude.exe',
+  );
+  try {
+    if (fs.statSync(npmBinary).isFile()) return npmBinary;
+  } catch {
+    // Een standalone/custom executable blijft hieronder ongewijzigd.
+  }
+  return executable;
+}
+
+/**
+ * De shellshim naast de echte binary is een paar kilobyte; de gebundelde CLI is
+ * honderden megabytes. Zo weten we dat we de bundle scannen en niet een wrapper.
+ */
+const MIN_CLAUDE_BUNDLE_BYTES = 20 * 1024 * 1024;
+
+function claudeBundleCandidates(executable: string) {
+  const sdkExecutable = claudeAgentSdkExecutable(executable);
+  const npmBinary = path.join(
+    path.dirname(executable),
+    'node_modules',
+    '@anthropic-ai',
+    'claude-code',
+    'bin',
+    process.platform === 'win32' ? 'claude.exe' : 'claude',
+  );
+  return [...new Set([sdkExecutable, npmBinary, executable])];
+}
+
+/**
+ * Leest Claude Code's ingebakken modelcatalogus uit de geïnstalleerde binary.
+ * Wordt de catalogus niet herkend, dan levert dit een lege lijst op en blijft de
+ * app volledig op de officiële SDK-catalogus draaien.
+ */
+async function readClaudeModelRegistry(executable: string): Promise<ClaudeRegistryModel[]> {
+  for (const candidate of claudeBundleCandidates(executable)) {
+    try {
+      const stats = await fs.promises.stat(candidate);
+      if (!stats.isFile() || stats.size < MIN_CLAUDE_BUNDLE_BYTES) continue;
+      const models = await scanBundleForModelCatalog(candidate, stats.size);
+      if (models.length) return models;
+    } catch {
+      // Ontbrekende of onleesbare kandidaat: probeer de volgende.
+    }
+  }
+  return [];
+}
+
+async function scanBundleForModelCatalog(file: string, size: number): Promise<ClaudeRegistryModel[]> {
+  const anchor = catalogAnchor();
+  const chunkSize = 16 * 1024 * 1024;
+  const overlap = anchor.length;
+  const handle = await fs.promises.open(file, 'r');
+
+  try {
+    let position = 0;
+    let carry = '';
+
+    while (position < size) {
+      const length = Math.min(chunkSize, size - position);
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, position);
+      // De bundle is UTF-8, maar we zoeken naar ASCII; latin1 houdt de
+      // byte-offsets één-op-één zodat het leesvenster hieronder klopt.
+      const text = carry + buffer.toString('latin1');
+      const anchorIndex = text.indexOf(anchor);
+
+      if (anchorIndex >= 0) {
+        const catalogStart = position - carry.length + anchorIndex;
+        const window = Buffer.alloc(Math.min(catalogWindowBytes(), size - catalogStart));
+        await handle.read(window, 0, window.length, catalogStart);
+        const models = parseClaudeModelCatalog(window.toString('utf8'), 0);
+        if (models.length) return models;
+      }
+
+      carry = text.slice(-overlap);
+      position += length;
+    }
+  } finally {
+    await handle.close();
+  }
+
+  return [];
+}
+
 class ClaudeCliAdapter {
+  invalidateModelCache() {
+    invalidateCachedCliResults('claude-models-sdk:');
+    invalidateCachedCliResults('claude-registry:');
+  }
+
   async executable() {
     const store = await getStore();
     const configured = store.get('claude.executable') as string | undefined;
@@ -1533,23 +1640,71 @@ class ClaudeCliAdapter {
     const exe = await this.executable();
     if (!exe) return [];
 
-    // Claude CLI heeft geen stabiel `models list`-JSON-commando. Lees daarom
-    // uitsluitend de actuele --model-opties van de geïnstalleerde CLI; een
-    // oude storewaarde mag de live catalogus niet stil vervangen.
     const isAuthenticated = await this.isAuthenticated(exe);
     if (!isAuthenticated) return [];
 
     const helpText = await readCliHelpText(exe, claudeCliEnvironment());
-    const supportedEfforts = reasoningEffortsFromCliHelp(helpText);
-    return claudeCliModelsFromHelp(helpText)
+    const helpEfforts = reasoningEffortsFromCliHelp(helpText);
+    const liveCatalog = await cachedCliResult(
+      `claude-models-sdk:${executableFingerprint(exe)}`,
+      10 * 60_000,
+      async () => claudeCliModelsFromSupportedModels(await readClaudeSupportedModels(exe)),
+      (models) => models.length > 0,
+      { persist: false },
+    ).catch(() => []);
+    // Oude Claude Code-versies zonder supportedModels-control response blijven
+    // bruikbaar via hun beperkte --help-catalogus. Een lege live probe wordt
+    // bewust niet gecachet, zodat inloggen/updaten direct herstelbaar blijft.
+    const catalog = liveCatalog.length > 0 ? liveCatalog : claudeCliModelsFromHelp(helpText);
+    // Claude Code's eigen catalogus in de binary kent de echte contextvensters
+    // en de modellen die `supportedModels()` niet publiceert maar `--model` wel
+    // accepteert. Mislukt het lezen ervan, dan blijft alles hierboven staan.
+    const registry = await cachedCliResult(
+      `claude-registry:${executableFingerprint(exe)}`,
+      10 * 60_000,
+      async () => readClaudeModelRegistry(exe),
+      (models) => models.length > 0,
+      { persist: false },
+    ).catch((): ClaudeRegistryModel[] => []);
+
+    const published = catalog
       .filter((model) => model.id)
-      .map((model) => this.makeModel(
-        model.id,
-        model.name,
-        200000,
-        /haiku/i.test(model.id) ? 32000 : 64000,
-        supportedEfforts,
-      ));
+      .map((model) => {
+        const entry = findRegistryModel(registry, model.resolvedModel, model.id);
+        return {
+          id: model.id,
+          name: model.name,
+          entry,
+          // De SDK is leidend; kent die geen effortniveaus, dan beslist de
+          // catalogus van dit model — ook als die er geen kent, zoals Haiku.
+          // Pas zonder allebei blijft de generieke --help-lijst over.
+          efforts: model.supportedReasoningEfforts?.length
+            ? model.supportedReasoningEfforts
+            : entry
+              ? reasoningEffortsFromCapabilities(entry.capabilities)
+              : helpEfforts,
+        };
+      });
+
+    const additional = additionalRegistryModels(
+      registry,
+      published.flatMap((model) => [model.id, model.entry?.id || '']),
+    ).map((entry) => ({
+      id: entry.id,
+      name: entry.displayName,
+      entry,
+      efforts: reasoningEffortsFromCapabilities(entry.capabilities),
+    }));
+
+    return [...published, ...additional].map((model, catalogPriority) => this.makeModel(
+      model.id,
+      model.name,
+      model.entry?.contextWindow ?? (/\[1m\]/i.test(model.id) ? 1_000_000 : 200_000),
+      model.entry?.maxOutputTokens ?? (/haiku/i.test(model.id) ? 32000 : 64000),
+      model.efforts,
+      catalogPriority,
+      model.entry ? 'cli' : 'estimate',
+    ));
   }
 
   async sendChat(options: {
@@ -1677,10 +1832,12 @@ class ClaudeCliAdapter {
     contextWindow: number,
     maxOutput: number,
     supportedReasoningEfforts: ReasoningEffort[],
+    catalogPriority: number,
+    contextSource: ContextSource = 'estimate',
   ): AIModel {
     return {
       id: `claude-cli:${id}`,
-      name: `${name} (CLI)`,
+      name,
       provider: 'anthropic',
       contextWindow,
       maxOutputTokens: maxOutput,
@@ -1696,8 +1853,9 @@ class ClaudeCliAdapter {
       providerCategory: 'api',
       executionMode: 'chat',
       canChat: true,
-      contextSource: 'estimate',
+      contextSource,
       supportedReasoningEfforts,
+      catalogPriority,
     };
   }
 }
@@ -2218,7 +2376,9 @@ class CodexAdapter implements ProviderAdapter {
     const catalogPriority = Number(model.priority);
     const defaultReasoningEffort = selectAdvertisedReasoningEffort(
       supportedReasoningEfforts,
-      undefined,
+      // LLMelt kiest voor nieuwe Codex-chats High wanneer de live catalogus
+      // die stand aanbiedt. Ontbreekt High, dan blijft de providerdefault leidend.
+      supportedReasoningEfforts.includes('high') ? 'high' : undefined,
       model.default_reasoning_level,
     );
     const contextWindow = numericCatalogField(model, ['context_window', 'contextWindow', 'max_input_tokens', 'maxInputTokens']) || DEFAULT_CONTEXT.codex;
@@ -2268,40 +2428,32 @@ class AntigravityAdapter implements ProviderAdapter {
   id: ProviderType = 'antigravity';
 
   invalidateModelCache() {
-    invalidateCachedCliResults('agy-models:');
+    invalidateCachedCliResults('agy-models-v2:');
   }
 
   // Haalt de modellen live op via `agy models`. Recente CLI-versies leveren slugs
   // zoals `gemini-3.6-flash-medium`; oudere versies leverden displaynamen. De
   // renderer begrijpt beide vormen en deze ongewijzigde waarde blijft het --model-id.
-  private async fetchModelNames(exe: string): Promise<string[]> {
-    return cachedCliResult(`agy-models:${executableFingerprint(exe)}`, 3 * 60 * 60 * 1000, async () => {
+  private async fetchModels(exe: string) {
+    const cached = await cachedCliResult(`agy-models-v2:${executableFingerprint(exe)}`, 3 * 60 * 60 * 1000, async () => {
       const { text } = await runProcess(exe, ['models'], AbortSignal.timeout(20000), () => { }, undefined, os.homedir());
       return parseAntigravityModelCatalog(text);
     });
-  }
-
-  private async supportedReasoningEfforts(exe: string): Promise<ReasoningEffort[]> {
-    try {
-      return reasoningEffortsFromCliHelp(await readCliHelpText(exe));
-    } catch {
-      return [];
-    }
+    return normalizeAntigravityModelCatalog(cached);
   }
 
   async listModels(): Promise<AIModel[]> {
     const exe = await this.executable();
     if (!exe) return [];
-    let names: string[] = [];
+    let catalog = [] as Awaited<ReturnType<typeof this.fetchModels>>;
     try {
-      names = await this.fetchModelNames(exe);
+      catalog = await this.fetchModels(exe);
     } catch {
       return [];
     }
-    const supportedReasoningEfforts = await this.supportedReasoningEfforts(exe);
-    return names.map((name) => ({
-      id: name,
-      name,
+    return catalog.map((model, catalogPriority) => ({
+      id: model.id,
+      name: model.name,
       provider: 'antigravity',
       contextWindow: DEFAULT_CONTEXT.antigravity,
       maxOutputTokens: DEFAULT_OUTPUT.antigravity,
@@ -2314,12 +2466,12 @@ class AntigravityAdapter implements ProviderAdapter {
       surfaceLabel: 'Antigravity CLI',
       providerSurface: 'cli',
       limitScope: 'account',
-      limitGroupKey: limitGroupKey('antigravity', name),
+      limitGroupKey: limitGroupKey('antigravity', model.id),
       providerCategory: 'agent',
       executionMode: 'agent',
       canChat: true,
       contextSource: 'estimate',
-      supportedReasoningEfforts,
+      catalogPriority,
     }));
   }
 
@@ -2337,8 +2489,8 @@ class AntigravityAdapter implements ProviderAdapter {
       };
     }
     try {
-      const names = await this.fetchModelNames(exe);
-      if (!names.length) {
+      const catalog = await this.fetchModels(exe);
+      if (!catalog.length) {
         return {
           id: cryptoId(),
           keyMasked: path.basename(exe),
@@ -2353,8 +2505,8 @@ class AntigravityAdapter implements ProviderAdapter {
         keyMasked: path.basename(exe),
         provider: 'antigravity',
         status: 'valid',
-        models: topModels(names),
-        details: localizedText(language, `Antigravity CLI werkt — ${names.length} modellen beschikbaar.`, `Antigravity CLI works — ${names.length} models available.`),
+        models: topModels(catalog.map((model) => model.id)),
+        details: localizedText(language, `Antigravity CLI werkt — ${catalog.length} modellen beschikbaar.`, `Antigravity CLI works — ${catalog.length} models available.`),
       };
     } catch (error: any) {
       return {
@@ -2375,10 +2527,6 @@ class AntigravityAdapter implements ProviderAdapter {
     }
     const prompt = buildHistoryPrompt(request.messages, request.systemPrompt, request.attachments);
     const helpText = await readCliHelpText(exe).catch(() => '');
-    const supportedReasoningEfforts = reasoningEffortsFromCliHelp(helpText);
-    const reasoningEffort = supportedReasoningEfforts.includes(request.modelRef.runConfig?.reasoningEffort as ReasoningEffort)
-      ? request.modelRef.runConfig?.reasoningEffort
-      : undefined;
     const supportedModes = cliOptionChoicesFromHelp(helpText, 'mode');
     const requestedMode = request.modelRef.runConfig?.nativeProviderCommand?.kind === 'collaboration-mode'
       ? request.modelRef.runConfig.nativeProviderCommand.mode
@@ -2388,7 +2536,6 @@ class AntigravityAdapter implements ProviderAdapter {
       const native = await runAntigravityNative({
         exe,
         modelId: request.modelRef.modelId,
-        reasoningEffort,
         executionMode,
         prompt,
         cwd: request.cwd,
@@ -2427,7 +2574,6 @@ class AntigravityAdapter implements ProviderAdapter {
         '--sandbox',
         ...(promptTransport.file ? ['--add-dir', path.dirname(promptTransport.file)] : []),
         '--model', request.modelRef.modelId,
-        ...(reasoningEffort ? ['--effort', reasoningEffort] : []),
         '--print-timeout', '180s',
         '-p', promptTransport.prompt,
       ];
@@ -2711,286 +2857,6 @@ export async function readCliHelpText(executable: string, env: NodeJS.ProcessEnv
   ), (text) => !!text.trim(), { persist: false });
 }
 
-async function runProcess(
-  command: string,
-  args: string[],
-  signal: AbortSignal,
-  onDelta: (delta: string) => void,
-  input?: string,
-  cwd?: string,
-  env: NodeJS.ProcessEnv = agentCommandEnvironment(),
-  language: UiLanguage = 'nl',
-) {
-  if (signal.aborted) {
-    return Promise.reject(new ProviderRuntimeError(localizedText(language, 'Procesverzoek geannuleerd.', 'Process request cancelled.'), 'cancelled'));
-  }
-  return new Promise<{ text: string }>((resolve, reject) => {
-    // Windows kan een .cmd/.bat (zoals npm's `claude.cmd`) niet direct via spawn
-    // starten — dat gooit EINVAL sinds Node's security-fix. Draai die via
-    // `cmd.exe /c`; Node quote't de args dan veilig (geen shell-injectie).
-    const spawnSpec = cliSpawnSpec(command, args);
-    const proc = spawn(spawnSpec.command, spawnSpec.args, {
-      windowsHide: true,
-      cwd,
-      env,
-      windowsVerbatimArguments: spawnSpec.windowsVerbatimArguments,
-      stdio: input === undefined ? ['ignore', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
-    });
-    let text = '';
-    let errorText = '';
-    let settled = false;
-    const finish = (error?: ProviderRuntimeError) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutTimer);
-      signal.removeEventListener('abort', onAbort);
-      if (error) {
-        terminateProcessTree(proc);
-        reject(error);
-      } else {
-        resolve({ text });
-      }
-    };
-    const onAbort = () => finish(new ProviderRuntimeError(localizedText(language, 'Procesverzoek geannuleerd.', 'Process request cancelled.'), 'cancelled'));
-    const timeoutTimer = setTimeout(() => {
-      finish(new ProviderRuntimeError(localizedText(language, 'CLI-proces stopte niet binnen 600 seconden.', 'The CLI process did not finish within 600 seconds.'), 'network'));
-    }, 600_000);
-    signal.addEventListener('abort', onAbort);
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-
-    if (proc.stdin) {
-      // Avoid an unhandled EPIPE crash if the child closes stdin early.
-      proc.stdin.on('error', () => { });
-      if (input !== undefined) {
-        proc.stdin.write(input);
-      }
-      // Always close stdin. CLIs like `agy models` read stdin and block waiting
-      // for EOF; without this they hang until the abort timeout fires.
-      proc.stdin.end();
-    }
-
-    proc.stdout?.on('data', (data) => {
-      const delta = data.toString();
-      text += delta;
-      if (text.length > 5_000_000) {
-        finish(new ProviderRuntimeError(localizedText(language, 'CLI-uitvoer overschreed de limiet van 5 MB.', 'CLI output exceeded the 5 MB limit.'), 'provider_error'));
-        return;
-      }
-      onDelta(delta);
-    });
-    proc.stderr?.on('data', (data) => {
-      errorText = `${errorText}${data.toString()}`.slice(-100_000);
-    });
-    proc.on('error', (error) => finish(new ProviderRuntimeError(error.message, 'provider_error')));
-    proc.on('close', (code) => {
-      if (code !== 0) {
-        finish(new ProviderRuntimeError(errorText || localizedText(language, `${path.basename(command)} stopte met code ${code ?? 'onbekend'}`, `${path.basename(command)} exited with code ${code ?? 'unknown'}`), 'provider_error'));
-      } else {
-        finish();
-      }
-    });
-  });
-}
-
-async function runCodexAgent(options: {
-  exe: string;
-  args: string[];
-  prompt: string;
-  signal: AbortSignal;
-  timeoutSeconds: number;
-  onStatus: (status: string) => void;
-  language?: UiLanguage;
-}) {
-  const language = options.language || 'nl';
-  if (options.signal.aborted) throw new ProviderRuntimeError(localizedText(language, 'Codex-verzoek geannuleerd.', 'Codex request cancelled.'), 'cancelled');
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ai-superapp-codex-'));
-  const outputFile = path.join(dir, 'last-message.txt');
-
-  try {
-    const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-      const args = [...options.args, '--output-last-message', outputFile, '-'];
-      const spawnSpec = cliSpawnSpec(options.exe, args);
-      const proc = spawn(spawnSpec.command, spawnSpec.args, {
-        windowsHide: true,
-        cwd: dir,
-        env: agentCommandEnvironment(),
-        windowsVerbatimArguments: spawnSpec.windowsVerbatimArguments,
-      });
-      const startedAt = Date.now();
-      let stdout = '';
-      let stderr = '';
-      let stdoutBuffer = '';
-      let settled = false;
-
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        clearInterval(statusTimer);
-        clearTimeout(timeoutTimer);
-        options.signal.removeEventListener('abort', abortHandler);
-        if (error) {
-          terminateProcessTree(proc);
-          reject(error);
-        } else {
-          resolve({ stdout, stderr });
-        }
-      };
-
-      const publishStatus = () => {
-        const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-        options.onStatus(localizedText(language, `Codex draait: ${seconds}s`, `Codex is running: ${seconds}s`));
-      };
-
-      const statusTimer = setInterval(publishStatus, 1000);
-      const timeoutTimer = setTimeout(() => {
-        finish(new ProviderRuntimeError(localizedText(language, `Codex stopte niet binnen ${options.timeoutSeconds}s.`, `Codex timed out after ${options.timeoutSeconds}s.`), 'network'));
-      }, Math.max(1, options.timeoutSeconds) * 1000);
-      const abortHandler = () => finish(new ProviderRuntimeError(localizedText(language, 'Codex-verzoek geannuleerd.', 'Codex request cancelled.'), 'cancelled'));
-
-      options.signal.addEventListener('abort', abortHandler);
-      publishStatus();
-
-      proc.stdin.on('error', () => {
-        // Een vroeg gestopte npm-shim mag geen onbehandelde EPIPE veroorzaken.
-      });
-
-      proc.stdout.on('data', (data) => {
-        const chunk = data.toString();
-        stdout += chunk;
-        stdoutBuffer += chunk;
-        const lines = stdoutBuffer.split(/\r?\n/);
-        stdoutBuffer = lines.pop() || '';
-        for (const line of lines) parseCodexJsonStatus(line, options.onStatus, language);
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      proc.on('error', (error) => finish(new ProviderRuntimeError(error.message, 'provider_error')));
-      proc.on('close', (code) => {
-        if (stdoutBuffer) parseCodexJsonStatus(stdoutBuffer, options.onStatus, language);
-        if (code !== 0) {
-          const codexError = extractCodexError(stdout) || extractCodexError(stderr);
-          finish(new ProviderRuntimeError(
-            codexError || cleanProcessError(stderr || stdout || localizedText(language, `Codex stopte met code ${code ?? 'onbekend'}`, `Codex exited with code ${code ?? 'unknown'}`), language),
-            codexError && /usage limit|rate limit|quota/i.test(codexError) ? 'rate_limit' : 'provider_error',
-          ));
-          return;
-        }
-        finish();
-      });
-
-      proc.stdin.write(options.prompt);
-      proc.stdin.end();
-    });
-
-    const fileText = await fs.promises.readFile(outputFile, 'utf8').catch(() => '');
-    const text = normalizeCodexFinalText(fileText) || extractCodexFinalText(result.stdout);
-    if (!text) {
-      const codexError = extractCodexError(result.stdout) || extractCodexError(result.stderr);
-      throw new ProviderRuntimeError(
-        codexError || cleanProcessError(result.stderr || result.stdout || localizedText(language, 'Codex gaf geen eindantwoord terug.', 'Codex returned no final message.'), language),
-        codexError && /usage limit|rate limit|quota/i.test(codexError) ? 'rate_limit' : 'provider_error',
-      );
-    }
-    return { text };
-  } finally {
-    await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => { });
-  }
-}
-
-function parseCodexJsonStatus(line: string, onStatus: (status: string) => void, language: UiLanguage = 'nl') {
-  if (!line.trim()) return;
-  try {
-    const event = JSON.parse(line);
-    const type = String(event.type || event.event || event.msg?.type || '');
-    if (/error/i.test(type)) {
-      const message = event.message || event.error?.message || event.msg?.message;
-      if (message) onStatus(localizedText(language, `Codex-fout: ${message}`, `Codex error: ${message}`));
-      return;
-    }
-    if (/tool|exec|command|turn|task|agent/i.test(type)) {
-      onStatus(localizedText(language, `Codex-agent: ${type}`, `Codex agent: ${type}`));
-    }
-  } catch {
-    // Non-JSON output is intentionally ignored; the final answer comes from --output-last-message.
-  }
-}
-
-function extractCodexError(output: string): string | null {
-  // Codex exec emits a JSON event stream. On failure it includes error /
-  // turn.failed events with the real message (e.g. "You've hit your usage limit…").
-  // Pull that out instead of dumping the whole stream.
-  for (const line of output.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('{')) continue;
-    try {
-      const event = JSON.parse(trimmed);
-      const type = String(event.type || '');
-      const candidate =
-        event.error?.message ||
-        (type === 'error' ? event.message : undefined) ||
-        (type === 'item.completed' && event.item?.type === 'error' ? event.item?.message : undefined);
-      // The "malformed agent role" line is a non-fatal config warning, not the cause.
-      if (candidate && !/malformed agent role/i.test(String(candidate))) {
-        return String(candidate);
-      }
-    } catch {
-      // ignore non-JSON lines
-    }
-  }
-  return null;
-}
-
-function normalizeCodexFinalText(text: string) {
-  return text.replace(/\r\n/g, '\n').trim();
-}
-
-function extractCodexFinalText(stdout: string) {
-  const normalized = normalizeCodexFinalText(stdout);
-  const codexBlock = normalized.match(/\ncodex\n([\s\S]*?)(?:\ntokens used|$)/i);
-  if (codexBlock?.[1]?.trim()) return codexBlock[1].trim();
-
-  const jsonMessages = normalized
-    .split(/\r?\n/)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean)
-    .map((event: any) => event.message || event.text || event.msg?.message || event.msg?.content || '')
-    .filter((value: string) => value && typeof value === 'string');
-  if (jsonMessages.length) return jsonMessages[jsonMessages.length - 1].trim();
-
-  return normalized
-    .split(/\r?\n/)
-    .filter((line) => !/^(OpenAI Codex|[-]{5,}|workdir:|model:|provider:|approval:|sandbox:|reasoning|session id:|user$|codex$|tokens used|\d[\d.]*$)/i.test(line.trim()))
-    .filter((line) => !/\bWARN\b|\bERROR\b/.test(line))
-    .join('\n')
-    .trim();
-}
-
-function cleanProcessError(text: string, language: UiLanguage = 'nl') {
-  const normalized = text.replace(/\r\n/g, '\n').trim();
-  // Strip Codex/CLI log noise (timestamped WARN/INFO/DEBUG lines) so the real
-  // error surfaces instead of a wall of warnings.
-  const cleaned = normalized
-    .split('\n')
-    .filter((line) => !/\b(WARN|INFO|DEBUG|TRACE)\b/.test(line))
-    .filter((line) => !/^\d{4}-\d\d-\d\dT[\d:.]+Z?\s/.test(line.trim()))
-    .join('\n')
-    .trim();
-  if (cleaned) return cleaned.slice(0, 2000);
-  return localizedText(language, 'De CLI gaf geen leesbaar antwoord, alleen waarschuwingen. Controleer je CLI-configuratie/plugins en of het gekozen model beschikbaar is.', 'The CLI returned no readable response, only warnings. Check your CLI configuration/plugins and whether the selected model is available.');
-}
-
 function cryptoId() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -3166,34 +3032,6 @@ export function createAdapters(): Record<ProviderType, ProviderAdapter> {
     antigravity: new AntigravityAdapter(),
     remote: new RemoteAdapter(),
   };
-}
-
-export function classifyProviderError(error: unknown, language: UiLanguage = 'nl'): { reason: FallbackReason; message: string; rateLimit?: RateLimitSnapshot } {
-  const message = (error as any)?.message || String(error);
-  // Een gedeeltelijk uitgevoerde native beurt mag naar een fallback, omdat de
-  // IPC-laag de uitgevoerde acties nu duurzaam bijhoudt en duplicaten blokkeert.
-  // Een expliciet safety-signaal blijft echter altijd leidend; adapters zetten
-  // dit alleen wanneer hervatten aantoonbaar onveilig is.
-  if ((error as any)?.preventFallback === true) return { reason: 'provider_error', message };
-  if (error instanceof ProviderRuntimeError) {
-    return { reason: error.reason, message: error.message, rateLimit: error.rateLimit };
-  }
-  if ((error as any)?.name === 'AbortError') {
-    return { reason: 'cancelled', message: localizedText(language, 'Verzoek geannuleerd.', 'Request cancelled.') };
-  }
-  if (/\b(?:rate[\s_-]*limit(?:ed|ing|s)?|too many requests|resource[\s_-]*exhausted|usage (?:credits?|limit))\b|\bquota\b|\b429\b/i.test(message)) {
-    return { reason: 'rate_limit', message };
-  }
-  if (/context|token limit|too large/i.test(message)) return { reason: 'context_exceeded', message };
-  if (/\b(?:auth(?:entication|orization)?|unauthori[sz]ed|forbidden)\b|\b(?:api|access|secret)[\s_-]*key\b|\bkey\b.{0,40}\b(?:invalid|missing|expired|required)\b|\b(?:401|403)\b/i.test(message)) {
-    return { reason: 'auth_failed', message };
-  }
-  if (/network|fetch|timeout|socket|dns/i.test(message)) return { reason: 'network', message };
-  return { reason: 'provider_error', message };
-}
-
-export function rateLimitKey(snapshot: RateLimitSnapshot) {
-  return snapshot.limitGroupKey || modelKey(snapshot.provider, snapshot.modelId);
 }
 
 export async function createPromptTempFile(prompt: string) {

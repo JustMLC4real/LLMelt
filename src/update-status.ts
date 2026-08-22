@@ -14,6 +14,9 @@ export type UpdateStatus =
   | { state: 'downloaded'; version: string }
   | { state: 'installing'; version?: string }
   | { state: 'error'; error: string; version?: string }
+  // Het gekozen kanaal bestaat wel maar bevat geen enkele release. Dat is
+  // een normale uitkomst, geen storing: geen badge en geen foutkleur.
+  | { state: 'no-release'; channel?: string }
 
 type DownloadProgress = {
   percent?: number
@@ -97,6 +100,8 @@ export function updateStatusLabel(
       return status.version
         ? translate('updates.status.upToDateVersion', { version: status.version })
         : translate('updates.status.upToDate')
+    case 'no-release':
+      return translate('updates.status.noRelease', { channel: status.channel || '' })
     case 'error':
       return translate('updates.status.error', { error: status.error })
     default:
@@ -118,6 +123,7 @@ function defaultDutchUpdateTranslator(
     'updates.status.upToDateVersion': 'Je hebt de nieuwste versie ({{version}}).',
     'updates.status.upToDate': 'Je hebt de nieuwste versie.',
     'updates.status.error': 'Update mislukt: {{error}}',
+    'updates.status.noRelease': 'Geen updates op kanaal {{channel}}.',
     'updates.status.current': 'Huidige versie: {{version}}',
   }
   return (values[key] || key).replace(/{{(\w+)}}/g, (_match, name: string) => String(options[name] ?? ''))

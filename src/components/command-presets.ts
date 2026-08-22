@@ -33,7 +33,7 @@ export type ParsedCommand = {
 export type NativeRunControls = {
   reasoningEfforts: ReasoningEffort[];
   serviceTiers: ServiceTier[];
-  chatgptThinkingEfforts: Array<{ value: string; label: string; description?: string }>;
+  chatgptThinkingEfforts: { value: string; label: string; description?: string }[];
 };
 
 type LocalizedCommandCopy = Record<LlmeltCommandPresetId, {
@@ -131,7 +131,10 @@ export function nativeRunControls(model?: AIModel): NativeRunControls {
   return {
     reasoningEfforts: unique(model?.supportedReasoningEfforts || []),
     serviceTiers: unique(model?.supportedServiceTiers || []),
-    chatgptThinkingEfforts: uniqueBy(model?.chatgptThinkingEfforts || [], (effort) => effort.value),
+    chatgptThinkingEfforts: uniqueBy(
+      model?.chatgptConfigurableEffort ? model.chatgptThinkingEfforts || [] : [],
+      (effort) => effort.value,
+    ),
   };
 }
 
@@ -161,18 +164,25 @@ export function commandPresetsForModel(
   language: CommandLanguage,
   provider: ProviderType,
   model?: AIModel,
+  nativeCommands: NativeProviderCommand[] = [],
 ): CommandPreset[] {
   const controls = nativeRunControls(model);
   const hasFast = controls.reasoningEfforts.length > 1
     || controls.serviceTiers.length > 0
     || controls.chatgptThinkingEfforts.length > 1;
-  const hasDeep = controls.reasoningEfforts.length > 1 || controls.chatgptThinkingEfforts.length > 1;
+  const hasDeep = controls.reasoningEfforts.length > 1
+    || controls.chatgptThinkingEfforts.length > 1;
+  const hasNativePlan = nativeCommands.some((command) => command.kind === 'collaboration-mode' && command.mode === 'plan');
+  const hasNativeGoal = nativeCommands.some((command) => command.kind === 'goal');
+  const hasNativeReview = nativeCommands.some((command) => command.kind === 'review');
 
-  // Alleen modelpresets die LLMelt echt op live providercontrols kan toepassen.
-  // Plan/goal/review komen niet langer als namaak-native commando bij elke
-  // provider terug; Codex levert die via App Server en Claude via zijn TUI.
+  // Providerneutrale LLMelt-workflows blijven beschikbaar wanneer de provider
+  // geen gelijkwaardige native actie publiceert. Fast/deep verschijnen alleen
+  // wanneer het actuele model daarvoor echte live controls heeft.
   return (Object.keys(COMMAND_COPY[language]) as LlmeltCommandPresetId[])
-    .filter((id) => id === 'fast' || id === 'deep' || id === 'reset')
+    .filter((id) => id !== 'plan' || !hasNativePlan)
+    .filter((id) => id !== 'goal' || !hasNativeGoal)
+    .filter((id) => id !== 'review' || !hasNativeReview)
     .filter((id) => id !== 'fast' || hasFast)
     .filter((id) => id !== 'deep' || hasDeep)
     .filter((id) => id !== 'reset' || hasFast || hasDeep)
@@ -363,7 +373,7 @@ function uniqueBy<T>(values: T[], key: (value: T) => string): T[] {
   const seen = new Set<string>();
   return values.filter((value) => {
     const id = key(value);
-    if (!id || seen.has(id)) return false;
+    if (seen.has(id)) return false;
     seen.add(id);
     return true;
   });

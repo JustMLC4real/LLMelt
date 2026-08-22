@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { updateNeedsAttention } from './stores/update-store'
 import {
   downloadingStatus,
   formatUpdateBytes,
@@ -44,5 +45,24 @@ describe('app-updatestatus', () => {
     expect(formatUpdateBytes(Number.NaN)).toBe('0 B')
     expect(downloadingStatus({ percent: 170 }).percent).toBe(100)
     expect(downloadingStatus({ percent: -10 }).percent).toBe(0)
+  })
+})
+
+describe('leeg updatekanaal', () => {
+  it('meldt een leeg kanaal zonder de rauwe HTTP-fout', () => {
+    const label = updateStatusLabel({ state: 'no-release', channel: 'stable' }, '0.2.1')
+
+    expect(label).toBe('Geen updates op kanaal stable.')
+    expect(label).not.toContain('HttpError')
+  })
+
+  it('telt niet als iets waarvoor de zijbalk aandacht vraagt', () => {
+    expect(updateNeedsAttention('no-release')).toBe(false)
+    expect(updateNeedsAttention('error')).toBe(true)
+  })
+
+  it('laat een echte storing wel gewoon zien', () => {
+    expect(updateStatusLabel({ state: 'error', error: 'net::ERR_INTERNET_DISCONNECTED' }, '0.2.1'))
+      .toContain('net::ERR_INTERNET_DISCONNECTED')
   })
 })

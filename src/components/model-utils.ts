@@ -171,7 +171,12 @@ export function compactModelChoiceLabel(
 }
 
 export function selectableModels(models: AIModel[]) {
-  return models.filter((model) => model.canChat !== false && model.executionMode !== 'connector');
+  return models.filter((model) => typeof model?.id === 'string'
+    && model.id.trim().length > 0
+    && typeof model.name === 'string'
+    && model.name.trim().length > 0
+    && model.canChat !== false
+    && model.executionMode !== 'connector');
 }
 
 /**
@@ -276,9 +281,60 @@ export function chatgptModels(models: AIModel[]) {
 
 // Live thinking-effort options for a specific model, straight from the API.
 // Empty array = no configurable effort for this model.
-export function chatgptEffortsForModel(model?: AIModel): { value: string; label: string }[] {
+export function chatgptEffortsForModel(
+  model?: AIModel,
+  versions: ChatgptVersion[] = [],
+): { value: string; label: string }[] {
   if (!model || !model.chatgptConfigurableEffort) return [];
-  return (model.chatgptThinkingEfforts || []).map((e) => ({ value: e.value, label: e.label }));
+  return (model.chatgptThinkingEfforts || []).map((effort) => ({
+    value: effort.value,
+    // Gebruik dezelfde live intelligence_presets als de hoofdselector. De
+    // thinking-effort blijft uitsluitend de wire-waarde naar ChatGPT.
+    label: chatgptPresetFor(versions, model.id, effort.value)?.preset.title || effort.label,
+  }));
+}
+
+export type ChatgptRunLevel = {
+  key: string;
+  label: string;
+  modelId: string;
+  thinkingEffort?: string;
+  available: boolean;
+  versionId: string;
+};
+
+/**
+ * Geef voor Run-instellingen exact dezelfde rij en presets terug als de
+ * hoofdselector. Een preset kan naar een ander model wijzen; daarom bevat elk
+ * resultaat zowel de zichtbare titel als het echte model-id.
+ */
+export function chatgptRunLevels(
+  versions: ChatgptVersion[],
+  modelId: string,
+  thinkingEffort?: string,
+  preferredVersionId?: string,
+): ChatgptRunLevel[] {
+  const enabled = versions.filter((version) => version.enabled);
+  const slug = modelId.replace(/^chatgpt:/, '');
+  const version = enabled.find((candidate) => candidate.id === preferredVersionId)
+    || enabled.find((candidate) => candidate.presets.some((preset) => (
+      preset.modelSlug === slug
+      && (preset.thinkingEffort || undefined) === (thinkingEffort || undefined)
+    )))
+    || enabled.find((candidate) => candidate.slugs.includes(slug))
+    || enabled.find((candidate) => candidate.presets.some((preset) => preset.modelSlug === slug));
+
+  return (version?.presets || []).map((preset) => {
+    const presetModelId = `chatgpt:${preset.modelSlug}`;
+    return {
+      key: chatgptLevelKey(presetModelId, preset.thinkingEffort),
+      label: preset.subtitle ? `${preset.title} · ${preset.subtitle}` : preset.title,
+      modelId: presetModelId,
+      thinkingEffort: preset.thinkingEffort,
+      available: preset.available,
+      versionId: version!.id,
+    };
+  });
 }
 
 /**
@@ -344,7 +400,8 @@ export function chatgptPresetLabel(versions: ChatgptVersion[], modelId: string, 
 export function claudeCliModels(models: AIModel[]) {
   return selectableModels(models)
     .filter((model) => model.provider === 'anthropic' && model.id.startsWith('claude-cli:'))
-    .sort((a, b) => compareClaudeCliModel(a, b));
+    .sort((a, b) => (a.catalogPriority ?? Number.MAX_SAFE_INTEGER) - (b.catalogPriority ?? Number.MAX_SAFE_INTEGER)
+      || modelDisplayName(a).localeCompare(modelDisplayName(b), undefined, { numeric: true }));
 }
 
 export function parseClaudeCliModel(model?: AIModel, language: UiLanguage = 'nl'): { family: string; version: string } {
@@ -354,16 +411,13 @@ export function parseClaudeCliModel(model?: AIModel, language: UiLanguage = 'nl'
     .replace(/^Claude\s+/i, '')
     .replace(/\s*\(CLI\)\s*$/i, '')
     .trim();
-  const match = name.match(/^([A-Za-z]+)\s+(.+)$/);
-  if (!match) return { family: name || 'Claude', version: localizedText(language, 'Standaard', 'Standard') };
-  return { family: capitalize(match[1]), version: match[2].trim() };
+  const match = name.match(/^([A-Za-z]+)(?:\s+(.+))?$/);
+  if (!match) return { family: name || 'Claude', version: '' };
+  return { family: capitalize(match[1]), version: match[2]?.trim() || '' };
 }
 
-// Volgorde op capaciteit, sterkste eerst. Fable staat boven Opus (krachtiger).
-const CLAUDE_FAMILY_ORDER = ['Fable', 'Opus', 'Sonnet', 'Haiku'];
-
 export function claudeCliFamilies(models: AIModel[], language: UiLanguage = 'nl') {
-  return orderBy(Array.from(new Set(claudeCliModels(models).map((model) => parseClaudeCliModel(model, language).family))), CLAUDE_FAMILY_ORDER);
+  return Array.from(new Set(claudeCliModels(models).map((model) => parseClaudeCliModel(model, language).family))).filter(Boolean);
 }
 
 export function claudeCliVersionsFor(models: AIModel[], family: string, language: UiLanguage = 'nl') {
@@ -504,16 +558,6 @@ function orderBy(values: string[], preferredOrder: readonly string[]) {
       if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
       return a.localeCompare(b);
     });
-}
-
-function compareClaudeCliModel(a: AIModel, b: AIModel) {
-  const pa = parseClaudeCliModel(a);
-  const pb = parseClaudeCliModel(b);
-  const familyOrder = ['Opus', 'Sonnet', 'Haiku', 'Fable'];
-  const af = familyOrder.indexOf(pa.family);
-  const bf = familyOrder.indexOf(pb.family);
-  if (af !== bf) return (af === -1 ? 999 : af) - (bf === -1 ? 999 : bf);
-  return compareVersionLike(pb.version, pa.version);
 }
 
 function compareVersionLike(a: string, b: string) {

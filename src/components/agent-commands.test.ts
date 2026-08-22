@@ -394,6 +394,78 @@ describe('file tool payload validation', () => {
     }
   });
 
+  it('removes ChatGPT code-block controls from a Python file before writing', () => {
+    const normalized = normalizeFileToolPayload({
+      type: 'file-create',
+      path: 'simpel_script.py',
+      content: [
+        'Python',
+        'Uitvoeren',
+        'def main():',
+        '    print("Hallo vanuit Python!")',
+        '',
+        'if __name__ == "__main__":',
+        '    main()',
+        '```',
+      ].join('\n'),
+      overwrite: true,
+    });
+
+    expect(normalized.changed).toBe(true);
+    expect(validateFileToolPayload(normalized.call).ok).toBe(true);
+    if (normalized.call.type === 'file-create') {
+      expect(normalized.call.content).toBe([
+        'def main():',
+        '    print("Hallo vanuit Python!")',
+        '',
+        'if __name__ == "__main__":',
+        '    main()',
+        '',
+      ].join('\n'));
+    }
+  });
+
+  it('removes the real two-backtick ChatGPT Web residue before creating Python files', () => {
+    const reply = [
+      '<file-create path="dobbelsteen.py" source="next-fence"></file-create>',
+      '```python',
+      'import random',
+      '',
+      'print(f"Je gooide een {random.randint(1, 6)}!")',
+      '``',
+      '```',
+    ].join('\n');
+    const calls = parseAgentToolCalls(reply, { includeShellFences: false });
+    expect(calls).toHaveLength(1);
+
+    const call = calls[0];
+    if (call.type !== 'file-create') throw new Error('Expected file-create');
+    const normalized = normalizeFileToolPayload(call);
+
+    expect(normalized.changed).toBe(true);
+    expect(normalized.call).toMatchObject({
+      type: 'file-create',
+      content: [
+        'import random',
+        '',
+        'print(f"Je gooide een {random.randint(1, 6)}!")',
+      ].join('\n'),
+    });
+    expect(validateFileToolPayload(normalized.call)).toEqual({ ok: true });
+  });
+
+  it('rejects a remaining partial Python fence instead of accepting corrupt source', () => {
+    const result = validateFileToolPayload({
+      type: 'file-create',
+      path: 'raad_getal.py',
+      content: 'print("Raad het getal")\n``\nprint("Dit mag nooit worden geschreven")',
+      overwrite: false,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/onvolledige Markdown-fence/i);
+  });
+
   it('normalizes file-edit replacement content too', () => {
     const normalized = normalizeFileToolPayload({
       type: 'file-edit',

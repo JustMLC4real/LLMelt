@@ -1,3 +1,6 @@
+import type { UiLanguage } from '../providers/types';
+import { cleanChatGptCodeBlockText } from '../providers/chatgpt-code-block';
+
 const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'powershell', 'pwsh', 'ps1', 'cmd', 'bat']);
 
 const SAFE_SINGLE_WORD_COMMANDS = new Set([
@@ -437,6 +440,14 @@ export function validateFileToolPayload(call: Extract<AgentToolCall, { type: 'fi
   }
 
   if (ext === '.py') {
+    if (/^\s*`{1,2}\s*$/m.test(content)) {
+      return {
+        ok: false,
+        message: language === 'en'
+          ? 'Python file contains an incomplete Markdown fence; provide only raw Python source.'
+          : 'Python-bestand bevat een onvolledige Markdown-fence; geef alleen ruwe Python-broncode.',
+      };
+    }
     if (content.charCodeAt(0) === 0xfeff) {
       return { ok: false, message: language === 'en' ? 'Python file starts with a BOM; write UTF-8 without BOM.' : 'Python-bestand begint met een BOM; schrijf UTF-8 zonder BOM.' };
     }
@@ -952,6 +963,12 @@ function normalizeSourcePayloadContent(content: string, ext: string, language: U
     messages.push(language === 'en' ? 'Markdown code fence removed automatically' : 'Markdown code fence automatisch verwijderd');
   }
 
+  const withoutChatGptChrome = cleanChatGptCodeBlockText(next, sourceLanguageHint(ext));
+  if (withoutChatGptChrome !== next) {
+    next = withoutChatGptChrome;
+    messages.push(language === 'en' ? 'ChatGPT code-block controls removed' : 'ChatGPT-codeblokbediening verwijderd');
+  }
+
   if (ext === '.py') {
     const python = normalizePythonPayload(next, language);
     if (python.content !== next) {
@@ -966,6 +983,17 @@ function normalizeSourcePayloadContent(content: string, ext: string, language: U
       ? `${messages.join('; ') || 'Source code normalized automatically'}; source code was stored as raw file contents.`
       : `${messages.join('; ') || 'Broncode automatisch genormaliseerd'}; broncode is als ruwe bestandsinhoud opgeslagen.`,
   };
+}
+
+function sourceLanguageHint(ext: string): string {
+  const hints: Record<string, string> = {
+    '.bat': 'bat', '.cmd': 'cmd', '.css': 'css', '.go': 'go', '.html': 'html',
+    '.java': 'java', '.js': 'javascript', '.jsx': 'jsx', '.json': 'json', '.php': 'php',
+    '.ps1': 'powershell', '.py': 'python', '.rb': 'ruby', '.rs': 'rust', '.sh': 'shell',
+    '.sql': 'sql', '.swift': 'swift', '.ts': 'typescript', '.tsx': 'tsx', '.xml': 'xml',
+    '.yaml': 'yaml', '.yml': 'yaml',
+  };
+  return hints[ext] || '';
 }
 
 function normalizePythonPayload(content: string, language: UiLanguage = 'nl'): { content: string; messages: string[] } {
@@ -1087,4 +1115,3 @@ function shellForSlash(value: string): AgentShell | undefined {
   if (normalized === 'pwsh') return 'pwsh';
   return undefined;
 }
-import type { UiLanguage } from '../providers/types';

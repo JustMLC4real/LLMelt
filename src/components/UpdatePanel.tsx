@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { RefreshCw, RotateCcw } from 'lucide-react'
+import { FlaskConical, PackageCheck, RefreshCw, RotateCcw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { UpdateStatus } from '../update-status'
 import { updateProgressDetails, updateStatusLabel } from '../update-status'
+import { type UpdateChannel } from '../update-channel'
+import { SegmentedControl } from './ui'
 
 type BusyAction = 'check' | 'install' | null
 type UpdaterResult = {
@@ -17,6 +19,8 @@ const UpdatePanel: React.FC = () => {
   const [currentVersion, setCurrentVersion] = useState('')
   const [supported, setSupported] = useState(true)
   const [busyAction, setBusyAction] = useState<BusyAction>(null)
+  const [channel, setChannel] = useState<UpdateChannel>('stable')
+  const [buildChannel, setBuildChannel] = useState<UpdateChannel>('stable')
 
   useEffect(() => {
     window.electronAPI?.updater?.getStatus?.()
@@ -24,6 +28,8 @@ const UpdatePanel: React.FC = () => {
         if (result?.status) setStatus(result.status as UpdateStatus)
         setCurrentVersion(result?.currentVersion || '')
         setSupported(Boolean(result?.supported))
+        if (result?.channel) setChannel(result.channel as UpdateChannel)
+        if (result?.buildChannel) setBuildChannel(result.buildChannel as UpdateChannel)
       })
       .catch(() => {})
     const off = window.electronAPI?.updater?.onStatus?.((next) => {
@@ -58,6 +64,20 @@ const UpdatePanel: React.FC = () => {
 
   const check = () => run('check', () => window.electronAPI?.updater?.check?.())
   const install = () => run('install', () => window.electronAPI?.updater?.install?.())
+
+  // Van kanaal wisselen laat het hoofdproces meteen opnieuw zoeken; de status
+  // die daaruit volgt komt via onStatus binnen.
+  const changeChannel = async (next: UpdateChannel) => {
+    if (next === channel) return
+    const previous = channel
+    setChannel(next)
+    const result = await window.electronAPI?.updater?.setChannel?.(next)
+    if (result && !result.ok) {
+      setChannel(previous)
+      setStatus({ state: 'error', error: result.error || t('updates.unknownError') })
+    }
+  }
+
   const locale = i18n.resolvedLanguage?.startsWith('nl') ? 'nl-NL' : 'en-US'
   const progressDetails = updateProgressDetails(status, locale, t('updates.of'))
   const isDownloading = status.state === 'downloading'
@@ -78,12 +98,34 @@ const UpdatePanel: React.FC = () => {
         <span className="text-xs text-muted">v{currentVersion || '—'}</span>
       </div>
 
+      <div style={{ marginBottom: 'var(--space-3)' }}>
+        <div className="field-label">{t('updates.channel.label')}</div>
+        <SegmentedControl<UpdateChannel>
+          value={channel}
+          onChange={changeChannel}
+          options={[
+            { value: 'stable', label: t('updates.channel.stable'), icon: PackageCheck },
+            { value: 'prerelease', label: t('updates.channel.prerelease'), icon: FlaskConical },
+          ]}
+        />
+        <div className="text-xs text-muted" style={{ marginTop: 'var(--space-2)' }}>
+          {channel === buildChannel
+            ? t('updates.channel.buildHint', { channel: t(`updates.channel.${buildChannel}`).toLowerCase() })
+            : t('updates.channel.overridden', { channel: t(`updates.channel.${channel}`).toLowerCase() })}
+        </div>
+      </div>
+
       {!supported ? (
         <div className="text-sm text-muted">{t('updates.installedOnly')}</div>
       ) : (
         <>
           <div className="text-sm mb-3" style={{ color: tone }}>
-            {updateStatusLabel(status, currentVersion, (key, options) => t(key, options))}
+            {updateStatusLabel(status, currentVersion, (key, options) => t(key, {
+              ...options,
+              // De statusmelding draagt het kanaal als sleutel; de leesbare naam
+              // staat in dezelfde catalogus als de knoppen erboven.
+              ...(options?.channel ? { channel: t(`updates.channel.${options.channel}`) } : {}),
+            }))}
           </div>
 
           {isDownloading && (

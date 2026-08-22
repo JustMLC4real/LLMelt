@@ -97,9 +97,11 @@ const MAX_STAGNANT_ROUNDS = 2;
 // Ollama stuurt native toolcalls pas terug wanneer de generatie klaar is. Zonder
 // uitvoergrens kan een lokaal model daarom minutenlang blijven genereren voordat
 // LLMelt ook maar één toolcall ziet. Een toolronde voert hier bewust maximaal één
-// call uit; 2048 tokens is ruim voor de argumenten van die ene call en houdt een
-// ontspoorde generatie begrensd. Temperatuur 0 maakt dezelfde herstelronde stabiel.
-const OLLAMA_NATIVE_MAX_PREDICT = 2_048;
+// call uit. Een write_file-call kan zelf enkele duizenden tokens broncode bevatten;
+// 4096 voorkomt dat Ollama zo'n geldige function call vlak voor de afsluitende JSON
+// afkapt. De ronde- en stagnatiegrenzen houden ontspoorde generaties alsnog begrensd.
+// Temperatuur 0 maakt dezelfde herstelronde stabiel.
+const OLLAMA_NATIVE_MAX_PREDICT = 4_096;
 const OLLAMA_NATIVE_TOOL_GUIDANCE_NL = [
   'Je gebruikt door LLMelt beheerde PC-tools in een meerstaps-tool-loop.',
   'Toolresultaten zijn JSON: controleer altijd ok en errorCode.',
@@ -171,6 +173,7 @@ export async function runOllamaNative(options: RunOllamaNativeOptions): Promise<
   let auditedExecutionCount = -1;
   let retriedToolProtocol = false;
   let completionGatePasses = 0;
+  let incompleteRetriesAtCurrentEpoch = 0;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     options.onStatus?.(round
       ? localizedText(language, `Ollama verwerkt tool-output (${round + 1}/${MAX_TOOL_ROUNDS})`, `Ollama is processing tool output (${round + 1}/${MAX_TOOL_ROUNDS})`)
@@ -238,6 +241,39 @@ export async function runOllamaNative(options: RunOllamaNativeOptions): Promise<
     }
 
     if (isIncompleteDoneReason(response.doneReason)) {
+      const completion = ollamaArtifactCompletionEvidence(
+        requestedArtifactCount,
+        requiresArtifactExecution,
+        createdFiles,
+        successfullyExecutedFiles,
+      );
+      const canResumeIncompleteToolPlan = options.requireToolUse
+        && executedCalls.size > 0
+        && incompleteRetriesAtCurrentEpoch < 2
+        && (completion.missingCreatedArtifacts || completion.missingExecutedFiles.length > 0);
+      if (canResumeIncompleteToolPlan) {
+        incompleteRetriesAtCurrentEpoch += 1;
+        messages.push({
+          role: 'user',
+          content: (language === 'nl' ? [
+            '[LLMelt afgekapt toolplan-herstel]',
+            `Je vorige generatie werd afgekapt (${response.doneReason}); die tekst of onvolledige call is niet uitgevoerd.`,
+            completion.missingCreatedArtifacts
+              ? `Er ontbreken nog ${Math.max(0, requestedArtifactCount - createdFiles.size)} van de ${requestedArtifactCount} gevraagde artefacten.`
+              : `Nog niet succesvol uitgevoerd: ${completion.missingExecutedFiles.join(', ')}.`,
+            'Geef nu uitsluitend de eerstvolgende volledige geregistreerde function call. Houd de inhoud doelgericht en compact; geen prose of codeblok.',
+          ] : [
+            '[LLMelt truncated tool-plan recovery]',
+            `Your previous generation was truncated (${response.doneReason}); that text or incomplete call was not executed.`,
+            completion.missingCreatedArtifacts
+              ? `${Math.max(0, requestedArtifactCount - createdFiles.size)} of the ${requestedArtifactCount} requested artifacts are still missing.`
+              : `Not successfully executed yet: ${completion.missingExecutedFiles.join(', ')}.`,
+            'Return only the next complete registered function call. Keep its contents focused and compact; no prose or code block.',
+          ]).join('\n'),
+        });
+        options.onStatus?.(localizedText(language, 'Ollama herstelt een afgekapt toolplan', 'Ollama is recovering a truncated tool plan'));
+        continue;
+      }
       terminationReason = localizedText(language, `Ollama gaf een onvolledig antwoord (${response.doneReason})`, `Ollama returned an incomplete response (${response.doneReason})`);
       break;
     }
@@ -444,14 +480,21 @@ export async function runOllamaNative(options: RunOllamaNativeOptions): Promise<
         continue;
       }
 
-      options.onToolActivity?.({
-        provider: 'ollama',
-        toolName,
-        input,
-        toolUseId,
-        phase: 'requested',
-      });
-      options.onStatus?.(localizedText(language, `Ollama gebruikt ${toolName}`, `Ollama is using ${toolName}`));
+      // Een gecachete read of een door de voortgangsgate geblokkeerde replay is
+      // feedback aan het model, geen echte app-toolactie. Publiceer die daarom
+      // niet als requested/result-event: anders toont de UI een rode mislukte
+      // opdracht die in werkelijkheid nooit is uitgevoerd.
+      const syntheticToolFeedback = cachedReadAfterEditFailure || replayWithoutProgress;
+      if (!syntheticToolFeedback) {
+        options.onToolActivity?.({
+          provider: 'ollama',
+          toolName,
+          input,
+          toolUseId,
+          phase: 'requested',
+        });
+        options.onStatus?.(localizedText(language, `Ollama gebruikt ${toolName}`, `Ollama is using ${toolName}`));
+      }
 
       let result: NativeToolExecutionResult;
       if (cachedReadAfterEditFailure) {
@@ -500,6 +543,7 @@ export async function runOllamaNative(options: RunOllamaNativeOptions): Promise<
           recordSuccessfullyExecutedFiles(createdFiles, successfullyExecutedFiles, input);
         }
         if (result.ok && isNativeMutationTool(toolName)) mutationEpoch += 1;
+        if (result.ok) incompleteRetriesAtCurrentEpoch = 0;
         executedCalls.set(signature, {
           epoch: mutationEpoch,
           ok: result.ok,
@@ -509,21 +553,23 @@ export async function runOllamaNative(options: RunOllamaNativeOptions): Promise<
       }
 
       deniedThisRound ||= !!result.denied;
-      if (!result.ok) {
+      if (!syntheticToolFeedback && !result.ok) {
         lastFailure = modelSafeToolOutput(result.output, language);
         lastFailedToolName = toolName;
-      } else if (toolName !== 'read_file') {
+      } else if (!syntheticToolFeedback && toolName !== 'read_file') {
         lastFailedToolName = '';
       }
-      options.onToolActivity?.({
-        provider: 'ollama',
-        toolName,
-        input,
-        toolUseId,
-        phase: result.denied ? 'denied' : 'result',
-        ok: result.ok,
-        output: result.output,
-      });
+      if (!syntheticToolFeedback) {
+        options.onToolActivity?.({
+          provider: 'ollama',
+          toolName,
+          input,
+          toolUseId,
+          phase: result.denied ? 'denied' : 'result',
+          ok: result.ok,
+          output: result.output,
+        });
+      }
       const feedback = nativeToolFeedback(result, replayWithoutProgress, language);
       if (replayNeedsDifferentArtifact) {
         feedback.retryable = true;
@@ -557,13 +603,66 @@ export async function runOllamaNative(options: RunOllamaNativeOptions): Promise<
   }
 
   if (options.signal.aborted) throw abortError(options.signal, language);
-  const reason = terminationReason || localizedText(language, 'Ollama leverde geen afsluitend tekstantwoord', 'Ollama did not provide a final text answer');
-  const unresolvedCompletion = ollamaArtifactCompletionEvidence(
+  let unresolvedCompletion = ollamaArtifactCompletionEvidence(
     requestedArtifactCount,
     requiresArtifactExecution,
     createdFiles,
     successfullyExecutedFiles,
   );
+  // Een lokaal model kan precies in de laatste modelronde het laatste gevraagde
+  // script schrijven. Laat dat expliciet gevraagde bestand dan niet onuitgevoerd
+  // achter alleen omdat er geen dertiende model-toolronde meer beschikbaar is.
+  // Dit is een deterministische vervolgstap voor reeds door write_file gemaakte,
+  // bekende scripttypen en loopt nog steeds door dezelfde executor/approval-gate.
+  if (
+    options.requireToolUse
+    && !unresolvedCompletion.missingCreatedArtifacts
+    && unresolvedCompletion.missingExecutedFiles.length
+  ) {
+    for (const file of unresolvedCompletion.missingExecutedFiles) {
+      const command = ollamaArtifactExecutionCommand(file);
+      if (!command) continue;
+      const toolUseId = `ollama-completion-${crypto.randomUUID()}`;
+      const input = { command };
+      options.onStatus?.(localizedText(language, `Ollama voert gevraagd bestand uit: ${file}`, `Ollama is running requested file: ${file}`));
+      options.onToolActivity?.({ provider: 'ollama', toolName: 'run_command', input, toolUseId, phase: 'requested' });
+      const result = await executeToolSafely(options, 'run_command', input, toolUseId);
+      options.onToolActivity?.({
+        provider: 'ollama',
+        toolName: 'run_command',
+        input,
+        toolUseId,
+        phase: result.denied ? 'denied' : 'result',
+        ok: result.ok,
+        output: result.output,
+      });
+      messages.push({
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: toolUseId, function: { name: 'run_command', arguments: input } }],
+      });
+      messages.push({
+        role: 'tool',
+        tool_name: 'run_command',
+        content: JSON.stringify(nativeToolFeedback(result, false, language)),
+      });
+      if (result.ok) recordSuccessfullyExecutedFiles(createdFiles, successfullyExecutedFiles, input);
+      else {
+        lastFailure = modelSafeToolOutput(result.output, language);
+        if (result.denied) {
+          terminationReason = localizedText(language, 'Een benodigde toolactie is door de gebruiker geweigerd', 'A required tool action was denied by the user');
+          break;
+        }
+      }
+    }
+    unresolvedCompletion = ollamaArtifactCompletionEvidence(
+      requestedArtifactCount,
+      requiresArtifactExecution,
+      createdFiles,
+      successfullyExecutedFiles,
+    );
+  }
+  const reason = terminationReason || localizedText(language, 'Ollama leverde geen afsluitend tekstantwoord', 'Ollama did not provide a final text answer');
   options.onStatus?.(localizedText(language, 'Ollama rondt af zonder extra tools', 'Ollama is finishing without additional tools'));
   appendRecoveryInstruction(messages, reason, lastFailure, language);
   let recoveryError = '';

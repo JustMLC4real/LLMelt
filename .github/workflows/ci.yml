@@ -25,3 +25,5 @@ jobs:
         run: npx vitest run src/database-fresh-start.test.ts src/components/onboarding-utils.test.ts src/python-runtime.test.ts src/chat-title-ollama.test.ts
       - run: npm test
       - run: npm run build
+      - name: Visuele layoutcontracten
+        run: npm run test:ui-layout

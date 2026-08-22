@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { UpdateChannel } from '../src/update-channel';
 import type {
   AutoModeConfig,
   ChatRequest,
@@ -116,6 +117,8 @@ const electronAPI = {
     maximizeToggle: () => ipcRenderer.invoke('window:maximizeToggle'),
     close: () => ipcRenderer.invoke('window:close'),
     isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+    // Alleen actief bij een geïsoleerd testprofiel; productie registreert dit kanaal niet.
+    testSetBounds: (width: number, height: number) => ipcRenderer.invoke('window:testSetBounds', width, height),
     onMaximizeChange: (callback: (maximized: boolean) => void) => on<boolean>('window:maximizeChanged', callback),
   },
 
@@ -263,6 +266,7 @@ const electronAPI = {
     check: () => ipcRenderer.invoke('updater:check'),
     download: () => ipcRenderer.invoke('updater:download'),
     install: () => ipcRenderer.invoke('updater:install'),
+    setChannel: (channel: UpdateChannel) => ipcRenderer.invoke('updater:setChannel', channel),
     onStatus: (callback: (status: any) => void) => on<any>('updater:status', callback),
   },
 

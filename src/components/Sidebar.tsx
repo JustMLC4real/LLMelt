@@ -508,9 +508,10 @@ function NavItem({ active, onClick, label, icon: Icon, badge, motion }: { active
     return () => window.clearTimeout(timeout);
   }, [motionRunning]);
   const runMotion = () => {
-    // Pointer-enter en de direct daaropvolgende klik mogen dezelfde animatie niet
-    // halverwege remounten. Wacht op animationend en start daarna pas opnieuw.
-    if (motion && !motionRunning) setMotionRunning(true);
+    // Hover en klik mogen beide starten, maar nooit tegelijk. De klik direct na
+    // pointer-enter laat de lopende rotatie daarom rustig afmaken.
+    if (!motion || motionRunning) return;
+    setMotionRunning(true);
   };
   return (
     <button

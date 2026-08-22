@@ -15,12 +15,15 @@ describe('LLMelt-productbranding', () => {
   it('gebruikt uitsluitend de publieke GitHub Releases-pagina als updateserver', () => {
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
     expect(pkg.repository.url).toBe('https://github.com/JustMLC4real/LLMelt.git');
+    // Geen releaseType: dat veld stuurt alleen electron-builder bij publiceren
+    // met --publish, en dat doet dit project niet. De updater kijkt uitsluitend
+    // naar autoUpdater.allowPrerelease, dat vanuit het updatekanaal wordt gezet.
     expect(pkg.build.publish).toEqual([{
       provider: 'github',
       owner: 'JustMLC4real',
       repo: 'LLMelt',
-      releaseType: 'release',
     }]);
+    expect(pkg.updateChannel).toBeDefined();
 
     const publishScript = readFileSync(new URL('../scripts/publish-update.mjs', import.meta.url), 'utf8');
     expect(publishScript).toContain("const repository = 'JustMLC4real/LLMelt'");

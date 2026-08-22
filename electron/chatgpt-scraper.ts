@@ -27,6 +27,7 @@ import {
   chatGptCookieIdentity,
   toRestorableChatGptCookie,
 } from './chatgpt-session-cookies';
+import { cleanChatGptCodeBlockText } from '../src/providers/chatgpt-code-block';
 
 // Diagnostiek is expliciet opt-in, begrensd en ontdaan van bekende geheimen.
 // Het bestand staat in Electron's gebruikersgebonden logmap, nooit in het project.
@@ -1333,6 +1334,7 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
   let sawStreaming = false;
   let reportedFirstText = false;
   let nativeRetried = false;
+  const cleanCodeBlockSource = cleanChatGptCodeBlockText.toString();
   try {
     while (true) {
       if (signal.aborted) break;
@@ -1351,6 +1353,7 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
               // Reconstruct markdown so fenced code blocks survive (innerText drops the
               // backticks). Needed so the host can detect/run code the model writes.
               const F = String.fromCharCode(96, 96, 96);
+              const cleanCodeBlockText = (${cleanCodeBlockSource});
               const extract = (node) => {
                 let out = '';
                 node.childNodes.forEach((c) => {
@@ -1358,9 +1361,13 @@ async function sendChatViaDomDriver(options: ChatGptSendOptions): Promise<{ text
                   if (c.nodeType !== 1) return;
                   const tag = c.tagName;
                   if (tag === 'PRE') {
-                    const codeEl = c.querySelector('code') || c;
-                    const lang = ((codeEl.className || '').match(/language-([\\w+#-]+)/) || [])[1] || '';
-                    out += '\\n' + F + lang + '\\n' + (codeEl.innerText || '') + '\\n' + F + '\\n';
+                    const codeEl = c.querySelector('code');
+                    const codeRoot = codeEl || c;
+                    const lang = ((codeRoot.className || '').match(/language-([\\w+#-]+)/) || [])[1] || '';
+                    const rawCode = codeEl
+                      ? (codeEl.textContent || codeEl.innerText || '')
+                      : (c.innerText || c.textContent || '');
+                    out += '\\n' + F + lang + '\\n' + cleanCodeBlockText(rawCode, lang) + '\\n' + F + '\\n';
                   } else if (tag === 'BR') { out += '\\n'; }
                   else {
                     out += extract(c);

@@ -23,7 +23,9 @@ const TokenDashboard: React.FC = () => {
     const [appWide, currentChat] = await Promise.all([
       window.electronAPI.tokens.getDashboard(),
       currentChatId
-        ? window.electronAPI.tokens.getDashboard(currentChatId)
+        // Een chat die tijdens het laden verdwijnt mag de appbrede cijfers niet
+        // meenemen in zijn val; het paneel toont dan alleen geen chatcontext.
+        ? window.electronAPI.tokens.getDashboard(currentChatId).catch(() => null)
         : Promise.resolve(null),
     ]);
     if (loadId !== dashboardLoadRef.current) return;

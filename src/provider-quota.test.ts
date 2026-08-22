@@ -7,6 +7,7 @@ import {
   parseCodexRateLimitsResponse,
   parseGoogleMonitoringQuotas,
   parseGoogleServiceUsageQuotas,
+  quotaSnapshotSetIsFresh,
 } from '../electron/provider-quota';
 
 describe('providerneutrale quota', () => {
@@ -37,6 +38,38 @@ describe('providerneutrale quota', () => {
     expect(snapshot.state).toBe('unknown');
     expect(snapshot.accuracy).toBe('unavailable');
     expect(snapshot.buckets).toEqual([]);
+  });
+
+  it('beschouwt de set pas als vers als iedere providersurface recent aanwezig is', () => {
+    const now = Date.parse('2030-01-01T12:00:00.000Z');
+    const observedAt = new Date(now - 60_000).toISOString();
+    const surfaces = [
+      ['codex', 'cli', 'codex:account'],
+      ['anthropic', 'cli', 'anthropic:account'],
+      ['antigravity', 'cli', 'antigravity:account'],
+      ['google', 'api', 'google:project'],
+      ['openai', 'subscription-web', 'openai:account'],
+      ['ollama', 'local', 'ollama:local'],
+    ] as const;
+    const snapshots = surfaces.map(([provider, surface, group]) => ({
+      ...makeUnknownQuota(provider, surface, group, 'test'),
+      observedAt,
+    }));
+
+    expect(quotaSnapshotSetIsFresh(snapshots, now)).toBe(true);
+    expect(quotaSnapshotSetIsFresh(snapshots.slice(1), now)).toBe(false);
+    expect(quotaSnapshotSetIsFresh(
+      snapshots.map((snapshot, index) => index === 2 ? { ...snapshot, observedAt: new Date(now - 6 * 60_000).toISOString() } : snapshot),
+      now,
+    )).toBe(false);
+    expect(quotaSnapshotSetIsFresh(
+      snapshots.map((snapshot, index) => index === 3 ? { ...snapshot, staleAfter: 'geen-geldige-datum' } : snapshot),
+      now,
+    )).toBe(false);
+    expect(quotaSnapshotSetIsFresh(
+      snapshots.map((snapshot, index) => index === 4 ? { ...snapshot, staleAfter: new Date(now - 1).toISOString() } : snapshot),
+      now,
+    )).toBe(false);
   });
 
   it('leest Claude 5-uur- en 7-dagenvelden uit de statusregel', () => {

@@ -250,6 +250,11 @@ const AutoModePanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
               <span>{t('autoMode.infinite')}</span>
             </label>
           </div>
+          {unlimitedIterations && (
+            <p className="text-xs text-muted" style={{ marginTop: 'var(--space-2)' }}>
+              {t('autoMode.infiniteHelp')}
+            </p>
+          )}
         </div>
         <div>
           <label className="text-xs text-muted">{t('autoMode.delay')}</label>
@@ -455,13 +460,15 @@ function RoleModelFields({
           onChange={(family) => onModelChange(claudeCliModelFor(models, family, claudeCliVersionsFor(models, family, uiLanguage)[0], uiLanguage))}
           disabled={disabled}
         />
-        <SelectField
-          label={t('models.version')}
-          value={selected.version}
-          options={versions.map((version) => ({ value: version, label: version }))}
-          onChange={(version) => onModelChange(claudeCliModelFor(models, selected.family, version, uiLanguage))}
-          disabled={disabled}
-        />
+        {versions.some(Boolean) && (
+          <SelectField
+            label={t('models.version')}
+            value={selected.version}
+            options={versions.map((version) => ({ value: version, label: version }))}
+            onChange={(version) => onModelChange(claudeCliModelFor(models, selected.family, version, uiLanguage))}
+            disabled={disabled}
+          />
+        )}
       </>
     );
   }

@@ -7,7 +7,8 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const repository = 'JustMLC4real/LLMelt';
-const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+const appManifest = JSON.parse(readFileSync('package.json', 'utf8'));
+const version = appManifest.version;
 const verifyOnly = process.argv.includes('--verify-only');
 if (!/^\d+\.\d+\.\d+$/.test(version)) {
   console.error(`Publiceren geweigerd: package.json-versie "${version}" is geen stabiele semver (x.y.z).`);
@@ -65,6 +66,19 @@ if (!Number.isFinite(manifestSize) || manifestSize !== statSync(installer).size)
 if (verifyOnly) {
   console.log(`Artefactcontrole geslaagd voor v${version}; er is niets geüpload.`);
   process.exit(0);
+}
+
+// Het kanaalveld reist mee in de gepackagede app en bepaalt waar die build zijn
+// updates zoekt. Dit script publiceert uitsluitend stabiel, dus een build die
+// zichzelf als prerelease aankondigt hoort hier niet doorheen: die installatie
+// zou daarna prereleases volgen terwijl hij als stabiele release is uitgegeven.
+if ((appManifest.updateChannel || 'stable') !== 'stable') {
+  console.error(
+    `Publiceren geweigerd: package.json-updateChannel is "${appManifest.updateChannel}".`
+    + ' Zet het op "stable" voor een stabiele release, of publiceer deze build als prerelease'
+    + ' met "gh release create --prerelease".',
+  );
+  process.exit(1);
 }
 
 const dirty = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim();

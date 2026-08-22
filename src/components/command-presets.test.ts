@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AIModel, ModelRunConfig, ProviderType } from '../providers/types';
+import type { AIModel, ModelRunConfig, NativeProviderCommand, ProviderType } from '../providers/types';
 import {
   applyCommandPreset,
   clearCommandConfig,
@@ -30,7 +30,7 @@ function model(provider: ProviderType, patch: Partial<AIModel> = {}): AIModel {
 describe('providerneutrale slashcommands', () => {
   it('toont snel/diep niet wanneer de live modelcatalogus geen native controls meldt', () => {
     const presets = commandPresetsForModel('nl', 'google', model('google'));
-    expect(presets.map((preset) => preset.id)).toEqual([]);
+    expect(presets.map((preset) => preset.id)).toEqual(['plan', 'goal', 'review']);
   });
 
   it('toont het native-instellingentandwiel alleen bij een echte providerkeuze', () => {
@@ -45,6 +45,7 @@ describe('providerneutrale slashcommands', () => {
       supportedServiceTiers: ['future-fast'],
     }))).toBe(true);
     expect(hasSelectableNativeRunControls(model('openai', {
+      chatgptConfigurableEffort: true,
       chatgptThinkingEfforts: [
         { value: 'instant', label: 'Instant' },
         { value: 'thinking', label: 'Thinking' },
@@ -69,7 +70,7 @@ describe('providerneutrale slashcommands', () => {
       supportedReasoningEfforts: ['high'],
       supportedServiceTiers: ['fast'],
     }));
-    expect(presets.map((preset) => preset.id)).toEqual(['fast', 'reset']);
+    expect(presets.map((preset) => preset.id)).toEqual(['plan', 'goal', 'fast', 'review', 'reset']);
   });
 
   it('gebruikt uitsluitend Engelse commandnamen', () => {
@@ -95,8 +96,8 @@ describe('providerneutrale slashcommands', () => {
       supportedServiceTiers: ['fast'],
     }));
 
-    expect(presets.map((preset) => preset.slash)).toEqual(['/fast', '/deep', '/reset']);
-    expect(presets.map((preset) => preset.label)).toEqual(['Fast', 'Deep', 'Reset']);
+    expect(presets.map((preset) => preset.slash)).toEqual(['/plan', '/goal', '/fast', '/deep', '/review', '/reset']);
+    expect(presets.map((preset) => preset.label)).toEqual(['Plan mode', 'Goal', 'Fast', 'Deep', 'Review', 'Reset']);
     expect(parseCommandInput('/snel', presets)).toBeNull();
     expect(parseCommandInput('/diep', presets)).toBeNull();
   });
@@ -192,20 +193,73 @@ describe('providerneutrale slashcommands', () => {
     });
   });
 
-  it('gebruikt de officiële live ChatGPT-volgorde voor fast/deep', () => {
+  it('biedt live ChatGPT-inspanning ook als run-instelling aan', () => {
     const chatgpt = model('openai', {
       id: 'chatgpt:future',
+      chatgptConfigurableEffort: true,
       chatgptThinkingEfforts: [
         { value: 'instant-live', label: 'Instant' },
         { value: 'pro-live', label: 'Pro' },
       ],
     });
     const presets = commandPresetsForModel('en', 'openai', chatgpt);
-    const fast = presets.find((candidate) => candidate.id === 'fast')!;
-    const deep = presets.find((candidate) => candidate.id === 'deep')!;
 
-    expect(applyCommandPreset(fast, 'openai', chatgpt, undefined)?.chatgptThinkingEffort).toBe('instant-live');
-    expect(applyCommandPreset(deep, 'openai', chatgpt, undefined)?.chatgptThinkingEffort).toBe('pro-live');
+    expect(nativeRunControls(chatgpt).chatgptThinkingEfforts).toEqual([
+      { value: 'instant-live', label: 'Instant' },
+      { value: 'pro-live', label: 'Pro' },
+    ]);
+    expect(hasSelectableNativeRunControls(chatgpt)).toBe(true);
+    expect(presets.map((preset) => preset.id)).toEqual(['plan', 'goal', 'fast', 'deep', 'review', 'reset']);
+    expect(applyCommandPreset(
+      presets.find((preset) => preset.id === 'fast')!,
+      'openai',
+      chatgpt,
+      undefined,
+    )).toMatchObject({ chatgptThinkingEffort: 'instant-live', commandPresetId: 'fast' });
+    expect(applyCommandPreset(
+      presets.find((preset) => preset.id === 'deep')!,
+      'openai',
+      chatgpt,
+      undefined,
+    )).toMatchObject({ chatgptThinkingEffort: 'pro-live', commandPresetId: 'deep' });
+  });
+
+  it('toont geen GPT-inspanning als de live catalogus die niet configureerbaar noemt', () => {
+    const chatgpt = model('openai', {
+      id: 'chatgpt:fixed',
+      chatgptConfigurableEffort: false,
+      chatgptThinkingEfforts: [
+        { value: 'instant-live', label: 'Instant' },
+        { value: 'pro-live', label: 'Pro' },
+      ],
+    });
+
+    expect(nativeRunControls(chatgpt).chatgptThinkingEfforts).toEqual([]);
+    expect(hasSelectableNativeRunControls(chatgpt)).toBe(false);
+  });
+
+  it('dupliceert LLMelt-workflows niet naast gelijkwaardige provideracties', () => {
+    const live = model('codex', {
+      supportedReasoningEfforts: ['low', 'high'],
+      supportedServiceTiers: ['fast'],
+    });
+    const nativeCommands: NativeProviderCommand[] = [
+      {
+        id: 'codex:plan', provider: 'codex', slash: '/plan', label: 'Plan',
+        description: 'Native plan', source: 'app-server', kind: 'collaboration-mode', mode: 'plan',
+      },
+      {
+        id: 'codex:goal', provider: 'codex', slash: '/goal', label: 'Goal',
+        description: 'Native goal', source: 'app-server', kind: 'goal',
+      },
+      {
+        id: 'codex:review', provider: 'codex', slash: '/review', label: 'Review',
+        description: 'Native review', source: 'app-server', kind: 'review',
+      },
+    ];
+
+    expect(commandPresetsForModel('en', 'codex', live, nativeCommands).map((preset) => preset.id))
+      .toEqual(['fast', 'deep', 'reset']);
   });
 
   it('herstelt na fast/deep de modelstandaard en behoudt timeout', () => {
